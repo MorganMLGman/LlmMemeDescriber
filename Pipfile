@@ -1,0 +1,20 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+google-genai = ">=1.56.0"
+webdav4 = ">=0.10.0"
+pydantic-settings = ">=2.12.0"
+sqlmodel = ">=0.0.31"
+sqlalchemy = ">=2.0.45"
+fastapi = "*"
+uvicorn = {extras = ["standard"], version = "*"}
+pillow = "*"
+ffmpeg-python = "*"
+whoosh-reloaded = ">=2.7.4"
+imagehash = ">=4.3.1"
+
+[requires]
+python_version = "3.14"

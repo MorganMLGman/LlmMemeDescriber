@@ -1,0 +1,51 @@
+# Ignore Python cache and compiled files
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+
+# Virtual environments
+env/
+venv/
+.venv/
+
+# Pipenv and build artifacts
+.pip-wheel-metadata/
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Test/cache
+.pytest_cache/
+.coverage
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Environment files
+.env
+.env.*
+
+# Node
+node_modules/
+
+# Git
+.git
+
+# Ignore local Docker compose override files
+docker-compose.override.yml
+
+# Keep Pipfile and Pipfile.lock so Docker can build from them
+!Pipfile
+!Pipfile.lock
+
+# Buildx cache (local)
+.buildx-cache/
+
+# Common caches
+.cache/

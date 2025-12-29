@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Duplicate Groups — Meme Describer</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <nav class="navbar navbar-dark bg-dark sticky-top">
+        <div class="container-fluid">
+            <a class="navbar-brand mb-0 h1" href="/">🎬 Meme Describer</a>
+            <div class="d-flex gap-2">
+                <a class="btn btn-sm btn-outline-light" href="/">← Back</a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container py-4">
+        <div class="row mb-3">
+            <div class="col-12">
+                <h3>Duplicate Groups</h3>
+                <p class="text-muted">Groups of similar memes detected by the deduplication analysis.</p>
+            </div>
+        </div>
+
+        <div id="duplicatesPageContent" class="row">
+            <div class="col-12" id="duplicatesPageInner">
+                <div class="spinner-border" role="status"><span class="visually-hidden">Loading...</span></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="/static/app.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const container = document.getElementById('duplicatesPageInner');
+            container.innerHTML = '<div class="spinner-border" role="status"><span class="visually-hidden">Loading...</span></div>';
+            (async function load() {
+                try {
+                    const response = await fetch('/memes/duplicates-by-group');
+                    if (!response.ok) throw new Error('Failed to load groups');
+                    const data = await response.json();
+
+                    if (!data.groups || data.groups.length === 0) {
+                        container.innerHTML = '<p class="text-muted">No duplicate groups found.</p>';
+                        return;
+                    }
+
+                    let html = `<p class="mb-3"><strong>Found ${data.total_groups} duplicate group(s)</strong></p>`;
+
+                    data.groups.forEach((group, groupIdx) => {
+                        html += `<div class="card mb-3"><div class="card-body">`;
+                        html += `<h6 class="card-title">Group ${group.group_id + 1}: ${group.count} meme(s)</h6>`;
+                        html += `<div class="table-responsive"><table class="table table-hover align-middle"><thead class="table-light"><tr>`;
+                        html += `<th style="width:48px"></th>`; // select
+                        html += `<th style="width:48px"></th>`; // primary
+                        html += `<th>File</th>`;
+                        html += `<th style="width:160px">Actions</th>`;
+                        html += `</tr></thead><tbody id="group-${group.group_id}">`;
+
+                        group.memes.forEach((meme, idx) => {
+                            const safeFilename = JSON.stringify(meme.filename);
+                            const preview = meme.preview_url || '';
+                            html += `<tr data-filename=${safeFilename} data-group="${group.group_id}">`;
+                            // select checkbox
+                            html += `<td class="text-center"><input class="form-check-input select-row" type="checkbox" value=${safeFilename} ${idx===0? 'checked disabled':''}></td>`;
+                            // primary radio
+                            html += `<td class="text-center"><input class="form-check-input primary-radio" type="radio" name="primary-${group.group_id}" value=${safeFilename} ${idx===0? 'checked':''} onchange="onPrimaryChange(${group.group_id}, ${safeFilename})"></td>`;
+                            // file column
+                            html += `<td>`;
+                            html += `<div class="d-flex align-items-center gap-3">`;
+                            html += `<img src="${preview}" style="height:60px;width:80px;object-fit:cover;border-radius:6px;" alt="preview">`;
+                            html += `<div class="flex-grow-1">`;
+                            html += `<a href="#" onclick="openMemeDetail(${safeFilename}); return false;" class="fw-semibold">${meme.filename.length>60? meme.filename.substring(0,60)+'...': meme.filename}</a>`;
+                            html += `<div class="small text-muted">${meme.path || ''}</div>`;
+                            if (idx !== 0) {
+                                html += `<div class="mt-1 d-flex align-items-center gap-2">`;
+                                html += `<label class="form-check-label small me-2">Include metadata</label>`;
+                                html += `<input class="form-check-input include-meta" type="checkbox" value=${safeFilename} checked>`;
+                                html += `</div>`;
+                            } else {
+                                html += `<div class="mt-1"><strong class="text-success">Primary</strong></div>`;
+                            }
+                            html += `</div></div>`;
+                            html += `</td>`;
+                            // actions
+                            html += `<td class="text-end">`;
+                            html += `<div class="d-flex gap-2 justify-content-end">`;
+                            html += `<button class="btn btn-sm btn-danger" onclick="deleteRow(${safeFilename})">Delete</button>`;
+                            html += `<button class="btn btn-sm btn-primary" onclick="mergeSingle(${safeFilename}, ${group.group_id})">Merge</button>`;
+                            html += `</div></td>`;
+                            html += `</tr>`;
+                        });
+
+                        html += `</tbody></table></div>`;
+                        // group actions
+                        html += `<div class="mt-2 d-flex gap-2">`;
+                        html += `<button class="btn btn-danger" onclick="mergeSelected(${group.group_id})">Merge Selected</button>`;
+                        html += `<button class="btn btn-warning" onclick="markGroupNotDuplicate(${group.group_id})">Mark as Not Duplicate</button>`;
+                        html += `</div>`;
+
+                        html += `</div></div>`;
+                    });
+
+                    container.innerHTML = html;
+                } catch (error) {
+                    console.error(error);
+                    container.innerHTML = `<div class="alert alert-danger">Error loading duplicate groups: ${error.message}</div>`;
+                }
+            })();
+        });
+        
+            // Handlers for table actions
+            window.onPrimaryChange = function(groupId, filename) {
+                // when primary changes, ensure primary row has NO include-meta checkbox
+                // and all non-primary rows HAVE an include-meta checkbox (so user can toggle it)
+                const rows = document.querySelectorAll(`tr[data-group='${groupId}']`);
+                rows.forEach(r => {
+                    const radio = r.querySelector('input.primary-radio');
+                    const selectBox = r.querySelector('input.select-row');
+                    // find a wrapper for include-meta if present
+                    const metaWrap = r.querySelector('.include-meta-wrap');
+                    if (radio && radio.checked) {
+                        // make this the primary: select & disable checkbox; remove include-meta UI
+                        if (selectBox) { selectBox.checked = true; selectBox.disabled = true; }
+                        if (metaWrap) metaWrap.remove();
+                    } else {
+                        // non-primary rows: ensure select is enabled and include-meta exists
+                        if (selectBox) { selectBox.disabled = false; }
+                        if (!metaWrap) {
+                            // create include-meta block
+                            const flex = r.querySelector('.flex-grow-1');
+                            if (flex) {
+                                const div = document.createElement('div');
+                                div.className = 'include-meta-wrap mt-1 d-flex align-items-center gap-2';
+                                const label = document.createElement('label');
+                                label.className = 'form-check-label small me-2';
+                                label.textContent = 'Include metadata';
+                                const input = document.createElement('input');
+                                input.className = 'form-check-input include-meta';
+                                input.type = 'checkbox';
+                                // set value to the radio value for this row
+                                const rVal = r.querySelector('input.primary-radio')?.value || '';
+                                input.value = rVal;
+                                input.checked = true;
+                                div.appendChild(label);
+                                div.appendChild(input);
+                                flex.appendChild(div);
+                            }
+                        }
+                    }
+                });
+            };
+
+            window.mergeSelected = async function(groupId) {
+                const primaryRadio = document.querySelector(`input[name='primary-${groupId}']:checked`);
+                if (!primaryRadio) { alert('Select primary first'); return; }
+                const primary = primaryRadio.value;
+                const checked = Array.from(document.querySelectorAll(`tr[data-group='${groupId}'] input.select-row:checked`)).map(i => i.value);
+                const duplicates = checked.filter(v => v !== primary);
+                if (duplicates.length === 0) { alert('No duplicates selected to merge'); return; }
+                if (!confirm(`Delete ${duplicates.length} duplicate(s)? This cannot be undone.`)) return;
+                const metadataSources = Array.from(document.querySelectorAll(`tr[data-group='${groupId}'] input.include-meta:checked`)).map(i => i.value).filter(v => v !== primary);
+                await mergeDuplicates(primary, duplicates, metadataSources);
+            };
+
+            window.deleteRow = async function(filename) {
+                if (!confirm(`Delete ${filename}?`)) return;
+                try {
+                    const resp = await fetch(`/memes/${encodeURIComponent(filename)}`, { method: 'DELETE' });
+                    if (!resp.ok) throw new Error('Delete failed');
+                    showSuccess('Deleted ' + filename);
+                    // remove row
+                    const row = document.querySelector(`tr[data-filename='"${filename}"']`);
+                    if (row) row.remove();
+                } catch (e) { console.error(e); showError('Failed to delete'); }
+            };
+
+            window.mergeSingle = async function(filename, groupId) {
+                const primary = document.querySelector(`input[name='primary-${groupId}']:checked`)?.value;
+                if (!primary) { alert('Select primary first'); return; }
+                if (!confirm(`Merge ${filename} into ${primary}?`)) return;
+                const includeMeta = document.querySelector(`tr[data-filename='"${filename}"'] input.include-meta`);
+                const metadataSources = includeMeta && includeMeta.checked ? [filename] : [];
+                await mergeDuplicates(primary, [filename], metadataSources);
+            };
+
+            window.markGroupNotDuplicate = async function(groupId) {
+                if (!confirm('Mark this group as not duplicate? This will create pairwise exceptions for the selected primary.')) return;
+                // Find selected primary in group
+                const primaryRadio = document.querySelector(`input[name='primary-${groupId}']:checked`);
+                if (!primaryRadio) { alert('Select primary first'); return; }
+                const primary = primaryRadio.value;
+
+                try {
+                    const resp = await fetch(`/memes/${encodeURIComponent(primary)}/mark-not-duplicate`, { method: 'POST' });
+                    if (!resp.ok) throw new Error('Failed to mark group as not duplicate');
+                    const data = await resp.json();
+                    console.debug('mark-not-duplicate response', data);
+                    showSuccess('Group marked as not duplicate (pairwise exceptions created)');
+                    setTimeout(() => location.reload(), 400);
+                } catch (e) {
+                    console.error('mark not duplicate failed for', primary, e);
+                    showError('Failed to mark group as not duplicate');
+                }
+            };
+    </script>
+</body>
+</html>
