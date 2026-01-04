@@ -19,9 +19,6 @@ env/
 venv/
 .venv/
 
-# Pipenv
-Pipfile.lock
-
 # Installer files
 pip-log.txt
 pip-delete-this-directory.txt
