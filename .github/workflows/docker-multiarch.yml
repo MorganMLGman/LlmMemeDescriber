@@ -38,8 +38,8 @@ jobs:
         run: |
           docker buildx build \
             --platform linux/amd64,linux/arm64,linux/arm/v7 \
-            --tag ${{ secrets.DOCKERHUB_USERNAME }}/llm-meme-describer:${{ github.sha }} \
-            --tag ${{ secrets.DOCKERHUB_USERNAME }}/llm-meme-describer:latest \
-            --tag ghcr.io/${{ github.repository_owner }}/llm-meme-describer:${{ github.sha }} \
-            --tag ghcr.io/${{ github.repository_owner }}/llm-meme-describer:latest \
+            --tag ${{ toLower(secrets.DOCKERHUB_USERNAME) }}/llm-meme-describer:${{ github.sha }} \
+            --tag ${{ toLower(secrets.DOCKERHUB_USERNAME) }}/llm-meme-describer:latest \
+            --tag ghcr.io/${{ toLower(github.repository_owner) }}/llm-meme-describer:${{ github.sha }} \
+            --tag ghcr.io/${{ toLower(github.repository_owner) }}/llm-meme-describer:latest \
             --push .
