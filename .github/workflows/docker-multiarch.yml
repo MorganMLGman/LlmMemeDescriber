@@ -34,12 +34,18 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Lowercase names
+        id: names
+        run: |
+          echo "dockerhub_username_lower=$(echo '${{ secrets.DOCKERHUB_USERNAME }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+          echo "repo_owner_lower=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
       - name: Build and push multi-arch image
         run: |
           docker buildx build \
             --platform linux/amd64,linux/arm64,linux/arm/v7 \
-            --tag ${{ toLower(secrets.DOCKERHUB_USERNAME) }}/llm-meme-describer:${{ github.sha }} \
-            --tag ${{ toLower(secrets.DOCKERHUB_USERNAME) }}/llm-meme-describer:latest \
-            --tag ghcr.io/${{ toLower(github.repository_owner) }}/llm-meme-describer:${{ github.sha }} \
-            --tag ghcr.io/${{ toLower(github.repository_owner) }}/llm-meme-describer:latest \
+            --tag ${{ steps.names.outputs.dockerhub_username_lower }}/llm-meme-describer:${{ github.sha }} \
+            --tag ${{ steps.names.outputs.dockerhub_username_lower }}/llm-meme-describer:latest \
+            --tag ghcr.io/${{ steps.names.outputs.repo_owner_lower }}/llm-meme-describer:${{ github.sha }} \
+            --tag ghcr.io/${{ steps.names.outputs.repo_owner_lower }}/llm-meme-describer:latest \
             --push .
