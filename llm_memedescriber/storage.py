@@ -42,6 +42,15 @@ class WebDavStorage:
                 'name': name,
                 'is_dir': is_dir,
             }
+            # propagate common date props returned by underlying client (if present)
+            try:
+                # webdav4 / sabredav may return keys like 'getlastmodified', 'modified', 'creationdate', 'getcreationdate'
+                if isinstance(entry, dict):
+                    for k in ('getlastmodified', 'modified', 'creationdate', 'getcreationdate'):
+                        if k in entry and entry.get(k) is not None:
+                            meta[k] = entry.get(k)
+            except Exception:
+                pass
             results.append(meta)
 
             if recursive and meta['is_dir']:

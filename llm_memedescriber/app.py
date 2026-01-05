@@ -986,6 +986,41 @@ def mark_meme_not_duplicate(filename: str):
                     dup = add_pair_exception(session, filename, mem_fn)
                     created.append({"id": dup.id, "a": dup.filename_a, "b": dup.filename_b, "is_false_positive": dup.is_false_positive})
 
+                    try:
+                        from .models import MemeDuplicateGroup as DBDupeLink
+                        links = session.exec(select(DBDupeLink).where(DBDupeLink.group_id == gid, DBDupeLink.filename == filename)).all()
+                        for l in links:
+                            try:
+                                session.delete(l)
+                            except Exception:
+                                logger.debug("Failed to delete meme-group link for %s in group %s", filename, gid)
+                        session.commit()
+                    except Exception:
+                        logger.debug("Failed to remove group links after creating pair exception for %s and %s", filename, mem_fn)
+
+            try:
+                from .models import DuplicateGroup as DBDuplicateGroup, MemeDuplicateGroup as DBDupeLink
+                for gid in group_ids:
+                    try:
+                        remaining = session.exec(select(DBDupeLink).where(DBDupeLink.group_id == gid)).all()
+                        if len(remaining) <= 1:
+                            for r in remaining:
+                                try:
+                                    session.delete(r)
+                                except Exception:
+                                    pass
+                            try:
+                                grp = session.exec(select(DBDuplicateGroup).where(DBDuplicateGroup.id == gid)).first()
+                                if grp:
+                                    session.delete(grp)
+                            except Exception:
+                                pass
+                    except Exception:
+                        logger.debug("Failed to inspect/delete group %s during cleanup", gid)
+                session.commit()
+            except Exception:
+                logger.debug("Failed to cleanup duplicate groups after marking not-duplicate")
+
             logger.info(f"Created {len(created)} pairwise exceptions for {filename}")
             return {"status": "ok", "message": "Pairwise exceptions created", "created": created}
     except HTTPException:

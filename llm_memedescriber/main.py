@@ -14,7 +14,7 @@ from .db_helpers import session_scope
 from .config import parse_interval, load_settings
 from .constants import *
 from .models import Meme, DuplicateGroup as DBDuplicateGroup, MemeDuplicateGroup as DBDupeLink
-from .deduplication import find_duplicate_groups
+from .deduplication import find_duplicate_groups, calculate_phash
 from .storage import WebDavStorage
 from .storage_workers import StorageWorkerPool
 
@@ -181,9 +181,25 @@ class App:
                             obj['keywordy'] = m.keywords
                         if m.text_in_image:
                             obj['tekst'] = m.text_in_image
+                        try:
+                            if getattr(m, 'phash', None):
+                                obj['phash'] = m.phash
+                        except Exception:
+                            pass
+                        try:
+                            if getattr(m, 'created_at', None):
+                                obj['created_at'] = m.created_at.isoformat()
+                        except Exception:
+                            pass
                         mapping[key] = obj
                     else:
-                        mapping[key] = {}
+                        entry: Dict[str, Any] = {}
+                        try:
+                            if getattr(m, 'phash', None):
+                                entry['phash'] = m.phash
+                        except Exception:
+                            pass
+                        mapping[key] = entry
             
             self.storage.write_listing('.', mapping, json_filename='listing.json')
             logger.info("Exported listing.json with %s entries", len(mapping))
@@ -466,6 +482,7 @@ class App:
             logger.debug("Invalid sync_max_records setting: %s", max_records)
 
         try:
+            entry_map = {e['name']: e for e in entries if not e.get('is_dir')}
             with session_scope(self.engine) as session:
                 names_to_check = list(server_names.union(set(to_remove)))
                 existing_map = {}
@@ -478,6 +495,25 @@ class App:
                         source_url = self.settings.webdav_url.rstrip('/') + '/' + self.settings.webdav_path.lstrip('/') + '/' + name
                         status = 'filled' if existing.get(name) else 'pending'
                         m = Meme(filename=name, source_url=source_url, status=status)
+                        try:
+                            entry = entry_map.get(name)
+                            if entry:
+                                date_str = entry.get('getlastmodified') or entry.get('modified') or entry.get('creationdate') or entry.get('getcreationdate')
+                                if date_str:
+                                    if isinstance(date_str, datetime.datetime):
+                                        m.created_at = date_str
+                                    else:
+                                        try:
+                                            import email.utils as _eu
+                                            dt = _eu.parsedate_to_datetime(date_str)
+                                            m.created_at = dt
+                                        except Exception:
+                                            try:
+                                                m.created_at = datetime.datetime.fromisoformat(date_str)
+                                            except Exception:
+                                                pass
+                        except Exception:
+                            pass
                         session.add(m)
                 
                 for name in to_remove:
@@ -549,11 +585,9 @@ class App:
             except Exception as exc:
                 logger.exception("Failed to write descriptions to listing.json: %s", exc)
 
-        # After syncing and processing, run deduplication analysis and persist groups
         try:
             with session_scope(self.engine) as session:
                 try:
-                    # clear previous persisted duplicate groups and links
                     old_links = session.exec(select(DBDupeLink)).all()
                     for l in old_links:
                         session.delete(l)
@@ -602,6 +636,12 @@ class App:
         created = 0
         updated = 0
         try:
+            try:
+                entries = self.storage.list_files('/', recursive=False)
+                entry_map = {e['name']: e for e in entries if not e.get('is_dir')}
+            except Exception:
+                entry_map = {}
+
             with session_scope(self.engine) as session:
                 names = list(mapping.keys())
                 existing_mems = {}
@@ -626,6 +666,45 @@ class App:
                     else:
                         source_url = self.settings.webdav_url.rstrip('/') + '/' + self.settings.webdav_path.lstrip('/') + '/' + name
                         m = Meme(filename=name, source_url=source_url, status='filled' if value else 'pending')
+
+                        created_dt = None
+                        try:
+                            if value:
+                                created_str = value.get('created_at')
+                                if created_str:
+                                    try:
+                                        created_dt = datetime.datetime.fromisoformat(created_str)
+                                    except Exception:
+                                        try:
+                                            import email.utils as _eu
+                                            created_dt = _eu.parsedate_to_datetime(created_str)
+                                        except Exception:
+                                            created_dt = None
+
+                            if not created_dt:
+                                entry = entry_map.get(name)
+                                if entry:
+                                        date_str = entry.get('getlastmodified') or entry.get('modified') or entry.get('creationdate') or entry.get('getcreationdate')
+                                        if date_str:
+                                            if isinstance(date_str, datetime.datetime):
+                                                created_dt = date_str
+                                            else:
+                                                try:
+                                                    import email.utils as _eu
+                                                    created_dt = _eu.parsedate_to_datetime(date_str)
+                                                except Exception:
+                                                    try:
+                                                        created_dt = datetime.datetime.fromisoformat(date_str)
+                                                    except Exception:
+                                                        created_dt = None
+                        except Exception:
+                            created_dt = None
+
+                        if created_dt:
+                            m.created_at = created_dt
+                        else:
+                            m.created_at = datetime.datetime.now(datetime.timezone.utc)
+
                         if value:
                             m.category = value.get('kategoria')
                             m.description = value.get('opis')
@@ -635,6 +714,29 @@ class App:
                             elif isinstance(kw, str):
                                 m.keywords = kw
                             m.text_in_image = value.get('tekst')
+                        
+                        try:
+                            ph = None
+                            if value:
+                                ph = value.get('phash')
+                            if ph:
+                                m.phash = ph
+                            else:
+                                try:
+                                    file_bytes = None
+                                    try:
+                                        file_bytes = self.storage.download_file(name)
+                                    except Exception as e:
+                                        logger.debug("Could not download %s to compute phash: %s", name, e)
+                                        file_bytes = None
+                                    if file_bytes:
+                                        computed = calculate_phash(file_bytes)
+                                        if computed:
+                                            m.phash = computed
+                                except Exception as e:
+                                    logger.debug("Failed to compute phash for %s during import: %s", name, e)
+                        except Exception:
+                            pass
                         session.add(m)
                         created += 1
                 session.commit()

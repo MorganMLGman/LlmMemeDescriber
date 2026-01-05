@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import sqlite3
+import time
 from typing import Any, Optional
 
 from sqlmodel import select
@@ -74,9 +75,19 @@ async def compute_and_persist_phash(filename: str, storage: Any, engine: Any, ti
                 except Exception:
                     pass
                 s.add(m)
-                s.commit()
-                s.refresh(m)
-                return phash
+                # Retry commit a few times for transient disk I/O errors with exponential backoff.
+                last_exc = None
+                for attempt in range(3):
+                    try:
+                        s.commit()
+                        s.refresh(m)
+                        return phash
+                    except Exception as commit_exc:
+                        last_exc = commit_exc
+                        # short backoff
+                        time.sleep(0.25 * (2 ** attempt))
+                # if we get here, all attempts failed; re-raise the last exception to be handled below
+                raise last_exc
         except Exception as e:
             # Detect sqlite readonly errors and provide actionable guidance.
             msg = str(e).lower()

@@ -2,6 +2,10 @@ import os
 from typing import Optional
 
 from sqlmodel import SQLModel, Session, create_engine, select
+from sqlalchemy import text
+import logging
+
+logger = logging.getLogger(__name__)
 
 from .models import Meme
 
@@ -18,6 +22,15 @@ def init_db(database_url: str = "sqlite:////data/memes.db"):
         pass
 
     engine = create_engine(database_url, echo=False, connect_args={"check_same_thread": False})
+    
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("PRAGMA journal_mode=WAL"))
+            conn.execute(text("PRAGMA synchronous=NORMAL"))
+            conn.execute(text("PRAGMA temp_store=MEMORY"))
+    except Exception as e:
+        logger.debug("Unable to set SQLite pragmas: %s", e)
+
     SQLModel.metadata.create_all(engine)
     return engine
 
