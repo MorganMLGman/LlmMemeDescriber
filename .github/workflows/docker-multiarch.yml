@@ -55,7 +55,6 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
           GITHUB_SHA: ${{ github.sha }}
         run: |
-          # Use full git SHA
           sha_full="${GITHUB_SHA}"
 
           # If REF_NAME is empty (workflow_dispatch without tag), only use full sha
@@ -65,8 +64,6 @@ jobs:
           fi
 
           ref="$REF_NAME"
-          # Keep leading 'v' in tags as requested (v1, v1.2, v1.2.3)
-          # Compute major and major.minor
           tag_no_v="${ref#v}"
           IFS='.' read -r major minor patch <<< "$tag_no_v"
 
@@ -76,7 +73,6 @@ jobs:
             minor_tag="v${major}.${minor}"
             tags_list="$tags_list $minor_tag"
           fi
-          # add latest
           tags_list="$tags_list latest"
 
           echo "tags=$tags_list" >> $GITHUB_OUTPUT
