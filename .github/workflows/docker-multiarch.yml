@@ -44,8 +44,10 @@ jobs:
       - name: Lowercase names
         id: names
         run: |
-          echo "dockerhub_username_lower=$(echo '${{ secrets.DOCKERHUB_USERNAME }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
-          echo "repo_owner_lower=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+          dockerhub_username_lower=$(echo '${{ secrets.DOCKERHUB_USERNAME }}' | tr '[:upper:]' '[:lower:]')
+          repo_owner_lower=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')
+          echo "dockerhub_username_lower=$dockerhub_username_lower" >> $GITHUB_OUTPUT
+          echo "repo_owner_lower=$repo_owner_lower" >> $GITHUB_OUTPUT
 
       - name: Build and push multi-arch image (manual dispatch — sha only)
         if: ${{ github.event_name == 'workflow_dispatch' }}
@@ -63,6 +65,8 @@ jobs:
             --platform linux/amd64,linux/arm64 \
             --tag ${{ steps.names.outputs.dockerhub_username_lower }}/llm-meme-describer:${{ github.sha }} \
             --tag ${{ steps.names.outputs.dockerhub_username_lower }}/llm-meme-describer:latest \
+            --tag ${{ steps.names.outputs.dockerhub_username_lower }}/llm-meme-describer:${{ github.ref_name }} \
             --tag ghcr.io/${{ steps.names.outputs.repo_owner_lower }}/llm-meme-describer:${{ github.sha }} \
             --tag ghcr.io/${{ steps.names.outputs.repo_owner_lower }}/llm-meme-describer:latest \
+            --tag ghcr.io/${{ steps.names.outputs.repo_owner_lower }}/llm-meme-describer:${{ github.ref_name }} \
             --push .
