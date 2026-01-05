@@ -1,7 +1,7 @@
 param(
     [string]$ImageName = "llm-meme-describer",
     [string]$Tag = "latest",
-    [string]$Platforms = "linux/amd64,linux/arm64,linux/arm/v7",
+    [string]$Platforms = "linux/amd64,linux/arm64",
     [string]$CacheMode = "local", # local or registry
     [string]$CacheRef = "", # when CacheMode=registry provide <repo>/cache:tag
     [switch]$Push

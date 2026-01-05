@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import sqlite3
 from typing import Any, Optional
 
 from sqlmodel import select
@@ -9,6 +10,7 @@ from .deduplication import calculate_phash
 from .models import Meme
 
 logger = logging.getLogger(__name__)
+_db_readonly_detected = False
 
 
 async def call_storage(storage: Any, method_name: str, *args, **kwargs) -> Any:
@@ -35,6 +37,11 @@ async def compute_and_persist_phash(filename: str, storage: Any, engine: Any, ti
 
     Returns the phash string on success, or None on failure.
     """
+    global _db_readonly_detected
+    if _db_readonly_detected:
+        logger.debug("Skipping phash persist for %s because DB previously detected as readonly", filename)
+        return None
+
     try:
         ext = filename.lower().rsplit('.', 1)[-1] if '.' in filename else ''
         if ext in (getattr(storage, 'VIDEO_EXTENSIONS', None) or []) or ext in ('mp4', 'mov', 'webm', 'mkv'):
@@ -71,7 +78,13 @@ async def compute_and_persist_phash(filename: str, storage: Any, engine: Any, ti
                 s.refresh(m)
                 return phash
         except Exception as e:
-            logger.exception("Failed to persist phash for %s: %s", filename, e)
+            # Detect sqlite readonly errors and provide actionable guidance.
+            msg = str(e).lower()
+            if isinstance(e, sqlite3.OperationalError) or 'readonly' in msg:
+                _db_readonly_detected = True
+                logger.error("Database appears to be in read-only mode; cannot persist phash for %s. ", filename)
+            else:
+                logger.exception("Failed to persist phash for %s: %s", filename, e)
             return None
 
     except Exception as e:

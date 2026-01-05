@@ -2,7 +2,7 @@
 set -euo pipefail
 IMAGE_NAME=${1:-llm-meme-describer}
 TAG=${2:-latest}
-PLATFORMS=${3:-linux/amd64,linux/arm64,linux/arm/v7}
+PLATFORMS=${3:-linux/amd64,linux/arm64}
 CACHE_MODE=${4:-local} # local or registry
 CACHE_REF=${5:-}       # when using registry cache provide <repo>/cache:tag
 PUSH=${6:-false}

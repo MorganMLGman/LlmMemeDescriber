@@ -1,26 +1,53 @@
-#!/bin/sh
-set -e
+#!/app/.venv/bin/python
+"""
+Python entrypoint to avoid relying on /bin/sh in hardened runtime images.
+Performs simple checks and execs the provided command.
+"""
+import os
+import sys
+import subprocess
 
-# Check user and /data writability
-UID=$(id -u 2>/dev/null || echo '?')
-GID=$(id -g 2>/dev/null || echo '?')
-USER=$(id -u -n 2>/dev/null || echo '?')
-echo "[startup] Running as: user=$USER uid=$UID gid=$GID"
 
-# Check /data is writable (fail immediately if not)
-if ! sh -c "printf '' > /data/.llm_mount_test" 2>/dev/null; then
-  echo "[startup] ERROR: /data is not writable. Aborting."
-  exit 1
-fi
-rm -f /data/.llm_mount_test 2>/dev/null || true
+def main():
+  # Activate venv by ensuring its bin is first in PATH
+  venv_bin = "/app/.venv/bin"
+  if os.path.isdir(venv_bin):
+    os.environ["PATH"] = venv_bin + ":" + os.environ.get("PATH", "")
+    print(f"[startup] Activated venv at {venv_bin}")
 
-# Standard single-server mode (FastAPI only with background worker)
-if [ "$#" -eq 0 ]; then
-  echo "[startup] ERROR: No command provided. entrypoint.sh requires CMD to be set in Dockerfile."
-  exit 1
-fi
+  try:
+    uid = os.getuid()
+    gid = os.getgid()
+    user = subprocess.check_output(["id", "-un"]).decode().strip()
+  except Exception:
+    uid = "?"
+    gid = "?"
+    user = "?"
 
-echo "[startup] Launching: $@"
-exec "$@"
+  print(f"[startup] Running as: user={user} uid={uid} gid={gid}")
+
+  # Check /data is writable
+  test_path = "/data/.llm_mount_test"
+  try:
+    with open(test_path, "w") as f:
+      f.write("")
+    os.remove(test_path)
+  except Exception:
+    print("[startup] ERROR: /data is not writable. Aborting.")
+    sys.exit(1)
+
+  if len(sys.argv) <= 1:
+    print("[startup] ERROR: No command provided. entrypoint requires CMD to be set in Dockerfile.")
+    sys.exit(1)
+
+  cmd = sys.argv[1:]
+  print("[startup] Launching: ", " ".join(cmd))
+
+  # Replace current process with the requested command
+  os.execvp(cmd[0], cmd)
+
+
+if __name__ == "__main__":
+  main()
 
 

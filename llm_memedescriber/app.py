@@ -59,7 +59,6 @@ async def lifespan(app_instance: FastAPI):
                 logger.info(f"Cleaned up {len(removed_memes)} removed memes from database")
     except Exception:
         logger.exception("Failed to clean up removed memes from database")
-
     storage = None
     if getattr(settings, 'webdav_url', None):
         base_url = settings.webdav_url.rstrip('/') + '/' + settings.webdav_path.lstrip('/')
@@ -142,8 +141,8 @@ async def lifespan(app_instance: FastAPI):
             if not storage:
                 logger.warning("Storage not configured, skipping phash initialization")
                 return
-
-            filenames = []
+            else:
+                filenames = []
             with session_scope(app_instance.state.engine) as session:
                 rows = session.exec(select(Meme).where(Meme.phash == None)).all()
                 filenames = [r.filename for r in rows]
@@ -188,9 +187,9 @@ async def lifespan(app_instance: FastAPI):
                 with session_scope(app_instance.state.engine) as session:
                     rows = session.exec(select(Meme)).all()
                     for r in rows:
-                        cache_path = _get_cache_path(m.filename)
+                        cache_path = _get_cache_path(r.filename)
                         if not os.path.isfile(cache_path):
-                            to_generate.append((m.filename, m.filename.lower().rsplit('.', 1)[-1] if '.' in m.filename else ''))
+                            to_generate.append((r.filename, r.filename.lower().rsplit('.', 1)[-1] if '.' in r.filename else ''))
 
                 if to_generate:
                     success = 0
