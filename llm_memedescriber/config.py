@@ -19,19 +19,21 @@ class Settings(BaseSettings):
     webdav_username: str | None = None
     webdav_password: str | None = None
     webdav_path: str | None = None
-    run_interval: str | None = None
+    run_interval: str = "15min"
     timezone: str = "UTC"
     export_listing_on_shutdown: bool = True
-    export_listing_interval: str | None = "24h"
+    export_listing_interval: str = "24h"
     max_generation_attempts: int = 3
     auto_start_worker: bool = True
     backfill_from_listing_on_empty_db: bool = True
 
     @field_validator("run_interval", "export_listing_interval")
     @classmethod
-    def validate_intervals(cls, v):
-        if v is None or (isinstance(v, str) and v.strip() == ""):
-            return v
+    def validate_intervals(cls, v, info):
+        if v is None:
+            raise ValueError(f"{info.field_name} cannot be None")
+        if isinstance(v, str) and v.strip() == "":
+            raise ValueError(f"{info.field_name} cannot be empty string")
         try:
             parse_interval(str(v))
             return v
@@ -43,6 +45,8 @@ class Settings(BaseSettings):
     def validate_max_attempts(cls, v):
         if int(v) < 1:
             raise ValueError("max_generation_attempts must be >= 1")
+        if int(v) > 10:
+            raise ValueError("max_generation_attempts must be <= 10")
         return int(v)
 
     @field_validator("google_genai_api_key", "webdav_url", "webdav_username", "webdav_password", mode="before")
@@ -119,7 +123,6 @@ def configure_logging(settings: Settings | None = None):
     else:
         root.setLevel(logging.INFO)
 
-    # Log effective root level for visibility
     logger.info("Logging configured; root level=%s", logging.getLevelName(root.level))
 
     noisy = ['httpx', 'httpcore', 'webdav4', 'urllib3']
