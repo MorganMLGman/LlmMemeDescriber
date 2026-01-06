@@ -1,6 +1,7 @@
 import datetime
 import logging
 import sys
+import os
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import field_validator, ValidationError
@@ -43,6 +44,31 @@ class Settings(BaseSettings):
         if int(v) < 1:
             raise ValueError("max_generation_attempts must be >= 1")
         return int(v)
+
+    @field_validator("google_genai_api_key", "webdav_url", "webdav_username", "webdav_password", mode="before")
+    @classmethod
+    def _prefer_docker_secret(cls, v, info):
+        """
+        Prefer Docker secrets mounted at /run/secrets/<NAME> over environment variables.
+        Tries secret files with the field name upper-cased and as-is.
+        """
+        secret = None
+        try:
+            candidates = [info.field_name.upper(), info.field_name]
+            for name in candidates:
+                path = f"/run/secrets/{name}"
+                if os.path.isfile(path):
+                    with open(path, "r", encoding="utf-8") as f:
+                        data = f.read().strip()
+                    if data:
+                        secret = data
+                        break
+        except Exception:
+            secret = None
+        if secret:
+            logger.debug("Using docker secret for %s", info.field_name)
+            return secret
+        return v
 
 
 def load_settings() -> Settings:
