@@ -21,18 +21,23 @@ class WebDavStorage:
         entries = self.client.ls(path)
         for entry in entries:
             if isinstance(entry, dict):
-                rel = entry.get('name') or entry.get('href') or str(entry)
-                full_path = rel if str(rel).startswith('/') else path.rstrip('/') + '/' + str(rel).lstrip('/')
-                name = str(rel).rstrip('/').split('/')[-1]
+                rel = entry.get('name') or entry.get('href')
+                if rel is None:
+                    continue
+                rel = str(rel)
+                full_path = rel if rel.startswith('/') else path.rstrip('/') + '/' + rel.lstrip('/')
+                name = rel.rstrip('/').split('/')[-1]
                 typ = entry.get('type') or entry.get('resource_type')
                 is_dir = None
                 if typ is not None:
                     is_dir = str(typ).lower() == 'directory'
-            else:
-                rel = str(entry)
+            elif isinstance(entry, str):
+                rel = entry
                 full_path = rel if rel.startswith('/') else path.rstrip('/') + '/' + rel.lstrip('/')
                 name = full_path.rstrip('/').split('/')[-1]
                 is_dir = None
+            else:
+                continue
 
             if is_dir is None:
                 is_dir = str(full_path).endswith('/')
@@ -42,9 +47,7 @@ class WebDavStorage:
                 'name': name,
                 'is_dir': is_dir,
             }
-            # propagate common date props returned by underlying client (if present)
             try:
-                # webdav4 / sabredav may return keys like 'getlastmodified', 'modified', 'creationdate', 'getcreationdate'
                 if isinstance(entry, dict):
                     for k in ('getlastmodified', 'modified', 'creationdate', 'getcreationdate'):
                         if k in entry and entry.get(k) is not None:
