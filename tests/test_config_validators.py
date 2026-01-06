@@ -2,7 +2,6 @@ import io
 import builtins
 import os
 import logging
-import sys
 
 import pytest
 from pydantic import ValidationError
