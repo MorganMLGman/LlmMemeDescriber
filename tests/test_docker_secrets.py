@@ -76,7 +76,7 @@ def test_whitespace_only_secret_fallbacks_to_env(monkeypatch):
     assert s.google_genai_api_key == "env-value"
 
 
-def test_open_raises_fallback_to_env(monkeypatch):
+def test_open_raises_falls_back_to_env(monkeypatch):
     secret_path = "/run/secrets/google_genai_api_key"
     monkeypatch.setattr(os.path, "isfile", lambda p: os.path.normpath(p) == os.path.normpath(secret_path))
 
