@@ -3,7 +3,6 @@ import urllib.parse
 
 import pytest
 
-from llm_memedescriber import constants
 from llm_memedescriber.constants import (
     _get_extension,
     is_supported,
