@@ -101,7 +101,7 @@ def test_localisoformatter_with_valid_and_invalid_tz():
     f4 = LocalISOFormatter(tz_name="America/New_York")
     s4 = f4.formatTime(R())
     assert "T" in s4
-    assert re.search(r"[+-]\d{2}:\d{2}$", s) or s.endswith("Z")
+    assert re.search(r"[+-]\d{2}:\d{2}$", s4) or s4.endswith("Z")
 
 def test_configure_logging_does_not_add_duplicate_handlers():
     snap = _snapshot_logging()
