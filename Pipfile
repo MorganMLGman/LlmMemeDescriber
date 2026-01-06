@@ -21,3 +21,4 @@ python_version = "3.14"
 
 [dev-packages]
 pytest = "*"
+pytest-html = "*"
