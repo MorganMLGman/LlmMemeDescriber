@@ -42,9 +42,19 @@ DEFAULT_STORAGE_CONCURRENCY = 2
 
 
 def _get_extension(filename: str) -> str:
-    """Extract file extension safely."""
-    ext = str(filename).lower().split('.')[-1] if '.' in filename else ''
-    return ext
+    """Extract file extension safely.
+
+    Strips surrounding whitespace and treats leading-dot filenames (e.g. ".hiddenfile")
+    as having no extension.
+    """
+    name = str(filename).strip().lower()
+    # find last dot position
+    idx = name.rfind('.')
+    # no dot or dot is the first character (hidden file without extension) => no ext
+    if idx <= 0:
+        return ''
+    return name[idx+1:]
+
 
 
 def is_supported(filename: str) -> bool:
@@ -72,20 +82,15 @@ def sanitize_filename(filename: str) -> str:
     Removes leading slashes, dots, and backslashes.
     Allows UTF-8 characters, spaces, alphanumeric, dash, underscore, dot (for extension).
     """
-    # Decode URL-encoded characters (e.g., %20 -> space, %C4%99 -> ę)
     filename = unquote(filename)
     
-    # Remove path traversal attempts
     sanitized = filename.split('/')[-1].split('\\')[-1]
     
-    # Remove leading dots and slashes
     sanitized = sanitized.lstrip('.' + '/\\')
     
     if len(sanitized) > MAX_FILENAME_LENGTH:
         raise ValueError(f"Invalid filename: exceeds maximum length of {MAX_FILENAME_LENGTH}")
     
-    # Allow UTF-8 characters, spaces, alphanumeric, dash, underscore, dot
-    # Block only dangerous characters: < > : " | ? * and control characters
     dangerous_chars = set('<>:"|?*\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f')
     sanitized = ''.join(c for c in sanitized if c not in dangerous_chars)
     
