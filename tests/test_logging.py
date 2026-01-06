@@ -1,7 +1,5 @@
 import logging
 
-import pytest
-
 from llm_memedescriber.config import Settings, configure_logging
 
 
