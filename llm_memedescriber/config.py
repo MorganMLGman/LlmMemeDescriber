@@ -19,10 +19,10 @@ class Settings(BaseSettings):
     webdav_username: str | None = None
     webdav_password: str | None = None
     webdav_path: str | None = None
-    run_interval: str | None = "15min"
+    run_interval: str = "15min"
     timezone: str = "UTC"
     export_listing_on_shutdown: bool = True
-    export_listing_interval: str | None = "24h"
+    export_listing_interval: str = "24h"
     max_generation_attempts: int = 3
     auto_start_worker: bool = True
     backfill_from_listing_on_empty_db: bool = True
