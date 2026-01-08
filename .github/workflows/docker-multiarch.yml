@@ -87,7 +87,6 @@ jobs:
             ${{ steps.names.outputs.dockerhub_username_lower }}/llm-meme-describer
             ghcr.io/${{ steps.names.outputs.repo_owner_lower }}/llm-meme-describer
           tags: |
-            type=ref,event=tag,pattern={{ref_name}}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}},enable=${{ !startsWith(github.ref, 'refs/tags/v0.') }}
@@ -107,9 +106,12 @@ jobs:
           DOCKERHUB_USER=${{ steps.names.outputs.dockerhub_username_lower }}
           GHCR_OWNER=${{ steps.names.outputs.repo_owner_lower }}
 
+          SHA=${{ github.sha }}
+          SHORT_SHA=${SHA:0:7}
+
           echo "tags<<EOF" >> $GITHUB_OUTPUT
-          echo "${DOCKERHUB_USER}/llm-meme-describer:${{ github.sha }}" >> $GITHUB_OUTPUT
-          echo "ghcr.io/${GHCR_OWNER}/llm-meme-describer:${{ github.sha }}" >> $GITHUB_OUTPUT
+          echo "${DOCKERHUB_USER}/llm-meme-describer:sha-${SHORT_SHA}" >> $GITHUB_OUTPUT
+          echo "ghcr.io/${GHCR_OWNER}/llm-meme-describer:sha-${SHORT_SHA}" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
           echo "labels<<EOF" >> $GITHUB_OUTPUT
