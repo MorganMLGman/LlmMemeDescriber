@@ -58,7 +58,7 @@ def load_test_image():
 @pytest.fixture
 def fake_storage_factory():
     def _make(fail_on=None):
-        return FakeStorage(fail_on=fail_on)
+        return FakeDeleteStorage(fail_on=fail_on)
     return _make
 
 
@@ -108,7 +108,7 @@ def hex_ones(k: int, shift: int = 0) -> str:
     return hex_from_val(val)
 
 
-class FakeStorage:
+class FakeDeleteStorage:
     def __init__(self, fail_on=None):
         self.deleted = []
         self.fail_on = set(fail_on or [])
@@ -118,8 +118,45 @@ class FakeStorage:
             raise RuntimeError("storage failure")
         self.deleted.append(name)
 
+class FakeStorage:
+    def __init__(self, content: bytes = None):
+        self.content = content
+        self.download_calls = 0
+        self.extract_calls = 0
 
-# Fake clients for storage tests
+    def download_file(self, filename):
+        self.download_calls += 1
+        return self.content
+
+    def extract_video_frame(self, filename, timestamp=1.0):
+        self.extract_calls += 1
+        return self.content
+
+
+class AsyncFakeStorage(FakeStorage):
+    async def async_download_file(self, filename):
+        self.download_calls += 1
+        return self.content
+
+    async def async_extract_video_frame(self, filename, timestamp=1.0):
+        self.extract_calls += 1
+        return self.content
+
+
+@pytest.fixture
+def fake_storage_content_factory():
+    def _make(content=None):
+        return FakeStorage(content=content)
+    return _make
+
+
+@pytest.fixture
+def fake_async_storage_factory():
+    def _make(content=None):
+        return AsyncFakeStorage(content=content)
+    return _make
+
+
 class FakeClient:
     def __init__(self, mapping):
         self.mapping = mapping
@@ -167,7 +204,6 @@ class FakeUploadClient:
         return True
 
 
-# Logging snapshot helpers
 def snapshot_logging():
     import logging
     root = logging.getLogger()
@@ -201,7 +237,6 @@ def restore_logging(snapshot):
             lg.addHandler(h)
 
 
-# Patching helpers
 def make_fake_open(secret_path: str, secret_content: str):
     import builtins, io, os
     real_open = builtins.open
@@ -214,7 +249,6 @@ def make_fake_open(secret_path: str, secret_content: str):
     return fake_open
 
 
-# Misc helpers
 def create_memes(session, items, model=None):
     """Create multiple model instances from dicts; defaults to Meme if model not provided."""
     if model is None:

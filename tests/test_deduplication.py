@@ -30,7 +30,7 @@ from tests._helpers import (
     hex_ones,
     hex_from_val,
     DATA_DIR,
-    FakeStorage,
+    FakeDeleteStorage,
 )
 
 
@@ -379,7 +379,7 @@ def test_mark_false_positive_handles_link_removal_exception(monkeypatch, caplog_
 
 def test_merge_duplicates_primary_missing_returns_false(in_memory_session):
     session = in_memory_session
-    storage = FakeStorage()
+    storage = FakeDeleteStorage()
     assert merge_duplicates(session, storage, "nope.png", ["a.png"]) is False
 
 
@@ -389,7 +389,7 @@ def test_merge_duplicates_no_duplicates_returns_false(in_memory_session):
     session.add(primary)
     session.commit()
 
-    storage = FakeStorage()
+    storage = FakeDeleteStorage()
     assert merge_duplicates(session, storage, "p.png", ["missing.png"]) is False
 
 
@@ -401,7 +401,7 @@ def test_merge_duplicates_merges_metadata_and_deletes(in_memory_session):
     session.add_all([primary, d1, d2])
     session.commit()
 
-    storage = FakeStorage()
+    storage = FakeDeleteStorage()
     res = merge_duplicates(session, storage, "prim.png", ["dup1.png", "dup2.png"], merge_metadata=True)
     assert res is True
 
@@ -425,7 +425,7 @@ def test_merge_duplicates_respects_metadata_sources(in_memory_session):
     session.add_all([primary, d1, d2])
     session.commit()
 
-    storage = FakeStorage()
+    storage = FakeDeleteStorage()
     res = merge_duplicates(session, storage, "prim2.png", ["dupA.png", "dupB.png"], merge_metadata=True, metadata_sources=["dupA.png"])
     assert res is True
 
@@ -442,7 +442,7 @@ def test_merge_duplicates_storage_delete_exception_is_logged(caplog_set_level, c
     session.add_all([primary, dup])
     session.commit()
 
-    storage = FakeStorage(fail_on={"bad.png"})
+    storage = FakeDeleteStorage(fail_on={"bad.png"})
     res = merge_duplicates(session, storage, "p3.png", ["bad.png"])
     assert res is True
 
@@ -467,7 +467,7 @@ def test_merge_duplicates_cleans_up_groups(in_memory_session):
     session.add_all([l1, l2, l3])
     session.commit()
 
-    storage = FakeStorage()
+    storage = FakeDeleteStorage()
     res = merge_duplicates(session, storage, "gprim.png", ["gdup1.png"], merge_metadata=False)
     assert res is True
 
@@ -487,7 +487,7 @@ def test_merge_duplicates_rolls_back_on_exception(monkeypatch, in_memory_session
     session.add_all([primary, dup])
     session.commit()
 
-    storage = FakeStorage()
+    storage = FakeDeleteStorage()
 
     def bad_commit():
         raise RuntimeError("commit failed")
