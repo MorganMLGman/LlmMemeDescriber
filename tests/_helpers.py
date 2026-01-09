@@ -51,3 +51,116 @@ class FakeStorage:
         if name in self.fail_on:
             raise RuntimeError("storage failure")
         self.deleted.append(name)
+
+
+# Fake clients for storage tests
+class FakeClient:
+    def __init__(self, mapping):
+        self.mapping = mapping
+
+    def ls(self, path):
+        if path == "RAISE":
+            raise RuntimeError("boom")
+        return self.mapping.get(path, [])
+
+
+class FakeClientOpen:
+    def __init__(self, content=None, raise_on_open=False):
+        self.content = content
+        self.raise_on_open = raise_on_open
+        self.open_calls = []
+
+    def open(self, path, mode='r'):
+        self.open_calls.append((path, mode))
+        if self.raise_on_open:
+            raise RuntimeError("open fail")
+        if isinstance(self.content, (bytes, bytearray)):
+            from io import BytesIO
+            return BytesIO(self.content)
+        from io import StringIO
+        return StringIO(self.content if self.content is not None else "")
+
+
+class FakeUploadClient:
+    def __init__(self, fail_times=0, fail_exc=None):
+        self.fail_times = fail_times
+        self.fail_exc = fail_exc
+        self.calls = 0
+        self.last_uploaded = None
+
+    def upload_fileobj(self, fileobj, target_path, overwrite=True):
+        self.calls += 1
+        data = fileobj.read()
+        if isinstance(data, str):
+            data = data.encode('utf-8')
+        self.last_uploaded = (target_path, data)
+        if self.calls <= self.fail_times:
+            if self.fail_exc is not None:
+                raise self.fail_exc
+            raise Exception('Locked or temporarily unavailable (423)')
+        return True
+
+
+# Logging snapshot helpers
+def snapshot_logging():
+    import logging
+    root = logging.getLogger()
+    snapshot = {
+        'root_level': root.level,
+        'root_handlers': list(root.handlers),
+        'levels': {},
+        'handlers': {},
+    }
+    names = ['alembic', 'alembic.runtime', 'google_genai', 'google_genai.models', 'uvicorn', 'uvicorn.error']
+    for n in names:
+        lg = logging.getLogger(n)
+        snapshot['levels'][n] = lg.level
+        snapshot['handlers'][n] = list(lg.handlers)
+    return snapshot
+
+
+def restore_logging(snapshot):
+    import logging
+    root = logging.getLogger()
+    root.handlers[:] = []
+    for h in snapshot['root_handlers']:
+        root.addHandler(h)
+    root.setLevel(snapshot['root_level'])
+
+    for n, lvl in snapshot['levels'].items():
+        lg = logging.getLogger(n)
+        lg.setLevel(lvl)
+        lg.handlers[:] = []
+        for h in snapshot['handlers'][n]:
+            lg.addHandler(h)
+
+
+# Patching helpers
+def make_fake_open(secret_path: str, secret_content: str):
+    import builtins, io, os
+    real_open = builtins.open
+
+    def fake_open(path, mode='r', encoding=None, *args, **kwargs):
+        if os.path.normpath(path) == os.path.normpath(secret_path):
+            return io.StringIO(secret_content)
+        return real_open(path, mode, encoding=encoding, *args, **kwargs)
+
+    return fake_open
+
+
+# Misc helpers
+def create_memes(session, items, model=None):
+    """Create multiple model instances from dicts; defaults to Meme if model not provided."""
+    if model is None:
+        from llm_memedescriber.models import Meme
+        model = Meme
+    objs = [model(**i) for i in items]
+    session.add_all(objs)
+    return objs
+
+
+def set_caplog_level(caplog, level, logger=None):
+    if logger:
+        caplog.set_level(level, logger=logger)
+    else:
+        caplog.set_level(level)

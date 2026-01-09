@@ -7,49 +7,7 @@ import pytest
 from llm_memedescriber.storage import WebDavStorage
 from llm_memedescriber.constants import MAX_WEBDAV_RETRY_ATTEMPTS
 
-class FakeClient:
-    def __init__(self, mapping):
-        self.mapping = mapping
-
-    def ls(self, path):
-        if path == "RAISE":
-            raise RuntimeError("boom")
-        return self.mapping.get(path, [])
-
-
-class FakeClientOpen:
-    def __init__(self, content=None, raise_on_open=False):
-        self.content = content
-        self.raise_on_open = raise_on_open
-        self.open_calls = []
-
-    def open(self, path, mode='r'):
-        self.open_calls.append((path, mode))
-        if self.raise_on_open:
-            raise RuntimeError("open fail")
-        if isinstance(self.content, (bytes, bytearray)):
-            return _io.BytesIO(self.content)
-        return _io.StringIO(self.content if self.content is not None else "")
-
-
-class FakeUploadClient:
-    def __init__(self, fail_times=0, fail_exc=None):
-        self.fail_times = fail_times
-        self.fail_exc = fail_exc
-        self.calls = 0
-        self.last_uploaded = None
-
-    def upload_fileobj(self, fileobj, target_path, overwrite=True):
-        self.calls += 1
-        data = fileobj.read()
-        if isinstance(data, str):
-            data = data.encode('utf-8')
-        self.last_uploaded = (target_path, data)
-        if self.calls <= self.fail_times:
-            if self.fail_exc is not None:
-                raise self.fail_exc
-            raise Exception('Locked or temporarily unavailable (423)')
-        return True
+from tests._helpers import FakeClient, FakeClientOpen, FakeUploadClient
 
 
 def test_list_files_handles_dicts_and_strings_and_metadata():

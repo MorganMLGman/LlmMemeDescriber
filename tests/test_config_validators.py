@@ -11,15 +11,7 @@ import llm_memedescriber.config as config
 from llm_memedescriber.config import Settings, parse_interval
 
 
-def _make_fake_open(secret_path: str, secret_content: str):
-    real_open = builtins.open
-
-    def fake_open(path, mode='r', encoding=None, *args, **kwargs):
-        if os.path.normpath(path) == os.path.normpath(secret_path):
-            return io.StringIO(secret_content)
-        return real_open(path, mode, encoding=encoding, *args, **kwargs)
-
-    return fake_open
+from tests._helpers import make_fake_open
 
 
 def test_max_generation_attempts_zero_raises():
@@ -48,7 +40,7 @@ def test_export_listing_interval_rejects_empty_and_none():
 def test_webdav_secrets_prefer_secret_over_env(monkeypatch):
     secret_path = "/run/secrets/webdav_password"
     monkeypatch.setattr(os.path, "isfile", lambda p: os.path.normpath(p) == os.path.normpath(secret_path))
-    monkeypatch.setattr(builtins, "open", _make_fake_open(secret_path, "super-secret\n"))
+    monkeypatch.setattr(builtins, "open", make_fake_open(secret_path, "super-secret\n"))
 
     s = Settings(webdav_password="env-pass")
     assert s.webdav_password == "super-secret"
