@@ -30,10 +30,8 @@ class Settings(BaseSettings):
     @field_validator("run_interval", "export_listing_interval")
     @classmethod
     def validate_intervals(cls, v, info):
-        if v is None:
-            raise ValueError(f"{info.field_name} cannot be None")
-        if isinstance(v, str) and v.strip() == "":
-            raise ValueError(f"{info.field_name} cannot be empty string")
+        if v is None or (isinstance(v, str) and v.strip() == ""):
+            raise ValueError(f"{info.field_name} cannot be None or empty string")
         try:
             parse_interval(str(v))
             return v
