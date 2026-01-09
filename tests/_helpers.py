@@ -21,10 +21,76 @@ def create_in_memory_session():
             pass
 
 
-def load_test_image(name: str) -> bytes:
+def load_test_image_bytes(name: str) -> bytes:
     path = DATA_DIR / name
     with open(path, "rb") as f:
         return f.read()
+
+
+# ---- pytest fixtures ----
+import pytest
+from sqlmodel import Session, create_engine
+
+
+@pytest.fixture
+def in_memory_session():
+    """Provide a SQLModel session backed by a fresh in-memory sqlite DB."""
+    engine = create_engine("sqlite:///:memory:", echo=False)
+    SQLModel.metadata.create_all(engine)
+    try:
+        with Session(engine) as session:
+            yield session
+    finally:
+        try:
+            engine.dispose()
+        except Exception:
+            pass
+
+
+@pytest.fixture
+def load_test_image():
+    """Fixture that returns a callable to load test images by name."""
+    def _loader(name: str) -> bytes:
+        return load_test_image_bytes(name)
+    return _loader
+
+
+@pytest.fixture
+def fake_storage_factory():
+    def _make(fail_on=None):
+        return FakeStorage(fail_on=fail_on)
+    return _make
+
+
+@pytest.fixture
+def fake_client_factory():
+    def _make(mapping):
+        return FakeClient(mapping)
+    return _make
+
+
+@pytest.fixture
+def fake_client_open_factory():
+    def _make(content=None, raise_on_open=False):
+        return FakeClientOpen(content=content, raise_on_open=raise_on_open)
+    return _make
+
+
+@pytest.fixture
+def fake_upload_client_factory():
+    def _make(fail_times=0, fail_exc=None):
+        return FakeUploadClient(fail_times=fail_times, fail_exc=fail_exc)
+    return _make
+
+
+@pytest.fixture
+def caplog_set_level(caplog):
+    def _set(level, logger=None):
+        if logger:
+            caplog.set_level(level, logger=logger)
+        else:
+            caplog.set_level(level)
+    return _set
 
 
 def mask_ones_val(k: int) -> int:

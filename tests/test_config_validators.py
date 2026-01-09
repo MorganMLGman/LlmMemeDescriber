@@ -46,10 +46,10 @@ def test_webdav_secrets_prefer_secret_over_env(monkeypatch):
     assert s.webdav_password == "super-secret"
 
 
-def test_load_settings_exits_on_validation_error(monkeypatch, caplog):
+def test_load_settings_exits_on_validation_error(monkeypatch, caplog_set_level, caplog):
     monkeypatch.setenv('MAX_GENERATION_ATTEMPTS', '0')
 
-    caplog.set_level(logging.ERROR)
+    caplog_set_level(logging.ERROR)
     with pytest.raises(SystemExit):
         config.load_settings()
     assert any('Configuration error' in r.message for r in caplog.records)

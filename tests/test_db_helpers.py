@@ -7,33 +7,46 @@ import llm_memedescriber.db_helpers as db_helpers
 from llm_memedescriber.db_helpers import session_scope
 
 
-def test_session_scope_logs_open_and_close(caplog):
-    caplog.set_level(logging.DEBUG)
+def test_session_scope_logs_open_and_close(caplog_set_level, caplog):
+    caplog_set_level(logging.DEBUG)
     engine = create_engine("sqlite:///:memory:")
 
-    with session_scope(engine) as sess:
-        assert sess is not None
-
-    messages = "\n".join(r.getMessage() for r in caplog.records)
-    assert "Opening DB session" in messages
-    assert "Closed DB session" in messages
-
-
-def test_session_scope_closes_even_on_error(caplog):
-    caplog.set_level(logging.DEBUG)
-    engine = create_engine("sqlite:///:memory:")
-
-    with pytest.raises(RuntimeError):
+    try:
         with session_scope(engine) as sess:
-            raise RuntimeError("boom")
+            assert sess is not None
 
-    messages = "\n".join(r.getMessage() for r in caplog.records)
-    assert "Opening DB session" in messages
-    assert "Closed DB session" in messages
+        messages = "\n".join(r.getMessage() for r in caplog.records)
+        assert "Opening DB session" in messages
+        assert "Closed DB session" in messages
+    finally:
+        # Ensure SQLAlchemy engine disposes its underlying connection
+        try:
+            engine.dispose()
+        except Exception:
+            pass
 
 
-def test_session_scope_handles_close_exception(monkeypatch, caplog):
-    caplog.set_level(logging.ERROR)
+def test_session_scope_closes_even_on_error(caplog_set_level, caplog):
+    caplog_set_level(logging.DEBUG)
+    engine = create_engine("sqlite:///:memory:")
+
+    try:
+        with pytest.raises(RuntimeError):
+            with session_scope(engine) as sess:
+                raise RuntimeError("boom")
+
+        messages = "\n".join(r.getMessage() for r in caplog.records)
+        assert "Opening DB session" in messages
+        assert "Closed DB session" in messages
+    finally:
+        try:
+            engine.dispose()
+        except Exception:
+            pass
+
+
+def test_session_scope_handles_close_exception(monkeypatch, caplog_set_level, caplog):
+    caplog_set_level(logging.ERROR)
 
     class BadSession:
         def __init__(self, engine):
@@ -52,7 +65,6 @@ def test_session_scope_handles_close_exception(monkeypatch, caplog):
     messages = "\n".join(r.getMessage() for r in caplog.records)
     assert "Failed to close DB session" in messages
 
-
 class TestItem(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str
@@ -63,16 +75,22 @@ def test_session_scope_commits_and_persists(tmp_path):
     engine = create_engine(f"sqlite:///{db_file}")
     SQLModel.metadata.create_all(engine)
 
-    with session_scope(engine) as sess:
-        item = TestItem(name="persisted")
-        sess.add(item)
-        sess.commit()
+    try:
+        with session_scope(engine) as sess:
+            item = TestItem(name="persisted")
+            sess.add(item)
+            sess.commit()
 
-    # verify using a new session
-    with Session(engine) as s:
-        rows = s.exec(SQLModel.metadata.tables["testitem"].select()).all()
-        # There should be at least one row
-        assert len(rows) >= 1
+        # verify using a new session
+        with Session(engine) as s:
+            rows = s.exec(SQLModel.metadata.tables["testitem"].select()).all()
+            # There should be at least one row
+            assert len(rows) >= 1
+    finally:
+        try:
+            engine.dispose()
+        except Exception:
+            pass
 
 
 def test_session_scope_does_not_persist_without_commit(tmp_path):
@@ -80,14 +98,20 @@ def test_session_scope_does_not_persist_without_commit(tmp_path):
     engine = create_engine(f"sqlite:///{db_file}")
     SQLModel.metadata.create_all(engine)
 
-    with pytest.raises(RuntimeError):
-        with session_scope(engine) as sess:
-            item = TestItem(name="notpersisted")
-            sess.add(item)
-            # don't commit; raise an error to exit
-            raise RuntimeError("boom")
+    try:
+        with pytest.raises(RuntimeError):
+            with session_scope(engine) as sess:
+                item = TestItem(name="notpersisted")
+                sess.add(item)
+                # don't commit; raise an error to exit
+                raise RuntimeError("boom")
 
-    # verify nothing was persisted
-    with Session(engine) as s:
-        rows = s.exec(SQLModel.metadata.tables["testitem"].select()).all()
-        assert len(rows) == 0
+        # verify nothing was persisted
+        with Session(engine) as s:
+            rows = s.exec(SQLModel.metadata.tables["testitem"].select()).all()
+            assert len(rows) == 0
+    finally:
+        try:
+            engine.dispose()
+        except Exception:
+            pass

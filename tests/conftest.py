@@ -1,14 +1,14 @@
 import os
 import sys
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
-
-
 from pathlib import Path
 from PIL import Image
 
+from _helpers import *
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
 def _ensure_test_images():
     data_dir = Path(__file__).parent / "data"
@@ -83,3 +83,4 @@ def _ensure_test_images():
 
 
 _ensure_test_images()
+
