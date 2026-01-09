@@ -25,44 +25,14 @@ from llm_memedescriber.deduplication import (
 from llm_memedescriber.models import Meme, Duplicate, DuplicateGroup, MemeDuplicateGroup
 from llm_memedescriber.constants import DUPLICATE_THRESHOLD
 
-DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
-
-
-@contextmanager
-def create_in_memory_session():
-    engine = create_engine("sqlite:///:memory:", echo=False)
-    SQLModel.metadata.create_all(engine)
-    try:
-        with Session(engine) as session:
-            yield session
-    finally:
-        try:
-            engine.dispose()
-        except Exception:
-            pass
-
-
-def mask_ones_val(k: int) -> int:
-    """Return integer with lower k bits set (0 <= k <= 64)."""
-    if k <= 0:
-        return 0
-    return (1 << k) - 1
-
-
-def hex_from_val(val: int) -> str:
-    return f"{val & ((1 << 64) - 1):016x}"
-
-
-def hex_ones(k: int, shift: int = 0) -> str:
-    """Return hex phash with k ones shifted left by `shift` bits."""
-    val = mask_ones_val(k) << shift
-    return hex_from_val(val)
-
-
-def load_test_image(name: str) -> bytes:
-    path = os.path.join(DATA_DIR, name)
-    with open(path, "rb") as f:
-        return f.read()
+from tests._helpers import (
+    create_in_memory_session,
+    load_test_image,
+    hex_ones,
+    hex_from_val,
+    DATA_DIR,
+    FakeStorage,
+)
 
 
 def test_calculate_phash_returns_hex_for_rgb_image():
@@ -413,15 +383,6 @@ def test_mark_false_positive_handles_link_removal_exception(monkeypatch, caplog)
         assert 'msg' in called and "Failed to remove meme-group links for false-positive marking" in called['msg']
 
 
-class FakeStorage:
-    def __init__(self, fail_on=None):
-        self.deleted = []
-        self.fail_on = set(fail_on or [])
-
-    def delete_file(self, name):
-        if name in self.fail_on:
-            raise RuntimeError("storage failure")
-        self.deleted.append(name)
 
 
 def test_merge_duplicates_primary_missing_returns_false():
