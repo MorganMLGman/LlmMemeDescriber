@@ -5,9 +5,10 @@ import logging
 
 import pytest
 from pydantic import ValidationError
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import llm_memedescriber.config as config
-from llm_memedescriber.config import Settings
+from llm_memedescriber.config import Settings, parse_interval
 
 
 def _make_fake_open(secret_path: str, secret_content: str):
@@ -88,6 +89,15 @@ def test_run_interval_rejects_whitespace_string():
     with pytest.raises(ValidationError):
         Settings(run_interval="   ")
 
+def test_run_interval_rejects_none():
+    with pytest.raises(ValidationError) as exc:
+        Settings(run_interval=None)
+    assert "None" in str(exc.value)
+
+def test_run_interval_parses_valid_string():
+    s = Settings(run_interval="10m")
+    assert s.run_interval == "10m"
+
 
 def test_export_listing_interval_rejects_whitespace():
     with pytest.raises(ValidationError):
@@ -139,3 +149,20 @@ def test_env_empty_string_preserved(monkeypatch):
     monkeypatch.setattr(os.path, "isfile", lambda p: False)
     s = Settings(webdav_password="")
     assert s.webdav_password == ""
+
+
+def test_config_raises_when_run_interval_none(monkeypatch):
+    monkeypatch.setattr(os.path, "isfile", lambda p: False)
+    with pytest.raises(ValueError):
+        Settings(run_interval=None)
+
+
+def test_local_iso_formatter_uses_timezone():
+    ZoneInfo('UTC')
+
+    fmt = config.LocalISOFormatter(tz_name='UTC')
+    record = logging.LogRecord(name="test", level=logging.INFO, pathname=__file__, lineno=1, msg="x", args=(), exc_info=None)
+    record.created = 0.0
+    s = fmt.formatTime(record)
+    assert s.startswith('1970-01-01T00:00:00.')
+    assert s.endswith('+00:00')
