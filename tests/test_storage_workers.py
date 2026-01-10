@@ -309,3 +309,47 @@ def test_shutdown_wait_flag_is_forwarded():
 
     pool.shutdown(wait=False)
     assert called.get('wait') is False
+
+
+def test_upload_transient_failure_then_success():
+    from io import BytesIO
+
+    class U:
+        def __init__(self):
+            self.calls = 0
+
+        def upload_fileobj(self, fobj, target_path, overwrite=True):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError('temporal')
+            return True
+
+    storage = U()
+    pool = StorageWorkerPool(storage_adapter=storage, max_workers=1, max_concurrent=1)
+
+    f = BytesIO(b'data')
+    with pytest.raises(RuntimeError):
+        pool.upload_fileobj(f, 't')
+
+    f2 = BytesIO(b'data')
+    assert pool.upload_fileobj(f2, 't') is True
+
+    pool.shutdown()
+
+
+def test_run_timeout_raises():
+    import time
+    from concurrent.futures import TimeoutError
+
+    class Slow:
+        def slow(self, _):
+            time.sleep(0.1)
+            return 'x'
+
+    storage = Slow()
+    pool = StorageWorkerPool(storage_adapter=storage, max_workers=1)
+
+    with pytest.raises(TimeoutError):
+        pool.run(storage.slow, 'a', timeout=0.01)
+
+    pool.shutdown()
