@@ -128,7 +128,7 @@ jobs:
 
       - name: Import check (amd64)
         run: |
-          docker run --rm --entrypoint /app/.venv/bin/python llm-meme-describer:check-${{ github.sha }}-amd64 -c "import pydantic_core._pydantic_core; print('OK')"
+          docker run --rm --platform linux/amd64 --entrypoint /app/.venv/bin/python llm-meme-describer:check-${{ github.sha }}-amd64 -c "import pydantic_core._pydantic_core; print('OK')"
 
   push:
     needs: [check-arm64, check-amd64]

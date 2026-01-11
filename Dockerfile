@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM dhi.io/python:3.14-debian13-dev AS builder
+FROM dhi.io/python:3.14-debian13-dev AS builder
 
 ARG TARGETPLATFORM=linux/amd64
 WORKDIR /app
@@ -54,7 +54,7 @@ COPY --chmod=0755 entrypoint.sh /app/entrypoint.sh
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD ["python3","-c","import urllib.request,sys;\ntry:\n  urllib.request.urlopen('http://localhost:8000')\nexcept Exception:\n  sys.exit(1)"]
+  CMD ["/app/.venv/bin/python","-c","import urllib.request,sys;\ntry:\n  urllib.request.urlopen('http://localhost:8000')\nexcept Exception:\n  sys.exit(1)"]
 
-ENTRYPOINT ["/app/.venv/bin/python","/app/entrypoint.sh"]
+ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["python", "-m", "uvicorn", "llm_memedescriber.app:app", "--host", "0.0.0.0", "--port", "8000", "--log-level", "info", "--no-access-log"]
