@@ -5,8 +5,10 @@ WORKDIR /app
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-       gcc libffi-dev libssl-dev wget xz-utils ca-certificates \
+       gcc libffi-dev libssl-dev wget xz-utils ca-certificates rustc cargo \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+RUN python3 -m pip install --upgrade pip setuptools wheel
 
 RUN set -xe \
     && case "$TARGETPLATFORM" in \
