@@ -144,6 +144,34 @@ jobs:
 
 
 
+      - name: Build and test arm64 image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          push: false
+          load: true
+          tags: ${{ steps.names.outputs.dockerhub_username_lower }}/llm-meme-describer:check-${{ github.sha }}-arm64
+
+      - name: Import check (arm64)
+        run: |
+          docker run --rm ${{ steps.names.outputs.dockerhub_username_lower }}/llm-meme-describer:check-${{ github.sha }}-arm64 \
+            /app/.venv/bin/python -c "import pydantic_core._pydantic_core; print('OK')"
+
+      - name: Build and test amd64 image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: ${{ steps.names.outputs.dockerhub_username_lower }}/llm-meme-describer:check-${{ github.sha }}-amd64
+
+      - name: Import check (amd64)
+        run: |
+          docker run --rm ${{ steps.names.outputs.dockerhub_username_lower }}/llm-meme-describer:check-${{ github.sha }}-amd64 \
+            /app/.venv/bin/python -c "import pydantic_core._pydantic_core; print('OK')"
+
       - name: Build and push multi-arch image
         uses: docker/build-push-action@v6
         with:

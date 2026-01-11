@@ -8,14 +8,8 @@ on:
   workflow_dispatch:
   push:
     branches: [ main ]
-    paths:
-      - 'llm_memedescriber/**'
-      - 'tests/**'
   pull_request:
     branches: [ main ]
-    paths:
-      - 'llm_memedescriber/**'
-      - 'tests/**'
 
 jobs:
   test:
