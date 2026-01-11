@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 from PIL import Image
 
-from ._helpers import *
+from _helpers import *
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT not in sys.path:
