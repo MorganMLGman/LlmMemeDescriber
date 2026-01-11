@@ -289,3 +289,58 @@ def test_compute_and_persist_phash_video_extract_returns_str(monkeypatch):
         got = asyncio.run(storage_helpers.compute_and_persist_phash('vs.mp4', VideoStorage2(), eng))
         assert got == 'phashS'
 
+
+def test_compute_and_persist_phash_calculate_phash_raises(monkeypatch):
+    storage = SyncStorage(b'data')
+    monkeypatch.setattr(storage_helpers, '_db_readonly_detected', False)
+
+    def bad_phash(data):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(storage_helpers, 'calculate_phash', bad_phash)
+
+    with make_engine() as eng:
+        from sqlmodel import Session
+        with Session(eng) as s:
+            s.add(Meme(filename='err.png'))
+            s.commit()
+
+        got = asyncio.run(storage_helpers.compute_and_persist_phash('err.png', storage, eng))
+        assert got is None
+
+
+def test_compute_and_persist_phash_commit_sets_flag_on_readonly_in_message(monkeypatch):
+    class FakeSession:
+        def exec(self, q):
+            class Q:
+                def first(inner):
+                    return Meme(filename='r2.png')
+            return Q()
+
+        def add(self, m):
+            self.added = m
+
+        def refresh(self, m):
+            pass
+
+        def commit(self):
+            raise Exception('something readonly happened')
+
+        def close(self):
+            pass
+
+    @contextmanager
+    def fake_scope(engine):
+        yield FakeSession()
+
+    monkeypatch.setattr(storage_helpers, 'session_scope', fake_scope)
+    monkeypatch.setattr(storage_helpers, 'calculate_phash', lambda data: 'p2')
+    monkeypatch.setattr(storage_helpers, '_db_readonly_detected', False)
+
+    class S:
+        def download_file(self, f):
+            return b'd'
+
+    got = asyncio.run(storage_helpers.compute_and_persist_phash('r2.png', S(), object()))
+    assert got is None
+    assert storage_helpers._db_readonly_detected is True
+

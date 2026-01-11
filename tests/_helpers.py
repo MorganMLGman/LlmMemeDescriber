@@ -1,8 +1,9 @@
 """Shared test helpers for image and DB utilities used across tests."""
 from contextlib import contextmanager
 from pathlib import Path
-from typing import List
+import pytest
 from sqlmodel import SQLModel, create_engine, Session
+
 
 DATA_DIR = Path(__file__).parent / "data"
 
@@ -25,11 +26,6 @@ def load_test_image_bytes(name: str) -> bytes:
     path = DATA_DIR / name
     with open(path, "rb") as f:
         return f.read()
-
-
-# ---- pytest fixtures ----
-import pytest
-from sqlmodel import Session, create_engine
 
 
 @pytest.fixture
@@ -158,13 +154,60 @@ def fake_async_storage_factory():
 
 
 class FakeClient:
-    def __init__(self, mapping):
+    def __init__(self, mapping, file_contents=None, raise_on_open=False, upload_fail_exc=None, remove_fail_exc=None):
+        """Simple fake client for directory listings and basic file ops.
+
+        mapping: dict used for ls(path) -> list
+        file_contents: dict mapping path -> content (bytes or str) for open()
+        raise_on_open: if True, open() raises RuntimeError
+        upload_fail_exc: exception instance to raise from upload_fileobj
+        remove_fail_exc: exception instance to raise from remove
+        """
         self.mapping = mapping
+        self.file_contents = file_contents or {}
+        self.raise_on_open = raise_on_open
+        self.upload_fail_exc = upload_fail_exc
+        self.remove_fail_exc = remove_fail_exc
+        self.open_calls = []
+        self.last_uploaded = None
 
     def ls(self, path):
         if path == "RAISE":
             raise RuntimeError("boom")
         return self.mapping.get(path, [])
+
+    def open(self, path, mode='r'):
+        self.open_calls.append((path, mode))
+        if self.raise_on_open:
+            raise RuntimeError("open fail")
+        if path not in self.file_contents:
+            raise FileNotFoundError('not found')
+        content = self.file_contents[path]
+        if isinstance(content, (bytes, bytearray)):
+            from io import BytesIO
+            return BytesIO(content)
+        from io import StringIO
+        return StringIO(content)
+
+    def upload_fileobj(self, fileobj, target_path, overwrite=True):
+        if self.upload_fail_exc is not None:
+            raise self.upload_fail_exc
+        data = fileobj.read()
+        if isinstance(data, str):
+            data = data.encode('utf-8')
+        self.last_uploaded = (target_path, data)
+        return True
+
+    def remove(self, path):
+        if self.remove_fail_exc is not None:
+            raise self.remove_fail_exc
+        # emulate removal; if path not present, raise FileNotFoundError
+        if path not in self.mapping and path not in self.file_contents:
+            raise FileNotFoundError('not found')
+        # remove from file_contents if present
+        self.file_contents.pop(path, None)
+        self.mapping.pop(path, None)
+        return True
 
 
 class FakeClientOpen:

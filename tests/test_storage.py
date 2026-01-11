@@ -1,6 +1,7 @@
 import io as _io
 import json
 import time
+import subprocess
 
 import pytest
 
@@ -361,3 +362,213 @@ def test_download_file_raises_filenotfound_on_exception_class_name_notfound():
     with pytest.raises(FileNotFoundError):
         s.download_file('x')        
 
+
+def test_download_file_raises_filenotfound_on_message_does_not_exist():
+    class FakeClient:
+        def open(self, path, mode='rb'):
+            raise Exception('Does not exist')
+
+    s = WebDavStorage('http://example')
+    s.client = FakeClient()
+
+    with pytest.raises(FileNotFoundError):
+        s.download_file('x')
+
+
+def test_download_file_raises_filenotfound_on_message_resource_not_found():
+    class FakeClient:
+        def open(self, path, mode='rb'):
+            raise Exception('Resource not found')
+
+    s = WebDavStorage('http://example')
+    s.client = FakeClient()
+
+    with pytest.raises(FileNotFoundError):
+        s.download_file('x')
+
+
+def test_download_file_raises_ioerror_on_other_exception():
+    class FakeClient:
+        def open(self, path, mode='rb'):
+            raise Exception('permission denied')
+
+    s = WebDavStorage('http://example')
+    s.client = FakeClient()
+
+    with pytest.raises(IOError):
+        s.download_file('x')
+
+
+def test_extract_video_frame_success(monkeypatch):
+    s = WebDavStorage('http://example')
+    monkeypatch.setattr(WebDavStorage, 'download_file', lambda self, p: b'video-data')
+    def fake_run(cmd, *args, **kwargs):
+        tmp_frame = cmd[-1]
+        with open(tmp_frame, 'wb') as f:
+            f.write(b'jpeg-data')
+        class R:
+            returncode = 0
+            stderr = b''
+        return R()
+    monkeypatch.setattr(subprocess, 'run', fake_run)
+    out = s.extract_video_frame('video.mp4', timestamp=1.0)
+    assert out == b'jpeg-data'
+
+
+def test_extract_video_frame_fallback_on_short_video(monkeypatch):
+    s = WebDavStorage('http://example')
+    monkeypatch.setattr(WebDavStorage, 'download_file', lambda self, p: b'video-data')
+    def fake_run(cmd, *args, **kwargs):
+        fake_run.calls += 1
+        if fake_run.calls == 1:
+            class R:
+                returncode = 1
+                stderr = b'Immediate exit requested'
+            return R()
+        else:
+            tmp_frame = cmd[-1]
+            with open(tmp_frame, 'wb') as f:
+                f.write(b'jpeg-fallback')
+            class R:
+                returncode = 0
+                stderr = b''
+            return R()
+    fake_run.calls = 0
+    monkeypatch.setattr(subprocess, 'run', fake_run)
+    out = s.extract_video_frame('short.mp4', timestamp=10.0)
+    assert out == b'jpeg-fallback'
+
+
+def test_extract_video_frame_fallback_fails_raises(monkeypatch):
+    s = WebDavStorage('http://example')
+    monkeypatch.setattr(WebDavStorage, 'download_file', lambda self, p: b'video-data')
+    def fake_run(cmd, *args, **kwargs):
+        fake_run.calls += 1
+        if fake_run.calls == 1:
+            class R:
+                returncode = 1
+                stderr = b'Immediate exit requested'
+            return R()
+        else:
+            class R:
+                returncode = 1
+                stderr = b'fallback fail'
+            return R()
+    fake_run.calls = 0
+    monkeypatch.setattr(subprocess, 'run', fake_run)
+    with pytest.raises(IOError):
+        s.extract_video_frame('short.mp4', timestamp=10.0)
+
+
+def test_extract_video_frame_timeout_raises(monkeypatch):
+    s = WebDavStorage('http://example')
+    monkeypatch.setattr(WebDavStorage, 'download_file', lambda self, p: b'video-data')
+    def fake_run(cmd, *args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, kwargs.get('timeout', 1))
+    monkeypatch.setattr(subprocess, 'run', fake_run)
+    with pytest.raises(IOError):
+        s.extract_video_frame('video.mp4', timestamp=1.0)
+
+
+def test_extract_video_frame_no_output_raises(monkeypatch):
+    s = WebDavStorage('http://example')
+    monkeypatch.setattr(WebDavStorage, 'download_file', lambda self, p: b'video-data')
+    def fake_run(cmd, *args, **kwargs):
+        class R:
+            returncode = 0
+            stderr = b''
+        return R()
+    monkeypatch.setattr(subprocess, 'run', fake_run)
+    with pytest.raises(IOError):
+        s.extract_video_frame('video.mp4', timestamp=1.0)
+
+
+def test_extract_video_frame_download_filenotfound(monkeypatch):
+    s = WebDavStorage('http://example')
+    def dl(self, p):
+        raise FileNotFoundError('missing')
+    monkeypatch.setattr(WebDavStorage, 'download_file', dl)
+    with pytest.raises(FileNotFoundError):
+        s.extract_video_frame('video.mp4', timestamp=1.0)
+
+
+def test_extract_video_frame_ffmpeg_non_immediate_failure_raises(monkeypatch):
+    s = WebDavStorage('http://example')
+    monkeypatch.setattr(WebDavStorage, 'download_file', lambda self, p: b'video-data')
+    def fake_run(cmd, *args, **kwargs):
+        class R:
+            returncode = 1
+            stderr = b'unsupported codec or file'
+        return R()
+    monkeypatch.setattr(subprocess, 'run', fake_run)
+    with pytest.raises(IOError) as excinfo:
+        s.extract_video_frame('video.mp4', timestamp=1.0)
+    assert 'Failed to extract video frame' in str(excinfo.value)
+    assert 'FFmpeg failed to extract frame' in str(excinfo.value)
+
+
+def test_extract_video_frame_unlink_exceptions_are_swallowed(monkeypatch):
+    s = WebDavStorage('http://example')
+    monkeypatch.setattr(WebDavStorage, 'download_file', lambda self, p: b'video-data')
+    def fake_run(cmd, *args, **kwargs):
+        tmp_frame = cmd[-1]
+        with open(tmp_frame, 'wb') as f:
+            f.write(b'jpeg-ok')
+        class R:
+            returncode = 0
+            stderr = b''
+        return R()
+    monkeypatch.setattr(subprocess, 'run', fake_run)
+
+    import os
+    orig_unlink = os.unlink
+    def bad_unlink(path):
+        raise Exception('unlink fail')
+    monkeypatch.setattr(os, 'unlink', bad_unlink)
+
+    out = s.extract_video_frame('video.mp4', timestamp=1.0)
+    assert out == b'jpeg-ok'
+
+    monkeypatch.setattr(os, 'unlink', orig_unlink)
+
+
+def test_upload_fileobj_propagates_filenotfound_from_client():
+    s = WebDavStorage('http://example')
+    s.client = FakeClient({}, upload_fail_exc=FileNotFoundError('no such dir'))
+
+    with pytest.raises(FileNotFoundError):
+        s.upload_fileobj('/dir/file', b'data')
+
+
+def test_upload_fileobj_raises_ioerror_on_other_exception():
+    s = WebDavStorage('http://example')
+    s.client = FakeClient({}, upload_fail_exc=Exception('permission denied'))
+
+    with pytest.raises(IOError):
+        s.upload_fileobj('/dir/file', b'data')
+
+
+def test_delete_file_raises_filenotfound_on_404_message():
+    s = WebDavStorage('http://example')
+    s.client = FakeClient({}, remove_fail_exc=Exception('404 Not Found'))
+
+    with pytest.raises(FileNotFoundError):
+        s.delete_file('/noexist')
+
+
+def test_delete_file_raises_filenotfound_on_exception_class_name_notfound():
+    class NotFoundError(Exception):
+        pass
+    s = WebDavStorage('http://example')
+    s.client = FakeClient({}, remove_fail_exc=NotFoundError('missing'))
+
+    with pytest.raises(FileNotFoundError):
+        s.delete_file('/noexist')
+
+
+def test_delete_file_raises_ioerror_on_other_exception():
+    s = WebDavStorage('http://example')
+    s.client = FakeClient({}, remove_fail_exc=Exception('permission denied'))
+
+    with pytest.raises(IOError):
+        s.delete_file('/noexist')
