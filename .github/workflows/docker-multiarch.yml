@@ -12,7 +12,7 @@ permissions:
   id-token: write
 
 jobs:
-  build:
+  test:
     runs-on: ubuntu-latest
 
     steps:
@@ -36,6 +36,75 @@ jobs:
         run: pipenv run pytest -q
         env:
           PIPENV_VENV_IN_PROJECT: 1
+
+  check-arm64:
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU (arm64)
+        uses: docker/setup-qemu-action@v2
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and test arm64 image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          push: false
+          load: true
+          tags: llm-meme-describer:check-${{ github.sha }}-arm64
+
+      - name: Import check (arm64)
+        run: |
+          docker run --rm --platform linux/arm64 --entrypoint /app/.venv/bin/python llm-meme-describer:check-${{ github.sha }}-arm64 -c "import pydantic_core._pydantic_core; print('OK')"
+
+  check-amd64:
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and test amd64 image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: llm-meme-describer:check-${{ github.sha }}-amd64
+
+      - name: Import check (amd64)
+        run: |
+          docker run --rm --entrypoint /app/.venv/bin/python llm-meme-describer:check-${{ github.sha }}-amd64 -c "import pydantic_core._pydantic_core; print('OK')"
+
+  push:
+    needs: [check-arm64, check-amd64]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python (for metadata)
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.14'
+
+      - name: Install pipenv
+        run: python -m pip install --upgrade pip pipenv
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v2
@@ -141,36 +210,6 @@ jobs:
             echo "${{ steps.meta_fallback.outputs.labels }}" >> $GITHUB_OUTPUT
             echo "EOF" >> $GITHUB_OUTPUT
           fi
-
-
-
-      - name: Build and test arm64 image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/arm64
-          push: false
-          load: true
-          tags: ${{ steps.names.outputs.dockerhub_username_lower }}/llm-meme-describer:check-${{ github.sha }}-arm64
-
-      - name: Import check (arm64)
-        run: |
-          docker run --rm ${{ steps.names.outputs.dockerhub_username_lower }}/llm-meme-describer:check-${{ github.sha }}-arm64 \
-            /app/.venv/bin/python -c "import pydantic_core._pydantic_core; print('OK')"
-
-      - name: Build and test amd64 image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64
-          push: false
-          load: true
-          tags: ${{ steps.names.outputs.dockerhub_username_lower }}/llm-meme-describer:check-${{ github.sha }}-amd64
-
-      - name: Import check (amd64)
-        run: |
-          docker run --rm ${{ steps.names.outputs.dockerhub_username_lower }}/llm-meme-describer:check-${{ github.sha }}-amd64 \
-            /app/.venv/bin/python -c "import pydantic_core._pydantic_core; print('OK')"
 
       - name: Build and push multi-arch image
         uses: docker/build-push-action@v6
