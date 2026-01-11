@@ -30,10 +30,8 @@ class Settings(BaseSettings):
     @field_validator("run_interval", "export_listing_interval")
     @classmethod
     def validate_intervals(cls, v, info):
-        if v is None:
-            raise ValueError(f"{info.field_name} cannot be None")
-        if isinstance(v, str) and v.strip() == "":
-            raise ValueError(f"{info.field_name} cannot be empty string")
+        if v is None or (isinstance(v, str) and v.strip() == ""):
+            raise ValueError(f"{info.field_name} cannot be None or empty string")
         try:
             parse_interval(str(v))
             return v
@@ -151,11 +149,17 @@ def parse_interval(interval: str) -> int:
         raise ValueError("Empty interval")
     s = str(interval).strip().lower()
 
-    m = __import__('re').fullmatch(r"(\d+)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours)?", s)
+    m = __import__('re').fullmatch(r"([+-]?\d+)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours)?", s)
     if not m:
         raise ValueError(f"Invalid interval '{interval}'")
-    num = int(m.group(1))
+    raw_num = m.group(1)
+    num = int(raw_num)
     unit = m.group(2) or "s"
+    
+    if raw_num.startswith('-') or num < 0:
+        raise ValueError("Interval must be non-negative")
+    if num == 0:
+        raise ValueError("Interval must be positive")
 
     if unit.startswith("s"):
         return num

@@ -36,7 +36,6 @@ def calculate_phash(data: bytes) -> Optional[str]:
             
         img = Image.open(BytesIO(data))
         
-        # Convert image to RGB for consistent hashing
         if img.mode in ('RGBA', 'LA', 'P'):
             background = Image.new('RGB', img.size, (255, 255, 255))
             if img.mode in ('RGBA', 'LA'):
@@ -55,21 +54,22 @@ def calculate_phash(data: bytes) -> Optional[str]:
 
 
 def hamming_distance(hash1: str, hash2: str) -> int:
-    """Calculate Hamming distance between two hash strings (hex format).
-    
-    Hamming distance = number of bit positions that differ between two hashes.
-    Uses imagehash.hex_to_hash() to convert hex strings to hash objects,
-    then operator - to compute the Hamming distance.
-    
-    Args:
-        hash1: Hex string representation of first hash (e.g., "8ef285e0d56a155d")
-        hash2: Hex string representation of second hash (e.g., "9c1d651d70e26b2d")
-    
-    Returns:
-        Number of differing bits (0-64 for 64-bit hashes)
-    """
+    """Calculate Hamming distance between two hash strings (hex format)."""
+
     if not hash1 or not hash2:
         return 999
+    if not isinstance(hash1, str) or not isinstance(hash2, str):
+        return 999
+
+    if len(hash1) != 16 or len(hash2) != 16:
+        return 999
+
+    try:
+        int(hash1, 16)
+        int(hash2, 16)
+    except ValueError:
+        return 999
+
     try:
         h1 = imagehash.hex_to_hash(hash1)
         h2 = imagehash.hex_to_hash(hash2)
@@ -155,7 +155,6 @@ def mark_false_positive(session: Session, filename: str) -> bool:
     except Exception:
         pass
     session.add(meme)
-    # Remove any association links for this meme so it won't appear in groups
     try:
         links = session.exec(select(MemeDuplicateGroup).where(MemeDuplicateGroup.filename == filename)).all()
         for l in links:

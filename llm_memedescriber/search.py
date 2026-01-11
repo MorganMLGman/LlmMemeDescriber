@@ -9,6 +9,7 @@ from whoosh.qparser import QueryParser, OrGroup
 from .db_helpers import session_scope
 from .models import Meme
 from .constants import INDEX_DIR
+from sqlmodel import select
 
 logger = logging.getLogger(__name__)
 
@@ -60,8 +61,8 @@ def rebuild_index(engine) -> None:
     
     try:
         with session_scope(engine) as session:
-            memes = session.query(Meme).filter(Meme.status != 'removed').all()
-            
+            memes = session.exec(select(Meme).where(Meme.status != 'removed')).all()
+
             for meme in memes:
                 writer.add_document(
                     id=str(meme.id),

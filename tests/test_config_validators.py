@@ -5,20 +5,13 @@ import logging
 
 import pytest
 from pydantic import ValidationError
+from zoneinfo import ZoneInfo
 
 import llm_memedescriber.config as config
 from llm_memedescriber.config import Settings
 
 
-def _make_fake_open(secret_path: str, secret_content: str):
-    real_open = builtins.open
-
-    def fake_open(path, mode='r', encoding=None, *args, **kwargs):
-        if os.path.normpath(path) == os.path.normpath(secret_path):
-            return io.StringIO(secret_content)
-        return real_open(path, mode, encoding=encoding, *args, **kwargs)
-
-    return fake_open
+from tests._helpers import make_fake_open
 
 
 def test_max_generation_attempts_zero_raises():
@@ -47,16 +40,16 @@ def test_export_listing_interval_rejects_empty_and_none():
 def test_webdav_secrets_prefer_secret_over_env(monkeypatch):
     secret_path = "/run/secrets/webdav_password"
     monkeypatch.setattr(os.path, "isfile", lambda p: os.path.normpath(p) == os.path.normpath(secret_path))
-    monkeypatch.setattr(builtins, "open", _make_fake_open(secret_path, "super-secret\n"))
+    monkeypatch.setattr(builtins, "open", make_fake_open(secret_path, "super-secret\n"))
 
     s = Settings(webdav_password="env-pass")
     assert s.webdav_password == "super-secret"
 
 
-def test_load_settings_exits_on_validation_error(monkeypatch, caplog):
+def test_load_settings_exits_on_validation_error(monkeypatch, caplog_set_level, caplog):
     monkeypatch.setenv('MAX_GENERATION_ATTEMPTS', '0')
 
-    caplog.set_level(logging.ERROR)
+    caplog_set_level(logging.ERROR)
     with pytest.raises(SystemExit):
         config.load_settings()
     assert any('Configuration error' in r.message for r in caplog.records)
@@ -87,6 +80,15 @@ def test_max_generation_attempts_large_value_raises():
 def test_run_interval_rejects_whitespace_string():
     with pytest.raises(ValidationError):
         Settings(run_interval="   ")
+
+def test_run_interval_rejects_none():
+    with pytest.raises(ValidationError) as exc:
+        Settings(run_interval=None)
+    assert "None" in str(exc.value)
+
+def test_run_interval_parses_valid_string():
+    s = Settings(run_interval="10m")
+    assert s.run_interval == "10m"
 
 
 def test_export_listing_interval_rejects_whitespace():
@@ -139,3 +141,20 @@ def test_env_empty_string_preserved(monkeypatch):
     monkeypatch.setattr(os.path, "isfile", lambda p: False)
     s = Settings(webdav_password="")
     assert s.webdav_password == ""
+
+
+def test_config_raises_when_run_interval_none(monkeypatch):
+    monkeypatch.setattr(os.path, "isfile", lambda p: False)
+    with pytest.raises(ValueError):
+        Settings(run_interval=None)
+
+
+def test_local_iso_formatter_uses_timezone():
+    ZoneInfo('UTC')
+
+    fmt = config.LocalISOFormatter(tz_name='UTC')
+    record = logging.LogRecord(name="test", level=logging.INFO, pathname=__file__, lineno=1, msg="x", args=(), exc_info=None)
+    record.created = 0.0
+    s = fmt.formatTime(record)
+    assert s.startswith('1970-01-01T00:00:00.')
+    assert s.endswith('+00:00')

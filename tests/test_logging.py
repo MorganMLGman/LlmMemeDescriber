@@ -3,36 +3,15 @@ import logging
 from llm_memedescriber.config import Settings, configure_logging
 
 
+from tests._helpers import snapshot_logging, restore_logging
+
+
 def _snapshot_logging():
-    root = logging.getLogger()
-    snapshot = {
-        'root_level': root.level,
-        'root_handlers': list(root.handlers),
-        'levels': {},
-        'handlers': {},
-    }
-    names = ['alembic', 'alembic.runtime', 'google_genai', 'google_genai.models', 'uvicorn', 'uvicorn.error']
-    for n in names:
-        lg = logging.getLogger(n)
-        snapshot['levels'][n] = lg.level
-        snapshot['handlers'][n] = list(lg.handlers)
-    return snapshot
+    return snapshot_logging()
 
 
 def _restore_logging(snapshot):
-    root = logging.getLogger()
-    root.handlers[:] = []
-    for h in snapshot['root_handlers']:
-        root.addHandler(h)
-    root.setLevel(snapshot['root_level'])
-
-    for n, lvl in snapshot['levels'].items():
-        lg = logging.getLogger(n)
-        lg.setLevel(lvl)
-        lg.handlers[:] = []
-        for h in snapshot['handlers'][n]:
-            lg.addHandler(h)
-
+    return restore_logging(snapshot)
 
 def test_configure_logging_unknown_level_defaults_to_info():
     snap = _snapshot_logging()
