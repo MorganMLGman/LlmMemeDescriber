@@ -152,10 +152,11 @@ def parse_interval(interval: str) -> int:
     m = __import__('re').fullmatch(r"([+-]?\d+)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours)?", s)
     if not m:
         raise ValueError(f"Invalid interval '{interval}'")
-    num = int(m.group(1))
+    raw_num = m.group(1)
+    num = int(raw_num)
     unit = m.group(2) or "s"
     
-    if num < 0:
+    if raw_num.startswith('-') or num < 0:
         raise ValueError("Interval must be non-negative")
     if num == 0:
         raise ValueError("Interval must be positive")

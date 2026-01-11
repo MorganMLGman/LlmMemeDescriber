@@ -1,6 +1,5 @@
 import os
 import shutil
-from sqlmodel import SQLModel, create_engine, Session
 from whoosh.filedb.filestore import FileStorage
 
 import pytest

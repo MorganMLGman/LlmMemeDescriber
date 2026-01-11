@@ -1,6 +1,5 @@
-from contextlib import contextmanager
 import pytest
-from sqlmodel import SQLModel, create_engine, Session, select
+from sqlmodel import select
 
 from llm_memedescriber.dup_helpers import (
     get_group_members,
@@ -9,7 +8,6 @@ from llm_memedescriber.dup_helpers import (
     clear_group_links_for_filename,
 )
 from llm_memedescriber.models import MemeDuplicateGroup
-from tests._helpers import create_in_memory_session
 
 
 def test_get_group_members_and_groups_for_filename_empty(in_memory_session):

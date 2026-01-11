@@ -5,10 +5,10 @@ import logging
 
 import pytest
 from pydantic import ValidationError
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import ZoneInfo
 
 import llm_memedescriber.config as config
-from llm_memedescriber.config import Settings, parse_interval
+from llm_memedescriber.config import Settings
 
 
 from tests._helpers import make_fake_open
