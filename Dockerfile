@@ -5,24 +5,10 @@ WORKDIR /app
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-       build-essential pkg-config gcc libffi-dev libssl-dev wget xz-utils ca-certificates rustc cargo \
+       build-essential pkg-config gcc libffi-dev libssl-dev wget xz-utils ca-certificates rustc cargo ffmpeg \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 RUN python3 -m pip install --upgrade pip setuptools wheel
-
-RUN set -xe \
-    && case "$TARGETPLATFORM" in \
-         "linux/amd64") FFMPEG_ARCH="linux64-gpl" ;; \
-         "linux/arm64") FFMPEG_ARCH="linuxarm64-gpl" ;; \
-         *) echo "Unsupported platform: $TARGETPLATFORM" && exit 1 ;; \
-       esac \
-    && wget -q --tries=3 "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-${FFMPEG_ARCH}.tar.xz" \
-    && tar -xf "ffmpeg-master-latest-${FFMPEG_ARCH}.tar.xz" \
-    && mkdir -p /app/ffmpeg-bin \
-    && cp "ffmpeg-master-latest-${FFMPEG_ARCH}"/bin/ffmpeg /app/ffmpeg-bin/ \
-    && cp "ffmpeg-master-latest-${FFMPEG_ARCH}"/bin/ffprobe /app/ffmpeg-bin/ \
-    && chmod +x /app/ffmpeg-bin/ffmpeg /app/ffmpeg-bin/ffprobe \
-    && rm -rf "ffmpeg-master-latest-${FFMPEG_ARCH}.tar.xz" "ffmpeg-master-latest-${FFMPEG_ARCH}" /tmp/* /var/tmp/*
 
 COPY Pipfile Pipfile.lock /app/
 RUN python3 -m pip install --no-cache-dir pipenv \
@@ -37,7 +23,8 @@ FROM dhi.io/python:3.14-debian13 AS production
 WORKDIR /app
 
 COPY --from=builder /app/.venv /app/.venv
-COPY --from=builder /app/ffmpeg-bin /usr/local/bin
+COPY --from=builder /usr/bin/ffmpeg /usr/bin/ffmpeg
+COPY --from=builder /usr/bin/ffprobe /usr/bin/ffprobe
 COPY --from=builder /data /data
 COPY --from=builder /cache /cache
 VOLUME ["/data"]
