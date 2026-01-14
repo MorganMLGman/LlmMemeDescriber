@@ -693,7 +693,7 @@ def get_duplicates_by_group():
                     "memes": memes
                 })
 
-            logger.info(f"Returning {len(groups_out)} duplicate groups")
+            logger.debug(f"Returning {len(groups_out)} duplicate groups")
             return {"total_groups": len(groups_out), "groups": groups_out}
     except Exception:
         logger.exception("Failed to get duplicates by group")
