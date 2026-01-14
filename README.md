@@ -9,8 +9,9 @@ Llm Meme Describer analyzes images (memes) with a generative AI model and stores
 - Provides a small REST API for programmatic access
 
 ## Run & access ▶️
-Start the service (example using Docker):
+Start the service using Docker:
 
+**Option 1: Docker run**
 ```sh
 docker run --rm -p 8000:8000 \
   -e GOOGLE_GENAI_API_KEY="YOUR_API_KEY" \
@@ -18,8 +19,14 @@ docker run --rm -p 8000:8000 \
   -e WEBDAV_USERNAME="username" \
   -e WEBDAV_PASSWORD="password" \
   -e WEBDAV_PATH="/Path/To/Images" \
-  llm-meme-describer
+  morganmlg/llm-meme-describer
 ```
+
+**Option 2: Docker Compose** (recommended)
+```sh
+docker-compose -f docker-compose.example.yml up -d
+```
+See `docker-compose.example.yml` for full configuration options.
 
 By default the web preview is available at http://localhost:8000/
 
@@ -37,11 +44,17 @@ By default the web preview is available at http://localhost:8000/
 - Metadata updates are supported via the REST API (category, keywords, description).
 
 ## Configuration ⚙️
-Main runtime options are provided as environment variables (examples):
-- `GOOGLE_GENAI_API_KEY` — API key for the generative model
-- `GOOGLE_GENAI_MODEL` — model id (e.g., `gemini-3-flash-preview`)
-- `WEBDAV_*` — connection details for remote storage
-- `RUN_INTERVAL`, `TIMEZONE`, `LOGGING_LEVEL` — runtime behavior and logging
+Main runtime options are provided as environment variables:
 
-See config files in the repository for full details on available settings.
+**Required:**
+- `GOOGLE_GENAI_API_KEY` — API key for the generative model
+- `WEBDAV_URL`, `WEBDAV_USERNAME`, `WEBDAV_PASSWORD`, `WEBDAV_PATH` — remote storage details
+
+**Optional (with defaults):**
+- `GOOGLE_GENAI_MODEL` — model id (default: `gemini-2.5-flash`)
+- `RUN_INTERVAL` — sync interval (default: `15min`)
+- `TIMEZONE` — IANA timezone (default: `UTC`)
+- `LOGGING_LEVEL` — log level (default: `INFO`)
+
+For a complete list of all configuration options and Docker secrets setup, see `docker-compose.example.yml`.
 
