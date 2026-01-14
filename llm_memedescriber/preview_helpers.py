@@ -13,7 +13,7 @@ from .storage_helpers import call_storage
 
 logger = logging.getLogger(__name__)
 
-PREVIEW_CACHE_METADATA = "/data/preview_cache/cache_manifest.json"
+PREVIEW_CACHE_METADATA = "/data/cache/cache_manifest.json"
 
 
 def _cache_path(filename: str) -> str:
