@@ -122,18 +122,31 @@ def save_preview_cache() -> int:
         Number of cached previews saved to disk.
     """
     try:
-        os.makedirs(CACHE_DIR, exist_ok=True)
+        if not os.path.isdir(CACHE_DIR):
+            logger.info(f"Cache directory does not exist: {CACHE_DIR}")
+            preview_cache_dir = os.path.dirname(PREVIEW_CACHE_METADATA)
+            os.makedirs(preview_cache_dir, exist_ok=True)
+            cache_manifest = {'cached_previews': [], 'count': 0}
+            with open(PREVIEW_CACHE_METADATA, 'w') as f:
+                json.dump(cache_manifest, f, indent=2)
+            return 0
+        
         cached_files = []
-        if os.path.isdir(CACHE_DIR):
-            for filename in os.listdir(CACHE_DIR):
+        try:
+            all_files = os.listdir(CACHE_DIR)
+            logger.debug(f"Files in {CACHE_DIR}: {all_files}")
+            for filename in all_files:
                 if filename.endswith('.jpg'):
                     cached_files.append(filename)
+        except OSError as e:
+            logger.warning(f"Failed to list files in {CACHE_DIR}: {e}")
+            return 0
         
-        # Create preview cache directory
+        logger.info(f"Found {len(cached_files)} jpg files in cache: {cached_files}")
+        
         preview_cache_dir = os.path.dirname(PREVIEW_CACHE_METADATA)
         os.makedirs(preview_cache_dir, exist_ok=True)
         
-        # Copy cache files to persistent storage
         saved_count = 0
         for filename in cached_files:
             src_path = os.path.join(CACHE_DIR, filename)
@@ -144,10 +157,10 @@ def save_preview_cache() -> int:
                         with open(dst_path, 'wb') as dst:
                             dst.write(src.read())
                     saved_count += 1
+                    logger.debug(f"Saved cache file: {filename}")
             except Exception as e:
-                logger.debug(f"Failed to save cache file {filename}: {e}")
+                logger.warning(f"Failed to save cache file {filename}: {e}")
         
-        # Save manifest
         cache_manifest = {
             'cached_previews': cached_files,
             'count': saved_count
@@ -159,7 +172,7 @@ def save_preview_cache() -> int:
         logger.info(f"Saved preview cache with {saved_count} files to {preview_cache_dir}")
         return saved_count
     except Exception as e:
-        logger.exception(f"Failed to save preview cache manifest: {e}")
+        logger.exception(f"Failed to save preview cache: {e}")
         return 0
 
 

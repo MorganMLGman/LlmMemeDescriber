@@ -1,6 +1,7 @@
 """Tests for preview cache persistence functionality."""
 
 import json
+import os
 
 from llm_memedescriber import preview_helpers
 
@@ -205,3 +206,87 @@ def test_cache_persistence_full_workflow(tmp_path):
     for filename in test_files:
         assert (cache_dir / filename).exists()
         assert (cache_dir / filename).read_bytes() == b"image data " + filename.encode()
+
+
+def test_save_preview_cache_stores_actual_files(tmp_path):
+    """Test that save_preview_cache actually copies files to persistent storage."""
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    manifest_dir = tmp_path / "data" / "preview_cache"
+    manifest_file = manifest_dir / "cache_manifest.json"
+    
+    # Create test cache files with unique content
+    test_files = {
+        "preview_001.jpg": b"JPEG data for file 001",
+        "preview_002.jpg": b"JPEG data for file 002",
+        "preview_003.jpg": b"JPEG data for file 003",
+    }
+    
+    for filename, content in test_files.items():
+        (cache_dir / filename).write_bytes(content)
+    
+    preview_helpers.CACHE_DIR = str(cache_dir)
+    preview_helpers.PREVIEW_CACHE_METADATA = str(manifest_file)
+    
+    # Save cache
+    saved_count = preview_helpers.save_preview_cache()
+    assert saved_count == 3
+    
+    # Verify manifest exists
+    assert manifest_file.exists()
+    manifest_data = json.load(open(manifest_file))
+    assert manifest_data['count'] == 3
+    
+    # Verify actual files were copied to preview_cache directory
+    assert manifest_dir.exists()
+    stored_files = list(manifest_dir.glob("*.jpg"))
+    assert len(stored_files) == 3
+    
+    # Verify file contents match
+    for filename, expected_content in test_files.items():
+        stored_file = manifest_dir / filename
+        assert stored_file.exists(), f"File {filename} not found in {manifest_dir}"
+        assert stored_file.read_bytes() == expected_content, \
+            f"Content mismatch for {filename}"
+
+
+def test_save_and_restore_preserves_file_integrity(tmp_path):
+    """Test that files maintain their content through save/restore cycle."""
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    manifest_dir = tmp_path / "data" / "preview_cache"
+    manifest_file = manifest_dir / "cache_manifest.json"
+    
+    # Create realistic preview data (simulating JPEG binary content)
+    preview_data = {
+        "hash_abc123.jpg": b"\xff\xd8\xff\xe0" + b"JPEG" * 100,  # JPEG header + data
+        "hash_def456.jpg": b"\xff\xd8\xff\xe1" + b"EXIF" * 50,   # JPEG with EXIF
+        "hash_ghi789.jpg": b"\x89PNG\r\n\x1a\n" + b"PNG" * 75,   # PNG header + data
+    }
+    
+    for filename, content in preview_data.items():
+        (cache_dir / filename).write_bytes(content)
+    
+    preview_helpers.CACHE_DIR = str(cache_dir)
+    preview_helpers.PREVIEW_CACHE_METADATA = str(manifest_file)
+    
+    # Save cache
+    saved_count = preview_helpers.save_preview_cache()
+    assert saved_count == 3
+    
+    # Clear original cache
+    for f in cache_dir.glob("*.jpg"):
+        f.unlink()
+    assert len(list(cache_dir.glob("*.jpg"))) == 0
+    
+    # Restore cache
+    restored_count = preview_helpers.restore_preview_cache()
+    assert restored_count == 3
+    
+    # Verify all files exist and content matches exactly
+    for filename, original_content in preview_data.items():
+        restored_file = cache_dir / filename
+        assert restored_file.exists(), f"File {filename} not restored"
+        restored_content = restored_file.read_bytes()
+        assert restored_content == original_content, \
+            f"Content mismatch for {filename}. Expected {len(original_content)} bytes, got {len(restored_content)}"
