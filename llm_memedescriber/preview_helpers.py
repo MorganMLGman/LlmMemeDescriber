@@ -147,30 +147,16 @@ def save_preview_cache() -> int:
         preview_cache_dir = os.path.dirname(PREVIEW_CACHE_METADATA)
         os.makedirs(preview_cache_dir, exist_ok=True)
         
-        saved_count = 0
-        for filename in cached_files:
-            src_path = os.path.join(CACHE_DIR, filename)
-            dst_path = os.path.join(preview_cache_dir, filename)
-            try:
-                if os.path.isfile(src_path):
-                    with open(src_path, 'rb') as src:
-                        with open(dst_path, 'wb') as dst:
-                            dst.write(src.read())
-                    saved_count += 1
-                    logger.debug(f"Saved cache file: {filename}")
-            except Exception as e:
-                logger.warning(f"Failed to save cache file {filename}: {e}")
-        
         cache_manifest = {
             'cached_previews': cached_files,
-            'count': saved_count
+            'count': len(cached_files)
         }
         
         with open(PREVIEW_CACHE_METADATA, 'w') as f:
             json.dump(cache_manifest, f, indent=2)
         
-        logger.info(f"Saved preview cache with {saved_count} files to {preview_cache_dir}")
-        return saved_count
+        logger.info(f"Saved preview cache manifest with {len(cached_files)} files to {preview_cache_dir}")
+        return len(cached_files)
     except Exception as e:
         logger.exception(f"Failed to save preview cache: {e}")
         return 0
@@ -178,10 +164,11 @@ def save_preview_cache() -> int:
 
 def restore_preview_cache() -> int:
     """
-    Restore preview cache from disk by copying cached files from manifest back to CACHE_DIR.
+    Restore preview cache by verifying cached files listed in manifest exist in CACHE_DIR.
+    Since manifest and cache files are both in /data/cache, no copying is needed.
     
     Returns:
-        Number of cache files restored.
+        Number of cache files verified to exist.
     """
     try:
         if not os.path.isfile(PREVIEW_CACHE_METADATA):
@@ -192,25 +179,22 @@ def restore_preview_cache() -> int:
             cache_manifest = json.load(f)
         
         cached_files = cache_manifest.get('cached_previews', [])
-        preview_cache_dir = os.path.dirname(PREVIEW_CACHE_METADATA)
-        restored_count = 0
+        verified_count = 0
         
         os.makedirs(CACHE_DIR, exist_ok=True)
         
         for filename in cached_files:
-            src_path = os.path.join(preview_cache_dir, filename)
-            dst_path = os.path.join(CACHE_DIR, filename)
+            cache_path = os.path.join(CACHE_DIR, filename)
             try:
-                if os.path.isfile(src_path) and not os.path.isfile(dst_path):
-                    with open(src_path, 'rb') as src:
-                        with open(dst_path, 'wb') as dst:
-                            dst.write(src.read())
-                    restored_count += 1
+                if os.path.isfile(cache_path):
+                    verified_count += 1
+                else:
+                    logger.debug(f"Cache file not found: {filename}")
             except Exception as e:
-                logger.debug(f"Failed to restore cache file {filename}: {e}")
+                logger.debug(f"Failed to verify cache file {filename}: {e}")
         
-        logger.info(f"Restored {restored_count} preview cache files from {preview_cache_dir}")
-        return restored_count
+        logger.info(f"Verified {verified_count} preview cache files from {CACHE_DIR}")
+        return verified_count
     except Exception as e:
         logger.exception(f"Failed to restore preview cache: {e}")
         return 0
