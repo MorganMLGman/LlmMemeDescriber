@@ -90,8 +90,8 @@ jobs:
 
       - name: Check ffmpeg availability (arm64)
         run: |
-          docker run --rm --platform linux/arm64 llm-meme-describer:check-${{ github.sha }}-arm64 ffmpeg -version
-          docker run --rm --platform linux/arm64 llm-meme-describer:check-${{ github.sha }}-arm64 ffprobe -version
+          docker run --rm --platform linux/arm64 --entrypoint "" llm-meme-describer:check-${{ github.sha }}-arm64 ffmpeg -version
+          docker run --rm --platform linux/arm64 --entrypoint "" llm-meme-describer:check-${{ github.sha }}-arm64 ffprobe -version
 
   check-amd64:
     needs: test
@@ -141,8 +141,8 @@ jobs:
 
       - name: Check ffmpeg availability (amd64)
         run: |
-          docker run --rm --platform linux/amd64 llm-meme-describer:check-${{ github.sha }}-amd64 ffmpeg -version
-          docker run --rm --platform linux/amd64 llm-meme-describer:check-${{ github.sha }}-amd64 ffprobe -version
+          docker run --rm --platform linux/amd64 --entrypoint "" llm-meme-describer:check-${{ github.sha }}-amd64 ffmpeg -version
+          docker run --rm --platform linux/amd64 --entrypoint "" llm-meme-describer:check-${{ github.sha }}-amd64 ffprobe -version
 
   push:
     needs: [check-arm64, check-amd64]
