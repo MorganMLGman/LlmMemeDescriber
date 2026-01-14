@@ -79,7 +79,9 @@ jobs:
           context: .
           platforms: linux/arm64
           push: false
-          outputs: type=docker,dest=/tmp/image-arm64.tar
+          load: true
+          build-args: |
+            TARGETARCH=arm64
           tags: llm-meme-describer:check-${{ github.sha }}-arm64
 
       - name: Import check (arm64)
@@ -128,7 +130,9 @@ jobs:
           context: .
           platforms: linux/amd64
           push: false
-          outputs: type=docker,dest=/tmp/image-amd64.tar
+          load: true
+          build-args: |
+            TARGETARCH=amd64
           tags: llm-meme-describer:check-${{ github.sha }}-amd64
 
       - name: Import check (amd64)
