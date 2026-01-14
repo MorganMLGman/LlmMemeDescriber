@@ -31,7 +31,7 @@ from .deduplication import (
 )
 from .dup_helpers import get_group_members, get_groups_for_filename
 from .storage_helpers import compute_and_persist_phash
-from .preview_helpers import generate_preview, async_generate_preview
+from .preview_helpers import generate_preview, async_generate_preview, restore_preview_cache, save_preview_cache
 from sqlmodel import select
 from .db_helpers import session_scope
 from .models import Meme, DuplicateGroup as DBDuplicateGroup, MemeDuplicateGroup as DBDupeLink
@@ -47,6 +47,14 @@ async def lifespan(app_instance: FastAPI):
     settings = load_settings()
     configure_logging(settings)
     logger.info("Starting llm_memedescriber FastAPI app (preview cache: %s)", CACHE_DIR)
+    
+    try:
+        logger.debug("Restoring preview cache from disk...")
+        restored = restore_preview_cache()
+        logger.info("Preview cache restored: %d entries", restored)
+    except Exception:
+        logger.exception("Failed to restore preview cache, continuing with empty cache")
+    
     app_instance.state.engine = init_db()
     
     try:
@@ -234,6 +242,15 @@ async def lifespan(app_instance: FastAPI):
     yield
     
     logger.info("Shutting down llm_memedescriber FastAPI app")
+    
+    # Save preview cache to disk
+    try:
+        logger.info("Saving preview cache to disk...")
+        saved = save_preview_cache()
+        logger.info("Preview cache saved: %d entries", saved)
+    except Exception:
+        logger.exception("Failed to save preview cache on shutdown")
+    
     try:
         if getattr(app_instance.state, 'app_instance', None):
             app_inst = app_instance.state.app_instance

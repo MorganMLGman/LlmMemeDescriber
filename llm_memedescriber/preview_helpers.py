@@ -1,8 +1,9 @@
 import hashlib
 import os
 import logging
+import json
 from io import BytesIO
-from typing import Any
+from typing import Any, Set
 
 import asyncio
 from PIL import Image
@@ -11,6 +12,8 @@ from .constants import CACHE_DIR, PREVIEW_JPEG_QUALITY_IMAGE
 from .storage_helpers import call_storage
 
 logger = logging.getLogger(__name__)
+
+PREVIEW_CACHE_METADATA = "/data/preview_cache/cache_manifest.json"
 
 
 def _cache_path(filename: str) -> str:
@@ -107,3 +110,94 @@ async def async_generate_preview(filename: str, is_vid: bool, storage: Any, size
     except Exception as e:
         logger.exception('Failed to generate preview for %s: %s', filename, e)
         raise
+
+
+def save_preview_cache() -> int:
+    """
+    Save the current preview cache to disk.
+    Scans CACHE_DIR for all jpg files and copies them to /data/preview_cache.
+    Also saves a manifest with filenames.
+    
+    Returns:
+        Number of cached previews saved to disk.
+    """
+    try:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        cached_files = []
+        if os.path.isdir(CACHE_DIR):
+            for filename in os.listdir(CACHE_DIR):
+                if filename.endswith('.jpg'):
+                    cached_files.append(filename)
+        
+        # Create preview cache directory
+        preview_cache_dir = os.path.dirname(PREVIEW_CACHE_METADATA)
+        os.makedirs(preview_cache_dir, exist_ok=True)
+        
+        # Copy cache files to persistent storage
+        saved_count = 0
+        for filename in cached_files:
+            src_path = os.path.join(CACHE_DIR, filename)
+            dst_path = os.path.join(preview_cache_dir, filename)
+            try:
+                if os.path.isfile(src_path):
+                    with open(src_path, 'rb') as src:
+                        with open(dst_path, 'wb') as dst:
+                            dst.write(src.read())
+                    saved_count += 1
+            except Exception as e:
+                logger.debug(f"Failed to save cache file {filename}: {e}")
+        
+        # Save manifest
+        cache_manifest = {
+            'cached_previews': cached_files,
+            'count': saved_count
+        }
+        
+        with open(PREVIEW_CACHE_METADATA, 'w') as f:
+            json.dump(cache_manifest, f, indent=2)
+        
+        logger.info(f"Saved preview cache with {saved_count} files to {preview_cache_dir}")
+        return saved_count
+    except Exception as e:
+        logger.exception(f"Failed to save preview cache manifest: {e}")
+        return 0
+
+
+def restore_preview_cache() -> int:
+    """
+    Restore preview cache from disk by copying cached files from manifest back to CACHE_DIR.
+    
+    Returns:
+        Number of cache files restored.
+    """
+    try:
+        if not os.path.isfile(PREVIEW_CACHE_METADATA):
+            logger.info(f"No preview cache manifest found at {PREVIEW_CACHE_METADATA}")
+            return 0
+        
+        with open(PREVIEW_CACHE_METADATA, 'r') as f:
+            cache_manifest = json.load(f)
+        
+        cached_files = cache_manifest.get('cached_previews', [])
+        preview_cache_dir = os.path.dirname(PREVIEW_CACHE_METADATA)
+        restored_count = 0
+        
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        
+        for filename in cached_files:
+            src_path = os.path.join(preview_cache_dir, filename)
+            dst_path = os.path.join(CACHE_DIR, filename)
+            try:
+                if os.path.isfile(src_path) and not os.path.isfile(dst_path):
+                    with open(src_path, 'rb') as src:
+                        with open(dst_path, 'wb') as dst:
+                            dst.write(src.read())
+                    restored_count += 1
+            except Exception as e:
+                logger.debug(f"Failed to restore cache file {filename}: {e}")
+        
+        logger.info(f"Restored {restored_count} preview cache files from {preview_cache_dir}")
+        return restored_count
+    except Exception as e:
+        logger.exception(f"Failed to restore preview cache: {e}")
+        return 0
