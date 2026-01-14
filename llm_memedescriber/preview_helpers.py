@@ -56,8 +56,8 @@ def generate_preview(filename: str, is_vid: bool, storage: Any, size: int = 300)
         os.makedirs(CACHE_DIR, exist_ok=True)
         with open(cache_path, 'wb') as f:
             f.write(preview_bytes)
-    except Exception:
-        logger.debug('Failed to write preview cache for %s', filename)
+    except Exception as e:
+        logger.warning('Failed to write preview cache for %s to %s: %s', filename, cache_path, e)
 
     return preview_bytes
 
@@ -102,7 +102,7 @@ async def async_generate_preview(filename: str, is_vid: bool, storage: Any, size
                     f.write(preview_bytes)
             await loop.run_in_executor(None, _write_cache)
         except Exception:
-            logger.debug('Failed to write preview cache for %s', filename)
+            logger.warning('Failed to write preview cache for %s to %s: %s', filename, cache_path, e)
 
         return preview_bytes
     except FileNotFoundError:
