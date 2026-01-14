@@ -95,7 +95,7 @@ def find_duplicate_groups(session: Session) -> List[List[Meme]]:
     except Exception:
         logger.debug("Failed to load Duplicate exceptions table")
     
-    logger.info(f"find_duplicate_groups: Loaded {len(memes)} memes with phash")
+    logger.debug(f"find_duplicate_groups: Loaded {len(memes)} memes with phash")
     
     if not memes:
         logger.warning("find_duplicate_groups: No memes with phash found")
@@ -133,13 +133,13 @@ def find_duplicate_groups(session: Session) -> List[List[Meme]]:
                 assigned.add(j)
         
         if len(group) > 1:
-            logger.info(f"Group {group_counter}: {len(group)} memes (distance threshold: {DUPLICATE_THRESHOLD})")
+            logger.debug(f"Group {group_counter}: {len(group)} memes (distance threshold: {DUPLICATE_THRESHOLD})")
             for meme in group:
                 logger.debug(f"  - {meme.filename}")
             groups[group_counter] = group
             group_counter += 1
     
-    logger.info(f"find_duplicate_groups: Found {len(groups)} groups total")
+    logger.debug(f"find_duplicate_groups: Found {len(groups)} groups total")
     return list(groups.values())
 
 
