@@ -101,7 +101,7 @@ async def async_generate_preview(filename: str, is_vid: bool, storage: Any, size
                 with open(cache_path, 'wb') as f:
                     f.write(preview_bytes)
             await loop.run_in_executor(None, _write_cache)
-        except Exception:
+        except Exception as e:
             logger.warning('Failed to write preview cache for %s to %s: %s', filename, cache_path, e)
 
         return preview_bytes
