@@ -1,4 +1,4 @@
-name: Build and push multi-arch image
+name: Build and Push Multi-Architecture Docker Image
 
 on:
   push:
@@ -11,267 +11,191 @@ permissions:
   packages: write
   id-token: write
 
+env:
+  IMAGE_NAME: llm-meme-describer
+
 jobs:
   test:
+    name: Run Tests
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python (for tests)
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.14'
-
-      - name: Install pipenv
-        run: python -m pip install --upgrade pip pipenv
-
-      - name: Install dependencies (pipenv)
-        run: pipenv install --dev --deploy --ignore-pipfile
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip pipenv
+          pipenv install --dev --deploy --ignore-pipfile
         env:
           PIPENV_VENV_IN_PROJECT: 1
-
-      - name: Run tests (pytest)
+      
+      - name: Run tests
         run: pipenv run pytest -q
         env:
           PIPENV_VENV_IN_PROJECT: 1
 
-  check-arm64:
+  build:
+    name: Build ${{ matrix.platform }} Image
     needs: test
     runs-on: ubuntu-latest
-
+    strategy:
+      matrix:
+        platform: [linux/amd64, linux/arm64]
+        include:
+          - platform: linux/amd64
+            arch: amd64
+          - platform: linux/arm64 
+            arch: arm64
+    
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up QEMU (arm64)
+      - uses: actions/checkout@v4
+      
+      - name: Set up QEMU
+        if: matrix.arch == 'arm64'
         uses: docker/setup-qemu-action@v2
         with:
           platforms: arm64
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v2
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Log in to Docker Registry dhi.io
-        uses: docker/login-action@v2
-        with:
-          registry: dhi.io
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v2
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GHCR_PAT }}
-
-      - name: Build and test arm64 image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/arm64
-          push: false
-          load: true
-          build-args: |
-            TARGETARCH=arm64
-          tags: llm-meme-describer:check-${{ github.sha }}-arm64
-
-      - name: Import check (arm64)
-        run: |
-          docker run --rm --platform linux/arm64 --entrypoint /app/.venv/bin/python llm-meme-describer:check-${{ github.sha }}-arm64 -c "import pydantic_core._pydantic_core; print('OK')"
-
-      - name: Check ffmpeg availability (arm64)
-        run: |
-          docker run --rm --platform linux/arm64 llm-meme-describer:check-${{ github.sha }}-arm64 ffmpeg -version
-          docker run --rm --platform linux/arm64 llm-meme-describer:check-${{ github.sha }}-arm64 ffprobe -version
-
-  check-amd64:
-    needs: test
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v2
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Log in to Docker Registry dhi.io
-        uses: docker/login-action@v2
-        with:
-          registry: dhi.io
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v2
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GHCR_PAT }}
-
-      - name: Build and test amd64 image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64
-          push: false
-          load: true
-          build-args: |
-            TARGETARCH=amd64
-          tags: llm-meme-describer:check-${{ github.sha }}-amd64
-
-      - name: Import check (amd64)
-        run: |
-          docker run --rm --platform linux/amd64 --entrypoint /app/.venv/bin/python llm-meme-describer:check-${{ github.sha }}-amd64 -c "import pydantic_core._pydantic_core; print('OK')"
-
-      - name: Check ffmpeg availability (amd64)
-        run: |
-          docker run --rm --platform linux/amd64 llm-meme-describer:check-${{ github.sha }}-amd64 ffmpeg -version
-          docker run --rm --platform linux/amd64 llm-meme-describer:check-${{ github.sha }}-amd64 ffprobe -version
-
-  push:
-    needs: [check-arm64, check-amd64]
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python (for metadata)
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.14'
-
-      - name: Install pipenv
-        run: python -m pip install --upgrade pip pipenv
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v2
-        with:
-          platforms: arm64,amd64
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v2
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
       
-      - name: Log in to Docker Registry dhi.io
-        uses: docker/login-action@v2
-        with:
-          registry: dhi.io
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v2
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GHCR_PAT }}
-
-      - name: Lowercase names
-        id: names
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Login to registries
         run: |
-          dockerhub_username_lower=$(echo '${{ secrets.DOCKERHUB_USERNAME }}' | tr '[:upper:]' '[:lower:]')
-          repo_owner_lower=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')
-          echo "dockerhub_username_lower=$dockerhub_username_lower" >> $GITHUB_OUTPUT
-          echo "repo_owner_lower=$repo_owner_lower" >> $GITHUB_OUTPUT
-
-      - name: Build time
-        id: build_time
-        run: |
-          echo "iso8601=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
-
-      - name: Docker metadata
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login dhi.io -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+          echo "${{ secrets.GHCR_PAT }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      
+      - name: Generate metadata
         id: meta
-        if: ${{ !(github.event_name == 'workflow_dispatch' && github.ref_name == '') }}
-        uses: docker/metadata-action@v5
+        run: |
+          echo "build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+          REPO_OWNER=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')
+          echo "tag=ghcr.io/$REPO_OWNER/${{ env.IMAGE_NAME }}:check-${{ github.sha }}-${{ matrix.arch }}" >> $GITHUB_OUTPUT
+      
+      - name: Build and push image
+        uses: docker/build-push-action@v6
         with:
-          images: |
-            ${{ steps.names.outputs.dockerhub_username_lower }}/llm-meme-describer
-            ghcr.io/${{ steps.names.outputs.repo_owner_lower }}/llm-meme-describer
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}},enable=${{ !startsWith(github.ref, 'refs/tags/v0.') }}
-            type=sha
-          flavor: |
-            latest=auto
+          context: .
+          platforms: ${{ matrix.platform }}
+          push: true
+          build-args: TARGETARCH=${{ matrix.arch }}
+          tags: ${{ steps.meta.outputs.tag }}
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.created=${{ steps.build_time.outputs.iso8601 }}
+            org.opencontainers.image.created=${{ steps.meta.outputs.build_time }}
             org.opencontainers.image.source=${{ github.repository }}
             org.opencontainers.image.version=${{ github.ref_name }}
-
-      - name: Docker metadata (workflow_dispatch fallback)
-        id: meta_fallback
-        if: ${{ github.event_name == 'workflow_dispatch' && github.ref_name == '' }}
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+      
+      - name: Test Python imports
         run: |
-          DOCKERHUB_USER=${{ steps.names.outputs.dockerhub_username_lower }}
-          GHCR_OWNER=${{ steps.names.outputs.repo_owner_lower }}
-
-          SHA=${{ github.sha }}
-          SHORT_SHA=${SHA:0:7}
-
-          echo "tags<<EOF" >> $GITHUB_OUTPUT
-          echo "${DOCKERHUB_USER}/llm-meme-describer:sha-${SHORT_SHA}" >> $GITHUB_OUTPUT
-          echo "ghcr.io/${GHCR_OWNER}/llm-meme-describer:sha-${SHORT_SHA}" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
-          echo "labels<<EOF" >> $GITHUB_OUTPUT
-          echo "org.opencontainers.image.revision=${{ github.sha }}" >> $GITHUB_OUTPUT
-          echo "org.opencontainers.image.created=${{ steps.build_time.outputs.iso8601 }}" >> $GITHUB_OUTPUT
-          echo "org.opencontainers.image.source=${{ github.repository }}" >> $GITHUB_OUTPUT
-          echo "org.opencontainers.image.version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
-      - name: Compose final metadata
-        id: final_meta
+          docker run --rm --platform ${{ matrix.platform }} --entrypoint /app/.venv/bin/python \
+            ${{ steps.meta.outputs.tag }} -c "import pydantic_core._pydantic_core; print('✅ Python imports OK')"
+      
+      - name: Test ffmpeg availability
         run: |
-          if [ -n "${{ steps.meta.outputs.tags }}" ]; then
-            echo "tags<<EOF" >> $GITHUB_OUTPUT
-            echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_OUTPUT
-            echo "EOF" >> $GITHUB_OUTPUT
+          docker run --rm --platform ${{ matrix.platform }} --entrypoint "" ${{ steps.meta.outputs.tag }} ffmpeg -version
+          docker run --rm --platform ${{ matrix.platform }} --entrypoint "" ${{ steps.meta.outputs.tag }} ffprobe -version
+          echo "✅ ffmpeg/ffprobe OK"
 
-            echo "labels<<EOF" >> $GITHUB_OUTPUT
-            echo "${{ steps.meta.outputs.labels }}" >> $GITHUB_OUTPUT
-            echo "EOF" >> $GITHUB_OUTPUT
-          else
-            echo "tags<<EOF" >> $GITHUB_OUTPUT
-            echo "${{ steps.meta_fallback.outputs.tags }}" >> $GITHUB_OUTPUT
-            echo "EOF" >> $GITHUB_OUTPUT
-
-            echo "labels<<EOF" >> $GITHUB_OUTPUT
-            echo "${{ steps.meta_fallback.outputs.labels }}" >> $GITHUB_OUTPUT
-            echo "EOF" >> $GITHUB_OUTPUT
+  publish:
+    name: Create Multi-Architecture Manifest
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Login to registries
+        run: |
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login dhi.io -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin  
+          echo "${{ secrets.GHCR_PAT }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      
+      - name: Generate tags
+        id: tags
+        run: |
+          DOCKERHUB_USER=$(echo '${{ secrets.DOCKERHUB_USERNAME }}' | tr '[:upper:]' '[:lower:]')
+          REPO_OWNER=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')
+          VERSION=${GITHUB_REF#refs/tags/v}
+          MAJOR=${VERSION%%.*}
+          MINOR=${VERSION%.*}
+          
+          TAGS=(
+            "$DOCKERHUB_USER/${{ env.IMAGE_NAME }}:$VERSION"
+            "$DOCKERHUB_USER/${{ env.IMAGE_NAME }}:$MINOR" 
+            "$DOCKERHUB_USER/${{ env.IMAGE_NAME }}:latest"
+            "ghcr.io/$REPO_OWNER/${{ env.IMAGE_NAME }}:$VERSION"
+            "ghcr.io/$REPO_OWNER/${{ env.IMAGE_NAME }}:$MINOR"
+            "ghcr.io/$REPO_OWNER/${{ env.IMAGE_NAME }}:latest"
+          )
+          
+          # Don't tag major version for 0.x releases
+          if [[ ! $VERSION =~ ^0\. ]]; then
+            TAGS+=("$DOCKERHUB_USER/${{ env.IMAGE_NAME }}:$MAJOR")
+            TAGS+=("ghcr.io/$REPO_OWNER/${{ env.IMAGE_NAME }}:$MAJOR")
           fi
+          
+          printf '%s\n' "${TAGS[@]}" | tee tags.txt
+          echo "tags<<EOF" >> $GITHUB_OUTPUT
+          printf '%s\n' "${TAGS[@]}" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+      
+      - name: Create and push multi-arch manifests
+        run: |
+          REPO_OWNER=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')
+          while IFS= read -r tag; do
+            echo "Creating manifest for: $tag"
+            docker buildx imagetools create --tag "$tag" \
+              ghcr.io/$REPO_OWNER/${{ env.IMAGE_NAME }}:check-${{ github.sha }}-amd64 \
+              ghcr.io/$REPO_OWNER/${{ env.IMAGE_NAME }}:check-${{ github.sha }}-arm64
+          done < tags.txt
+          
+          echo "✅ Multi-architecture manifests created successfully"
 
-      - name: Build and push multi-arch image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.final_meta.outputs.tags }}
-          labels: ${{ steps.final_meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+  publish-dispatch:
+    name: Create SHA-based Images (Manual Trigger)
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Login to registries
+        run: |
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login dhi.io -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin  
+          echo "${{ secrets.GHCR_PAT }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      
+      - name: Create SHA-based tags
+        run: |
+          DOCKERHUB_USER=$(echo '${{ secrets.DOCKERHUB_USERNAME }}' | tr '[:upper:]' '[:lower:]')
+          REPO_OWNER=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')
+          SHORT_SHA=${GITHUB_SHA:0:7}
+          
+          TAGS=(
+            "$DOCKERHUB_USER/${{ env.IMAGE_NAME }}:sha-$SHORT_SHA"
+            "ghcr.io/$REPO_OWNER/${{ env.IMAGE_NAME }}:sha-$SHORT_SHA"
+          )
+          
+          for tag in "${TAGS[@]}"; do
+            echo "Creating manifest for: $tag"
+            docker buildx imagetools create --tag "$tag" \
+              ghcr.io/$REPO_OWNER/${{ env.IMAGE_NAME }}:check-${{ github.sha }}-amd64 \
+              ghcr.io/$REPO_OWNER/${{ env.IMAGE_NAME }}:check-${{ github.sha }}-arm64
+          done
+          
+          echo "✅ SHA-based manifests created successfully"
