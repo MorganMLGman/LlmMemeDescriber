@@ -15,11 +15,13 @@ RUN python3 -m pip install --no-cache-dir pipenv \
   && PIPENV_VENV_IN_PROJECT=1 pipenv install --deploy --ignore-pipfile \
   && rm -rf /root/.cache /root/.local /tmp/* /var/tmp/*
 
-RUN ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "amd64") && \
+RUN set -e; \
+    ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "amd64") && \
     wget -O /tmp/ffmpeg.tar.xz "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-${ARCH}-static.tar.xz" && \
-    cd /tmp && tar xf ffmpeg.tar.xz && \
-    mv ffmpeg-*-static/ffmpeg /usr/bin/ffmpeg && \
-    mv ffmpeg-*-static/ffprobe /usr/bin/ffprobe && \
+    mkdir -p /tmp/ffmpeg-static && \
+    tar -C /tmp/ffmpeg-static --strip-components=1 -xf /tmp/ffmpeg.tar.xz && \
+    mv /tmp/ffmpeg-static/ffmpeg /usr/bin/ffmpeg && \
+    mv /tmp/ffmpeg-static/ffprobe /usr/bin/ffprobe && \
     rm -rf /tmp/ffmpeg* && \
     chmod +x /usr/bin/ffmpeg /usr/bin/ffprobe
 

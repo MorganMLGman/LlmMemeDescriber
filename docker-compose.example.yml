@@ -1,0 +1,104 @@
+services:
+  llm-meme-describer:
+    image: morganmlg/llm-meme-describer:latest
+    container_name: llm-meme-describer
+    ports:
+      - "8000:8000"
+    
+    # Volume mounts
+    volumes:
+      # Main data directory for caching and database
+      - ./data:/data
+
+    # Environment variables
+    environment:
+      # ========== REQUIRED VARIABLES ==========
+      
+      # === Google Generative AI Configuration (REQUIRED) ===
+      # Note: GOOGLE_GENAI_API_KEY is provided via secrets (see below)
+      # GOOGLE_GENAI_API_KEY: "<your_api_key_here>" # if not using secrets
+      
+      # === WebDAV Configuration (REQUIRED for remote storage) ===
+      # Base URL of WebDAV server (with full path to collection)
+      WEBDAV_URL: "https://example.com/remote.php/dav/files/user"
+      # Path within WebDAV to scan for images
+      WEBDAV_PATH: "/Path/To/Images"
+      # Note: WEBDAV_USERNAME and WEBDAV_PASSWORD are provided via secrets
+      # WEBDAV_USERNAME: "<your_username_here>" # if not using secrets
+      # WEBDAV_PASSWORD: "<your_password_here>" # if not using secrets
+      
+      # ========== OPTIONAL VARIABLES (with defaults) ==========
+      
+      # === Logging Configuration ===
+      # Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
+      # Default: INFO
+      LOGGING_LEVEL: "INFO"
+      
+      # === Timezone ===
+      # IANA timezone for log timestamps (e.g., UTC, Europe/Warsaw, America/New_York)
+      # Default: UTC
+      TIMEZONE: "UTC"
+      
+      # === Google Generative AI Configuration ===
+      # Model to use for analysis
+      # Default: gemini-2.5-flash
+      GOOGLE_GENAI_MODEL: "gemini-2.5-flash"
+      
+      # === Processing Configuration ===
+      # Interval between sync/processing runs (e.g., 15min, 1h, 30s)
+      # Default: 15min
+      RUN_INTERVAL: "15min"
+      # Interval for exporting listing (e.g., 24h, 12h)
+      # Default: 24h
+      EXPORT_LISTING_INTERVAL: "24h"
+      # Maximum attempts to generate description for a meme
+      # Default: 3
+      MAX_GENERATION_ATTEMPTS: "3"
+      # Enable automatic background worker
+      # Default: true
+      AUTO_START_WORKER: "true"
+      # Backfill database from listing file on startup if DB is empty
+      # Default: true
+      BACKFILL_FROM_LISTING_ON_EMPTY_DB: "true"
+      # Export listing on shutdown
+      # Default: true
+      EXPORT_LISTING_ON_SHUTDOWN: "true"
+      
+      # === Advanced Configuration ===
+      # Number of concurrent storage workers
+      # Default: 4
+      STORAGE_WORKERS: "4"
+      # Storage concurrency limit
+      # Default: 2
+      STORAGE_CONCURRENCY: "2"
+      # Maximum records to sync per batch
+      # Default: 500
+      SYNC_MAX_RECORDS: "500"
+    
+    # Docker Secrets (for sensitive data)
+    secrets:
+      - google_genai_api_key
+      - webdav_username
+      - webdav_password
+    
+    # Restart policy
+    restart: unless-stopped
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+# Secret definitions
+secrets:
+  google_genai_api_key:
+    file: ./secrets/google_genai_api_key
+  
+  webdav_username:
+    file: ./secrets/webdav_username
+  
+  webdav_password:
+    file: ./secrets/webdav_password

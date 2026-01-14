@@ -1,3 +1,4 @@
+import asyncio
 import datetime
 import json
 import logging
@@ -17,6 +18,7 @@ from .models import Meme, DuplicateGroup as DBDuplicateGroup, MemeDuplicateGroup
 from .deduplication import find_duplicate_groups, calculate_phash
 from .storage import WebDavStorage
 from .storage_workers import StorageWorkerPool
+from .storage_helpers import compute_and_persist_phash
 
 logger = logging.getLogger(__name__)
 
@@ -585,6 +587,31 @@ class App:
             except Exception as exc:
                 logger.exception("Failed to write descriptions to listing.json: %s", exc)
 
+        if to_add:
+            logger.info("Calculating perceptual hashes for %d newly added memes", len(to_add))
+            try:
+                async def compute_phashes_for_new_memes():
+                    results = []
+                    for filename in to_add:
+                        try:
+                            result = await compute_and_persist_phash(filename, self.storage, self.engine, timestamp=1.0)
+                            results.append((filename, result is not None))
+                        except Exception as e:
+                            logger.debug("Failed to compute phash for %s: %s", filename, e)
+                            results.append((filename, False))
+                    return results
+                
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    phash_results = loop.run_until_complete(compute_phashes_for_new_memes())
+                    successful = sum(1 for _, success in phash_results if success)
+                    logger.debug("Phash calculation for new memes: %d/%d successful", successful, len(to_add))
+                finally:
+                    loop.close()
+            except Exception:
+                logger.exception("Failed to calculate phashes for newly added memes")
+
         try:
             with session_scope(self.engine) as session:
                 try:
@@ -614,7 +641,7 @@ class App:
         except Exception:
             logger.exception("Failed to run deduplication analysis after sync_and_process")
 
-        return {
+        result = {
             'added': len(to_add),
             'removed': len(to_remove),
             'saved': saved_count,
@@ -623,6 +650,11 @@ class App:
             'unfilled': len(unfilled),
             'updated': bool(updated_path),
         }
+        
+        if result['added'] > 0:
+            logger.info("Sync job completed: %d memes added", result['added'])
+        
+        return result
 
     def import_listing_into_db(self) -> Dict[str, int]:
         """Import listing.json from WebDAV into DB."""
