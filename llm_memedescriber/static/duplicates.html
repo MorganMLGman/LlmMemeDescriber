@@ -91,7 +91,7 @@
                             html += `<div class="d-flex align-items-center gap-3">`;
                             html += `<img src="${preview}" style="height:60px;width:80px;object-fit:cover;border-radius:6px;" alt="preview">`;
                             html += `<div class="flex-grow-1">`;
-                            html += `<a href="#" onclick="openPreview(${safeFilename}); return false;" class="fw-semibold">${meme.filename.length>60? meme.filename.substring(0,60)+'...': meme.filename}</a>`;
+                            html += `<a href="#" onclick="openPreview('${meme.filename.replace(/'/g, "\\'")}'); return false;" class="fw-semibold">${meme.filename.length>60? meme.filename.substring(0,60)+'...': meme.filename}</a>`;
                             html += `<div class="small text-muted">${meme.path || ''}</div>`;
                             if (idx !== 0) {
                                 html += `<div class="mt-1 d-flex align-items-center gap-2">`;
@@ -224,8 +224,11 @@
                 }
             };
         
-        window.openPreview = async function(filename) {
+        window.openPreview = function(filename) {
             try {
+                // Remove quotes if filename is JSON stringified
+                filename = typeof filename === 'string' ? filename.replace(/^"|"$/g, '') : filename;
+                
                 const isVideo = /\.(mp4|webm|mov|mkv|avi|flv)$/i.test(filename);
                 const imageElement = document.getElementById('previewImage');
                 const videoElement = document.getElementById('previewVideo');
