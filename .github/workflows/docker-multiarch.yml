@@ -80,11 +80,18 @@ jobs:
           platforms: linux/arm64
           push: false
           load: true
+          build-args: |
+            TARGETARCH=arm64
           tags: llm-meme-describer:check-${{ github.sha }}-arm64
 
       - name: Import check (arm64)
         run: |
           docker run --rm --platform linux/arm64 --entrypoint /app/.venv/bin/python llm-meme-describer:check-${{ github.sha }}-arm64 -c "import pydantic_core._pydantic_core; print('OK')"
+
+      - name: Check ffmpeg availability (arm64)
+        run: |
+          docker run --rm --platform linux/arm64 llm-meme-describer:check-${{ github.sha }}-arm64 ffmpeg -version
+          docker run --rm --platform linux/arm64 llm-meme-describer:check-${{ github.sha }}-arm64 ffprobe -version
 
   check-amd64:
     needs: test
@@ -124,11 +131,18 @@ jobs:
           platforms: linux/amd64
           push: false
           load: true
+          build-args: |
+            TARGETARCH=amd64
           tags: llm-meme-describer:check-${{ github.sha }}-amd64
 
       - name: Import check (amd64)
         run: |
           docker run --rm --platform linux/amd64 --entrypoint /app/.venv/bin/python llm-meme-describer:check-${{ github.sha }}-amd64 -c "import pydantic_core._pydantic_core; print('OK')"
+
+      - name: Check ffmpeg availability (amd64)
+        run: |
+          docker run --rm --platform linux/amd64 llm-meme-describer:check-${{ github.sha }}-amd64 ffmpeg -version
+          docker run --rm --platform linux/amd64 llm-meme-describer:check-${{ github.sha }}-amd64 ffprobe -version
 
   push:
     needs: [check-arm64, check-amd64]
