@@ -203,3 +203,76 @@ def restore_preview_cache() -> int:
     except Exception as e:
         logger.exception(f"Failed to restore preview cache: {e}")
         return 0
+
+
+def remove_cache_entry(filename: str) -> bool:
+    """
+    Remove a cache entry for a specific filename.
+    
+    Args:
+        filename: The filename whose cache entry should be removed.
+        
+    Returns:
+        True if removed successfully or file didn't exist, False if an error occurred.
+    """
+    try:
+        cache_path = _cache_path(filename)
+        if os.path.isfile(cache_path):
+            os.remove(cache_path)
+            logger.debug(f"Removed cache entry for: {filename}")
+            return True
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to remove cache entry for {filename}: {e}")
+        return False
+
+
+def cleanup_orphaned_cache(valid_filenames: set) -> int:
+    """
+    Remove cache entries that don't have corresponding filenames in the provided set.
+    This is called when files are removed from the database to keep cache in sync.
+    
+    Args:
+        valid_filenames: Set of filenames that should have cache entries (from database).
+        
+    Returns:
+        Number of orphaned cache files removed.
+    """
+    try:
+        if not os.path.isdir(CACHE_DIR):
+            return 0
+        
+        removed_count = 0
+        try:
+            all_files = os.listdir(CACHE_DIR)
+        except OSError as e:
+            logger.warning(f"Failed to list files in {CACHE_DIR}: {e}")
+            return 0
+        
+        for filename in all_files:
+            if not filename.endswith('.jpg'):
+                continue
+            
+            # Check if this cache file corresponds to any valid filename
+            is_orphaned = True
+            for valid_filename in valid_filenames:
+                if _cache_path(valid_filename) == os.path.join(CACHE_DIR, filename):
+                    is_orphaned = False
+                    break
+            
+            if is_orphaned:
+                try:
+                    cache_path = os.path.join(CACHE_DIR, filename)
+                    os.remove(cache_path)
+                    logger.debug(f"Removed orphaned cache file: {filename}")
+                    removed_count += 1
+                except Exception as e:
+                    logger.warning(f"Failed to remove orphaned cache file {filename}: {e}")
+        
+        if removed_count > 0:
+            logger.info(f"Removed {removed_count} orphaned cache files")
+        
+        return removed_count
+    except Exception as e:
+        logger.exception(f"Failed to cleanup orphaned cache: {e}")
+        return 0

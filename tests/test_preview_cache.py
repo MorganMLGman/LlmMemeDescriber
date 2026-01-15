@@ -262,3 +262,87 @@ def test_save_and_restore_preserves_file_integrity(tmp_path):
         cached_content = cached_file.read_bytes()
         assert cached_content == original_content, \
             f"Content mismatch for {filename}. Expected {len(original_content)} bytes, got {len(cached_content)}"
+
+
+def test_cleanup_orphaned_cache(tmp_path):
+    """Test that cleanup_orphaned_cache removes cache files for removed memes."""
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    
+    preview_helpers.CACHE_DIR = str(cache_dir)
+    
+    # Create some cache files by hashing filenames
+    valid_filenames = {"image1.jpg", "image2.jpg"}
+    orphaned_filenames = {"removed1.jpg", "removed2.jpg"}
+    
+    # Create cache files for both valid and orphaned files
+    import hashlib
+    for filename in valid_filenames | orphaned_filenames:
+        name_hash = hashlib.md5(filename.encode()).hexdigest()
+        cache_file = cache_dir / f"{name_hash}.jpg"
+        cache_file.write_bytes(b"fake image data")
+    
+    # Verify all files exist
+    assert len(list(cache_dir.glob("*.jpg"))) == 4
+    
+    # Clean up orphaned cache
+    removed_count = preview_helpers.cleanup_orphaned_cache(valid_filenames)
+    
+    # Verify that 2 files were removed
+    assert removed_count == 2
+    assert len(list(cache_dir.glob("*.jpg"))) == 2
+    
+    # Verify that valid files still exist
+    for filename in valid_filenames:
+        name_hash = hashlib.md5(filename.encode()).hexdigest()
+        assert (cache_dir / f"{name_hash}.jpg").exists()
+    
+    # Verify that orphaned files were removed
+    for filename in orphaned_filenames:
+        name_hash = hashlib.md5(filename.encode()).hexdigest()
+        assert not (cache_dir / f"{name_hash}.jpg").exists()
+
+
+def test_cleanup_orphaned_cache_empty_valid_set(tmp_path):
+    """Test cleanup_orphaned_cache with empty valid filenames set removes all cache."""
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    
+    preview_helpers.CACHE_DIR = str(cache_dir)
+    
+    # Create some cache files
+    for i in range(3):
+        (cache_dir / f"cache_{i}.jpg").write_bytes(b"fake image data")
+    
+    assert len(list(cache_dir.glob("*.jpg"))) == 3
+    
+    # Clean up with empty valid set should remove all files
+    removed_count = preview_helpers.cleanup_orphaned_cache(set())
+    
+    assert removed_count == 3
+    assert len(list(cache_dir.glob("*.jpg"))) == 0
+
+
+def test_cleanup_orphaned_cache_with_non_jpg_files(tmp_path):
+    """Test that cleanup_orphaned_cache ignores non-jpg files."""
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    
+    preview_helpers.CACHE_DIR = str(cache_dir)
+    
+    # Create some cache files and other files
+    (cache_dir / "cache1.jpg").write_bytes(b"fake image data")
+    (cache_dir / "cache2.jpg").write_bytes(b"fake image data")
+    (cache_dir / "other_file.txt").write_text("text file")
+    (cache_dir / "cache_manifest.json").write_text("{}")
+    
+    assert len(list(cache_dir.glob("*.jpg"))) == 2
+    
+    # Clean up with empty valid set
+    removed_count = preview_helpers.cleanup_orphaned_cache(set())
+    
+    # Should only remove jpg files
+    assert removed_count == 2
+    assert (cache_dir / "other_file.txt").exists()
+    assert (cache_dir / "cache_manifest.json").exists()
+    assert len(list(cache_dir.glob("*.jpg"))) == 0

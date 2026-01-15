@@ -19,6 +19,7 @@ from .deduplication import find_duplicate_groups, calculate_phash
 from .storage import WebDavStorage
 from .storage_workers import StorageWorkerPool
 from .storage_helpers import compute_and_persist_phash
+from .preview_helpers import cleanup_orphaned_cache
 
 logger = logging.getLogger(__name__)
 
@@ -620,6 +621,16 @@ class App:
             logger.debug("Deduplication analysis completed after sync: %d groups persisted", len(duplicate_groups))
         except Exception:
             logger.exception("Failed to run deduplication analysis after sync_and_process")
+
+        # Clean up orphaned cache entries
+        try:
+            with session_scope(self.engine) as session:
+                valid_filenames = set(session.exec(select(Meme.filename)).all())
+                removed_count = cleanup_orphaned_cache(valid_filenames)
+                if removed_count > 0:
+                    logger.info("Cleaned up %d orphaned cache files after sync", removed_count)
+        except Exception:
+            logger.exception("Failed to cleanup orphaned cache after sync_and_process")
 
         result = {
             'added': len(to_add),

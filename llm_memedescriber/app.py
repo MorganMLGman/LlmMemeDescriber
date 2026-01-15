@@ -32,7 +32,7 @@ from .deduplication import (
 )
 from .dup_helpers import get_group_members, get_groups_for_filename
 from .storage_helpers import compute_and_persist_phash
-from .preview_helpers import generate_preview, async_generate_preview, restore_preview_cache, save_preview_cache
+from .preview_helpers import generate_preview, async_generate_preview, restore_preview_cache, save_preview_cache, cleanup_orphaned_cache
 from sqlmodel import select
 from .db_helpers import session_scope
 from .models import Meme, DuplicateGroup as DBDuplicateGroup, MemeDuplicateGroup as DBDupeLink
@@ -62,10 +62,13 @@ async def lifespan(app_instance: FastAPI):
         with session_scope(app_instance.state.engine) as session:
             removed_memes = session.exec(select(Meme).where(Meme.status == 'removed')).all()
             if removed_memes:
+                removed_filenames = {meme.filename for meme in removed_memes}
                 for meme in removed_memes:
                     session.delete(meme)
                 session.commit()
                 logger.info(f"Cleaned up {len(removed_memes)} removed memes from database")
+                # Clean up cache entries for removed memes
+                cleanup_orphaned_cache(set(session.exec(select(Meme.filename)).all()) if session.exec(select(Meme)).first() else set())
     except Exception:
         logger.exception("Failed to clean up removed memes from database")
     storage = None
