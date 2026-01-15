@@ -623,9 +623,11 @@ def get_duplicates_by_group():
     """Get all memes grouped by duplicate_group_id.
     
     Returns list of duplicate groups with all memes in each group.
+    Primary is automatically selected as the file with largest size.
     Only includes groups with duplicate_group_id != None and at least 2 memes.
     """
     try:
+        storage = getattr(app.state, 'app_instance', None) and getattr(app.state.app_instance, 'storage', None)
         with session_scope(app.state.engine) as session:
             groups_out = []
             groups = session.exec(select(DBDuplicateGroup)).all()
@@ -640,17 +642,52 @@ def get_duplicates_by_group():
                 memes = []
                 for l in links:
                     m = meme_map.get(l.filename)
+                    file_size = 0
+                    if storage:
+                        try:
+                            try:
+                                file_entries = storage.client.ls(l.filename)
+                                if file_entries and isinstance(file_entries[0], dict):
+                                    entry = file_entries[0]
+                                    logger.debug(f"WebDAV entry for {l.filename}: {entry}")
+                                    for size_field in ('getcontentlength', 'size'):
+                                        if size_field in entry:
+                                            try:
+                                                file_size = int(entry[size_field])
+                                                logger.debug(f"Found {size_field}={file_size} for {l.filename}")
+                                                break
+                                            except (ValueError, TypeError):
+                                                pass
+                            except Exception as e:
+                                logger.debug(f"WebDAV ls failed for {l.filename}: {e}")
+                                pass
+                        except Exception:
+                            pass
+                        
+                        if file_size == 0:
+                            try:
+                                logger.debug(f"Downloading {l.filename} to measure size")
+                                data = storage.download_file(l.filename)
+                                file_size = len(data) if data else 0
+                                logger.debug(f"Downloaded {l.filename}, size={file_size}")
+                            except Exception as e:
+                                logger.debug(f"Download fallback failed for {l.filename}: {e}")
+                                file_size = 0
+                    
                     memes.append({
                         "filename": l.filename,
                         "phash": m.phash if m else None,
-                        "preview_url": f"/memes/{l.filename}/preview"
+                        "preview_url": f"/memes/{l.filename}/preview",
+                        "size": file_size
                     })
                 
-                # Only include groups with at least 2 memes (actual duplicates)
                 if len(memes) >= 2:
+                    primary_meme = max(memes, key=lambda x: x['size']) if memes else memes[0]
+                    
                     groups_out.append({
                         "group_id": g.id,
                         "count": len(memes),
+                        "primary_filename": primary_meme['filename'],
                         "memes": memes
                     })
 

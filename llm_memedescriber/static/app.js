@@ -16,7 +16,6 @@ async function loadMemes() {
     try {
         console.log('=== Starting loadMemes ===');
         
-        // First, test if API is responsive
         console.log('Testing API health...');
         const healthResponse = await fetch(`/health`, { timeout: 2000 });
         console.log('Health check response:', healthResponse.status);
@@ -27,7 +26,6 @@ async function loadMemes() {
         
         console.log('API is responsive, initializing memes list...');
         
-        // Reset everything
         allMemes = [];
         filteredMemes = [];
         displayedMemes = [];
@@ -37,7 +35,6 @@ async function loadMemes() {
         hasMoreMemes = true;
         searchQuery = '';
         
-        // Fetch initial batch from API
         await fetchMoreFromAPI();
         
         const total = allMemes.length;
@@ -86,7 +83,6 @@ async function fetchMoreFromAPI() {
             totalFetched = allMemes.length;
             apiOffset += newMemes.length;
             
-            // Check if there are more memes to fetch
             hasMoreMemes = newMemes.length === 2000;
         } else {
             hasMoreMemes = false;
@@ -108,7 +104,6 @@ function renderInitial() {
         return;
     }
     
-    // Load and display first batch
     displayedMemes = [];
     currentOffset = 0;
     container.innerHTML = '';
@@ -123,7 +118,6 @@ function loadMoreMemes() {
     
     console.log(`loadMoreMemes: currentOffset=${currentOffset}, displayedMemes=${displayedMemes.length}, allMemes=${allMemes.length}, itemsPerPage=${itemsPerPage}`);
     
-    // Check if we need to fetch more from API
     if (currentOffset + itemsPerPage > allMemes.length && hasMoreMemes) {
         console.log('Need more data from API - fetching...');
         const loadingIndicator = document.getElementById('loadingIndicator');
@@ -142,7 +136,6 @@ function loadMoreMemesFromCached() {
     const loadingIndicator = document.getElementById('loadingIndicator');
     
     try {
-        // Get next batch from filteredMemes
         const nextBatch = filteredMemes.slice(currentOffset, currentOffset + itemsPerPage);
         
         if (nextBatch.length === 0) {
@@ -160,7 +153,6 @@ function loadMoreMemesFromCached() {
         displayedMemes = displayedMemes.concat(nextBatch);
         currentOffset += itemsPerPage;
         
-        // Check if we've reached the end
         if (currentOffset >= filteredMemes.length && !hasMoreMemes) {
             const endMessage = document.getElementById('endOfListMessage');
             if (endMessage) {
@@ -198,7 +190,6 @@ function renderDisplayedMemes() {
     }
 
     try {
-        // Build HTML for all displayed memes
         container.innerHTML = displayedMemes.map(meme => `
             <div class="col-md-6 col-lg-4">
                 <div class="card meme-card h-100 position-relative">
@@ -215,7 +206,7 @@ function renderDisplayedMemes() {
                          onerror="this.src='/static/placeholder.png'">
                     <div class="card-body d-flex flex-column cursor-pointer" onclick="viewMeme('${meme.filename}')">
                         <h6 class="card-title text-truncate">${escapeHtml(meme.filename)}</h6>
-                        <p class="card-text text-muted small flex-grow-1">
+                        <p class="card-text mb-2 small flex-grow-1">
                             ${escapeHtml((meme.description || '').substring(0, 100))}...
                         </p>
                         <small class="text-secondary">
@@ -232,7 +223,6 @@ function renderDisplayedMemes() {
 }
 
 function setupInfiniteScroll() {
-    // Setup Intersection Observer for infinite scroll
     const observer = new IntersectionObserver((entries) => {
         entries.forEach(entry => {
             if (entry.isIntersecting && !isLoading) {
@@ -246,7 +236,6 @@ function setupInfiniteScroll() {
         });
     }, { threshold: 0.1 });
     
-    // Create and observe a sentinel element
     let sentinel = document.getElementById('scrollSentinel');
     if (!sentinel) {
         sentinel = document.createElement('div');
@@ -296,7 +285,6 @@ function handleSearch() {
         );
     }
     
-    // Reset display for new search
     displayedMemes = [];
     currentOffset = 0;
     hasMoreMemes = filteredMemes.length > 0;
@@ -315,7 +303,6 @@ function clearSearch() {
     filteredMemes = allMemes;
     searchQuery = '';
     
-    // Reset display
     displayedMemes = [];
     currentOffset = 0;
     hasMoreMemes = filteredMemes.length > 0;
@@ -381,20 +368,16 @@ async function viewMeme(memeFilename) {
         
         document.getElementById('memeDetails').textContent = details;
         
-        // Show deduplication button if has duplicates
         const dedupeBtn = document.getElementById('dedupeBtn');
         const recalcBtn = document.getElementById('recalcPhashBtn');
         
         if (!meme.phash) {
-            // No phash - show recalculate button
             recalcBtn.style.display = 'inline-block';
             dedupeBtn.style.display = 'none';
         } else if (meme.duplicate_group_id && !meme.is_false_positive) {
-            // Has phash and duplicates - show dedup button
             dedupeBtn.style.display = 'inline-block';
             recalcBtn.style.display = 'none';
         } else {
-            // Has phash but no duplicates
             dedupeBtn.style.display = 'none';
             recalcBtn.style.display = 'none';
         }
@@ -415,7 +398,6 @@ async function viewMeme(memeFilename) {
 }
 
     function openMemeDetail(filename) {
-        // Wrapper to open meme detail modal from duplicates list
         try {
             viewMeme(filename);
         } catch (e) {
@@ -523,7 +505,6 @@ function truncateFilename(name, maxLen) {
     return name.substring(0, maxLen - 3) + '...';
 }
 
-// Deduplication functions
 async function getPhashStatus() {
     try {
         const response = await fetch('/memes/phash-status');
@@ -581,7 +562,7 @@ async function openDeduplicationPanel(filename) {
         html += '<div class="table-responsive">';
         html += '<table class="table table-hover">';
         html += '<thead class="table-dark"><tr>';
-        html += '<th style="width:48px;"></th>'; // primary radio
+        html += '<th style="width:48px;"></th>';
         html += '<th>File</th>';
         html += '<th style="width:160px;">Actions</th>';
         html += '</tr></thead><tbody>';
@@ -592,12 +573,10 @@ async function openDeduplicationPanel(filename) {
             const similarityPercent = isPrimary ? 100 : Math.round((similarity / 64) * 100);
 
             html += '<tr>';
-            // primary radio
             html += `<td class="align-middle text-center">`;
             html += `<input class="form-check-input" type="radio" name="primaryMeme" value="${escapeHtml(meme.filename)}" ${isPrimary ? 'checked' : ''}>`;
             html += `</td>`;
 
-            // file details column
             html += '<td class="align-middle">';
             html += `<div class="d-flex align-items-center gap-3">`;
             html += `<img src="${meme.preview_url}" style="height:60px; width:80px; object-fit:cover; border-radius:6px;" alt="preview">`;
@@ -618,7 +597,6 @@ async function openDeduplicationPanel(filename) {
             html += `</div></div>`;
             html += '</td>';
 
-            // actions
             html += '<td class="align-middle">';
             html += `<div class="d-flex gap-2 justify-content-end">`;
             html += `<button class="btn btn-sm btn-danger" onclick="deleteDuplicateRow('${escapeHtml(meme.filename)}')">Delete</button>`;
@@ -630,7 +608,6 @@ async function openDeduplicationPanel(filename) {
 
         html += '</tbody></table></div>';
 
-        // Action buttons
         html += '<div class="mt-3 d-flex gap-2 justify-content-start">';
         html += `<button class="btn btn-danger" onclick="confirmMergeDuplicates('${escapeHtml(filename)}')">Merge Selected</button>`;
         html += `<button class="btn btn-warning" onclick="markNotDuplicate('${escapeHtml(filename)}')">Mark as Not Duplicate</button>`;
@@ -648,7 +625,6 @@ async function openDeduplicationPanel(filename) {
 }
 
 async function confirmMergeDuplicates(oldPrimaryFilename) {
-    // Get selected primary from radio button
     const selectedPrimary = document.querySelector('input[name="primaryMeme"]:checked')?.value;
 
     if (!selectedPrimary) {
@@ -656,14 +632,11 @@ async function confirmMergeDuplicates(oldPrimaryFilename) {
         return;
     }
 
-    // Get selected duplicate rows (checkboxes)
     const checked = Array.from(document.querySelectorAll('input.select-dup:checked'))
         .map(cb => cb.value);
 
-    // Exclude primary from duplicates
     const duplicateFilenames = checked.filter(f => f !== selectedPrimary);
 
-    // If none explicitly selected, default to all except primary
     if (duplicateFilenames.length === 0) {
         const allRadios = document.querySelectorAll('input[name="primaryMeme"]');
         const allFilenames = Array.from(allRadios).map(rb => rb.value);
@@ -682,7 +655,6 @@ async function confirmMergeDuplicates(oldPrimaryFilename) {
         }
     }
 
-    // gather metadata_sources from checked includeMeta checkboxes (if present)
     const metadataSources = Array.from(document.querySelectorAll('input[name="includeMeta"]:checked'))
         .map(cb => cb.value)
         .filter(fn => fn !== selectedPrimary);
@@ -713,7 +685,6 @@ async function mergeDuplicates(primaryFilename, duplicateFilenames, metadataSour
         }
 
         showSuccess('Duplicates merged successfully!');
-        // Safely hide modals if they exist on the current page
         try {
             const dedupEl = document.getElementById('deduplicationModal');
             const dedupInstance = dedupEl && bootstrap && bootstrap.Modal ? bootstrap.Modal.getInstance(dedupEl) : null;
@@ -725,8 +696,14 @@ async function mergeDuplicates(primaryFilename, duplicateFilenames, metadataSour
         } catch (e) {
             console.debug('No modals to hide on this page');
         }
-        loadMemes();
-        checkDuplicatesButton();
+        
+        const isDuplicatesPage = window.location.pathname.includes('/duplicates');
+        if (isDuplicatesPage) {
+            setTimeout(() => location.reload(), 400);
+        } else {
+            loadMemes();
+            checkDuplicatesButton();
+        }
     } catch (error) {
         console.error('Error merging duplicates:', error);
         showError('Failed to merge duplicates: ' + (error.message || ''));
@@ -739,7 +716,6 @@ function deleteDuplicateRow(filename) {
         .then(resp => {
             if (!resp.ok) throw new Error('Delete failed');
             showSuccess('File deleted');
-            // remove row checkbox and radio
             const rows = Array.from(document.querySelectorAll('input.select-dup'));
             for (const cb of rows) {
                 if (cb.value === filename) {
@@ -753,14 +729,12 @@ function deleteDuplicateRow(filename) {
 }
 
 async function mergeSingleDuplicate(filename) {
-    // Merge a single duplicate into the selected primary (or the primary row)
     const selectedPrimary = document.querySelector('input[name="primaryMeme"]:checked')?.value;
     const primary = selectedPrimary || document.querySelector('input[name="primaryMeme"]')?.value;
     if (!primary) { showError('No primary selected'); return; }
 
     if (!confirm('Merge "' + filename + '" into "' + primary + '"?')) return;
 
-    // gather metadata_sources for this row if includeMeta checkbox exists
     const metaCheckbox = Array.from(document.querySelectorAll('input[name="includeMeta"]')).find(cb => cb.value === filename);
     const metadataSources = metaCheckbox && metaCheckbox.checked ? [filename] : [];
 
@@ -843,7 +817,6 @@ async function checkDuplicatesButton() {
         const resp = await fetch('/memes/duplicates-by-group');
         if (!resp.ok) return;
         const data = await resp.json();
-        // Backend already filters groups with less than 2 memes
         if (data && data.total_groups > 0) {
             viewBtn.style.display = 'inline-block';
         } else {
@@ -854,7 +827,6 @@ async function checkDuplicatesButton() {
     }
 }
 
-// Additional helper functions
 function showDeduplicationModal() {
     openDeduplicationPanel(currentMemeId);
 }
@@ -880,11 +852,9 @@ async function markRemoved() {
 
 document.addEventListener('DOMContentLoaded', function() {
     console.log('DOM Content Loaded');
-    // Only call loadMemes on pages that include the memes container
     if (document.getElementById('memesContainer')) {
         console.log('Calling loadMemes');
         loadMemes();
-        // Check duplicates button only on pages with memes container
         checkDuplicatesButton();
     } else {
         console.log('memesContainer not present — skipping loadMemes');
