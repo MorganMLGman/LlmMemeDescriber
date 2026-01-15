@@ -601,16 +601,14 @@ class App:
                             results.append((filename, False))
                     return results
                 
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
                 try:
-                    phash_results = loop.run_until_complete(compute_phashes_for_new_memes())
+                    phash_results = asyncio.run(compute_phashes_for_new_memes())
                     successful = sum(1 for _, success in phash_results if success)
                     logger.debug("Phash calculation for new memes: %d/%d successful", successful, len(to_add))
-                finally:
-                    loop.close()
+                except Exception:
+                    logger.exception("Failed to calculate phashes for newly added memes")
             except Exception:
-                logger.exception("Failed to calculate phashes for newly added memes")
+                logger.exception("Failed to compute phashes for newly added memes")
 
         try:
             with session_scope(self.engine) as session:
@@ -637,7 +635,7 @@ class App:
                         link = DBDupeLink(group_id=dg.id, filename=meme.filename)
                         session.add(link)
                 session.commit()
-            logger.info("Deduplication analysis completed after sync: %d groups persisted", len(duplicate_groups))
+            logger.debug("Deduplication analysis completed after sync: %d groups persisted", len(duplicate_groups))
         except Exception:
             logger.exception("Failed to run deduplication analysis after sync_and_process")
 

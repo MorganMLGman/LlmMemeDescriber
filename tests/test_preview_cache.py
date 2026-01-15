@@ -52,14 +52,15 @@ def test_save_preview_cache_empty_directory(tmp_path):
     assert manifest['cached_previews'] == []
 
 
-def test_save_preview_cache_ignores_non_jpg_files(tmp_path):
-    """Test that save_preview_cache only includes .jpg files."""
+def test_save_preview_cache_ignores_empty_files(tmp_path):
+    """Test that save_preview_cache only includes .jpg files with content."""
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir()
     manifest_file = cache_dir / "cache_manifest.json"
     
     (cache_dir / "img1.jpg").write_bytes(b"data")
     (cache_dir / "img2.jpg").write_bytes(b"data")
+    (cache_dir / "img_empty.jpg").write_bytes(b"")  # Empty file - should be excluded
     (cache_dir / "other.png").write_bytes(b"data")
     (cache_dir / "readme.txt").write_bytes(b"data")
     
@@ -68,11 +69,14 @@ def test_save_preview_cache_ignores_non_jpg_files(tmp_path):
     
     count = preview_helpers.save_preview_cache()
     
+    # Should only count files with content, not empty files
     assert count == 2
     
     with open(manifest_file, 'r') as f:
         manifest = json.load(f)
     
+    assert len(manifest['cached_previews']) == 2
+    assert 'img_empty.jpg' not in manifest['cached_previews']
     assert all(f.endswith('.jpg') for f in manifest['cached_previews'])
 
 

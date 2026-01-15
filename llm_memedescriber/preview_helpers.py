@@ -137,12 +137,18 @@ def save_preview_cache() -> int:
             logger.debug(f"Files in {CACHE_DIR}: {all_files}")
             for filename in all_files:
                 if filename.endswith('.jpg'):
-                    cached_files.append(filename)
+                    file_path = os.path.join(CACHE_DIR, filename)
+                    try:
+                        # Only include files with actual content (> 0 bytes)
+                        if os.path.getsize(file_path) > 0:
+                            cached_files.append(filename)
+                    except OSError:
+                        pass
         except OSError as e:
             logger.warning(f"Failed to list files in {CACHE_DIR}: {e}")
             return 0
         
-        logger.info(f"Found {len(cached_files)} jpg files in cache: {cached_files}")
+        logger.info(f"Found {len(cached_files)} jpg files with content in cache")
         
         preview_cache_dir = os.path.dirname(PREVIEW_CACHE_METADATA)
         os.makedirs(preview_cache_dir, exist_ok=True)
@@ -186,10 +192,11 @@ def restore_preview_cache() -> int:
         for filename in cached_files:
             cache_path = os.path.join(CACHE_DIR, filename)
             try:
-                if os.path.isfile(cache_path):
+                # Verify file exists AND has content (size > 0)
+                if os.path.isfile(cache_path) and os.path.getsize(cache_path) > 0:
                     verified_count += 1
                 else:
-                    logger.debug(f"Cache file not found: {filename}")
+                    logger.debug(f"Cache file missing or empty: {filename}")
             except Exception as e:
                 logger.debug(f"Failed to verify cache file {filename}: {e}")
         
