@@ -25,7 +25,7 @@ RUN set -e; \
     rm -rf /tmp/ffmpeg* && \
     chmod +x /usr/bin/ffmpeg /usr/bin/ffprobe
 
-RUN mkdir -p /data /cache && chmod 755 /data /cache
+RUN mkdir -p /data && chmod 755 /data
 
 FROM dhi.io/python:3.14-debian13 AS production
 WORKDIR /app
@@ -34,7 +34,6 @@ COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /usr/bin/ffmpeg /usr/bin/ffmpeg
 COPY --from=builder /usr/bin/ffprobe /usr/bin/ffprobe
 COPY --from=builder /data /data
-COPY --from=builder /cache /cache
 VOLUME ["/data"]
 
 ENV PYTHONUNBUFFERED=1

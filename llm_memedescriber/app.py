@@ -355,24 +355,6 @@ async def root():
             return f.read()
     return HTMLResponse("<html><body><h1>llm_memedescriber</h1><p>No UI available.</p></body></html>")
 
-def _get_or_generate_preview(filename: str, is_vid: bool, storage: Any, size: int = 300) -> bytes:
-    """Get preview from cache directory or generate it.
-    
-    Uses tmpfs cache at /cache to avoid regenerating.
-    Returns JPEG bytes.
-    Raises HTTPException on failure.
-    """
-    try:
-        return generate_preview(filename, is_vid, storage, size=size)
-    except FileNotFoundError:
-        logger.info('File not found: %s', filename)
-        raise HTTPException(status_code=404, detail='File not found in storage')
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.exception('Failed to generate preview for %s: %s', filename, exc)
-        raise HTTPException(status_code=500, detail='Preview generation failed')
-
 
 async def _aget_or_generate_preview(filename: str, is_vid: bool, storage: Any, size: int = 300) -> bytes:
     """Async wrapper for preview generation that uses storage async methods when available."""

@@ -3,17 +3,15 @@ import os
 import logging
 import json
 from io import BytesIO
-from typing import Any, Set
+from typing import Any
 
 import asyncio
 from PIL import Image
 
-from .constants import CACHE_DIR, PREVIEW_JPEG_QUALITY_IMAGE
+from .constants import CACHE_DIR, PREVIEW_CACHE_METADATA, PREVIEW_JPEG_QUALITY_IMAGE
 from .storage_helpers import call_storage
 
 logger = logging.getLogger(__name__)
-
-PREVIEW_CACHE_METADATA = "/data/cache/cache_manifest.json"
 
 
 def _cache_path(filename: str) -> str:

@@ -5,12 +5,9 @@ Performs simple checks and execs the provided command.
 """
 import os
 import sys
-import pwd
-import grp
 
 
 def main():
-  # Activate venv by ensuring its bin is first in PATH
   venv_bin = "/app/.venv/bin"
   if os.path.isdir(venv_bin):
     os.environ["PATH"] = venv_bin + ":" + os.environ.get("PATH", "")
