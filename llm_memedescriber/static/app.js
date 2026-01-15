@@ -400,13 +400,6 @@ async function viewMeme(memeFilename) {
         }
         
         const modal = new bootstrap.Modal(document.getElementById('memeModal'));
-        
-        document.getElementById('memeModal').addEventListener('hide.bs.modal', () => {
-            const video = document.getElementById('memeVideo');
-            video.pause();
-            video.currentTime = 0;
-        }, { once: true });
-        
         modal.show();
     } catch (error) {
         console.error('Error loading meme:', error);
@@ -918,6 +911,29 @@ async function markRemoved() {
 
 document.addEventListener('DOMContentLoaded', function() {
     console.log('DOM Content Loaded');
+    
+    // Set up video autoplay/stop listeners for the modal
+    const memeModalEl = document.getElementById('memeModal');
+    if (memeModalEl) {
+        memeModalEl.addEventListener('show.bs.modal', () => {
+            const video = document.getElementById('memeVideo');
+            if (video && video.style.display === 'block') {
+                // Use setTimeout to ensure video is fully ready
+                setTimeout(() => {
+                    video.play().catch(err => console.log('Autoplay failed:', err));
+                }, 50);
+            }
+        });
+        
+        memeModalEl.addEventListener('hide.bs.modal', () => {
+            const video = document.getElementById('memeVideo');
+            if (video) {
+                video.pause();
+                video.currentTime = 0;
+            }
+        });
+    }
+    
     if (document.getElementById('memesContainer')) {
         console.log('Calling loadMemes');
         loadMemes();
