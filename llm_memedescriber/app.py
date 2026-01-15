@@ -534,6 +534,23 @@ def debug_db_schema():
         raise HTTPException(status_code=500, detail="Failed to read DB schema")
 
 
+@app.post("/sync", tags=["sync"])
+def trigger_sync():
+    """Manually trigger a sync job to check for new/removed memes from WebDAV.
+    
+    Returns dict with added, removed, saved, failed, unfilled, unsupported counts.
+    """
+    try:
+        if not hasattr(app.state, 'app_instance') or app.state.app_instance is None:
+            raise HTTPException(status_code=503, detail="Application not fully initialized")
+        
+        result = app.state.app_instance.sync_and_process()
+        return result
+    except Exception as e:
+        logger.exception("Error during manual sync: %s", e)
+        raise HTTPException(status_code=500, detail=f"Sync failed: {str(e)}")
+
+
 @app.post("/memes/deduplication/analyze", tags=["deduplication"])
 def analyze_duplicates():
     """Analyze all memes and find duplicate groups using perceptual hashing.

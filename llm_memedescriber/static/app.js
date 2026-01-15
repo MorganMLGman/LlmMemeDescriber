@@ -52,6 +52,43 @@ async function loadMemes() {
     }
 }
 
+async function startSyncJob() {
+    try {
+        console.log('Starting sync job...');
+        
+        const refreshBtn = document.querySelector('button[onclick="startSyncJob()"]');
+        const originalText = refreshBtn.textContent;
+        refreshBtn.disabled = true;
+        refreshBtn.textContent = '⏳ Syncing...';
+        
+        const response = await fetch('/sync', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+        
+        if (!response.ok) {
+            throw new Error(`Sync failed: ${response.status} ${response.statusText}`);
+        }
+        
+        const result = await response.json();
+        console.log('Sync completed:', result);
+        
+        showSuccess(`Sync completed: ${result.added} added, ${result.removed} removed, ${result.saved} saved`);
+        
+        // Reload memes after sync
+        await loadMemes();
+    } catch (error) {
+        console.error('Error during sync:', error);
+        showError(`Sync failed: ${error.message}`);
+    } finally {
+        const refreshBtn = document.querySelector('button[onclick="startSyncJob()"]');
+        refreshBtn.disabled = false;
+        refreshBtn.textContent = 'Refresh';
+    }
+}
+
 async function fetchMoreFromAPI() {
     if (isLoading) return;
     
