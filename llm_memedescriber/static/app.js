@@ -356,7 +356,24 @@ async function viewMeme(memeFilename) {
         }
         
         document.getElementById('memeCategory').value = meme.category || '';
-        document.getElementById('memeKeywords').value = meme.keywords || '';
+        
+        const keywordsList = (meme.keywords || '').split(',').map(k => k.trim()).filter(k => k);
+        window.currentKeywords = keywordsList;
+        renderKeywordBadges();
+        
+        document.getElementById('memeKeywordsInput').value = '';
+        document.getElementById('memeKeywordsInput').onkeydown = function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                const newKeyword = this.value.trim();
+                if (newKeyword && !window.currentKeywords.includes(newKeyword)) {
+                    window.currentKeywords.push(newKeyword);
+                    renderKeywordBadges();
+                    this.value = '';
+                }
+            }
+        };
+        
         document.getElementById('memeTextInImage').value = meme.text_in_image || '';
         document.getElementById('memeDescription').value = meme.description || '';
         
@@ -397,6 +414,55 @@ async function viewMeme(memeFilename) {
     }
 }
 
+function searchByKeyword(keyword) {
+    const modal = bootstrap.Modal.getInstance(document.getElementById('memeModal'));
+    if (modal) {
+        modal.hide();
+    }
+    
+    document.getElementById('searchInput').value = keyword;
+    handleSearch();
+}
+
+function renderKeywordBadges() {
+    const container = document.getElementById('keywordsBadges');
+    container.innerHTML = '';
+    window.currentKeywords.forEach((keyword, idx) => {
+        const badge = document.createElement('span');
+        badge.className = 'badge bg-primary d-flex align-items-center gap-2';
+        badge.style.padding = '6px 10px';
+        badge.style.cursor = 'pointer';
+        badge.title = 'Click to search';
+        
+        const textSpan = document.createElement('span');
+        textSpan.textContent = keyword;
+        textSpan.style.cursor = 'pointer';
+        textSpan.onclick = (e) => {
+            e.stopPropagation();
+            searchByKeyword(keyword);
+        };
+        
+        const closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.className = 'btn-close btn-close-white';
+        closeBtn.style.fontSize = '0.7rem';
+        closeBtn.title = 'Remove';
+        closeBtn.onclick = (e) => {
+            e.stopPropagation();
+            removeKeyword(idx);
+        };
+        
+        badge.appendChild(textSpan);
+        badge.appendChild(closeBtn);
+        container.appendChild(badge);
+    });
+}
+
+function removeKeyword(idx) {
+    window.currentKeywords.splice(idx, 1);
+    renderKeywordBadges();
+}
+
     function openMemeDetail(filename) {
         try {
             viewMeme(filename);
@@ -410,7 +476,7 @@ async function saveMeme() {
     if (!currentMemeId) return;
     
     const category = document.getElementById('memeCategory').value;
-    const keywords = document.getElementById('memeKeywords').value;
+    const keywords = (window.currentKeywords || []).join(', ');
     const description = document.getElementById('memeDescription').value;
     
     try {

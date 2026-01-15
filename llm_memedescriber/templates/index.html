@@ -91,7 +91,9 @@
                     </div>
                     <div class="mb-3">
                         <label for="memeKeywords" class="form-label">Keywords</label>
-                        <input type="text" id="memeKeywords" class="form-control" placeholder="Comma-separated keywords">
+                        <div id="keywordsBadges" class="mb-2" style="display: flex; flex-wrap: wrap; gap: 8px; min-height: 32px;"></div>
+                        <input type="text" id="memeKeywordsInput" class="form-control" placeholder="Type and press Enter to add keyword" style="margin-bottom: 8px;">
+                        <div id="keywordsList" style="display: none;"></div>
                     </div>
                     <div class="mb-3">
                         <label for="memeTextInImage" class="form-label">Text in Image</label>
