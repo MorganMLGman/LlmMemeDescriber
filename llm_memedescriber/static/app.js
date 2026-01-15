@@ -424,14 +424,12 @@ async function viewMeme(memeFilename) {
         }
     }
 
-    async function saveMeme() {
+async function saveMeme() {
     if (!currentMemeId) return;
     
     const category = document.getElementById('memeCategory').value;
     const keywords = document.getElementById('memeKeywords').value;
     const description = document.getElementById('memeDescription').value;
-
-            // copyMemeName removed: button was removed in HTML; title now wraps
     
     try {
         const response = await fetch(`/memes/${encodeURIComponent(currentMemeId)}`, {
@@ -476,6 +474,7 @@ async function deleteMeme() {
         showSuccess('Meme deleted!');
         bootstrap.Modal.getInstance(document.getElementById('memeModal')).hide();
         loadMemes();
+        checkDuplicatesButton();
     } catch (error) {
         console.error('Error deleting meme:', error);
         showError('Failed to delete meme');
@@ -727,6 +726,7 @@ async function mergeDuplicates(primaryFilename, duplicateFilenames, metadataSour
             console.debug('No modals to hide on this page');
         }
         loadMemes();
+        checkDuplicatesButton();
     } catch (error) {
         console.error('Error merging duplicates:', error);
         showError('Failed to merge duplicates: ' + (error.message || ''));
@@ -843,6 +843,7 @@ async function checkDuplicatesButton() {
         const resp = await fetch('/memes/duplicates-by-group');
         if (!resp.ok) return;
         const data = await resp.json();
+        // Backend already filters groups with less than 2 memes
         if (data && data.total_groups > 0) {
             viewBtn.style.display = 'inline-block';
         } else {
@@ -853,15 +854,39 @@ async function checkDuplicatesButton() {
     }
 }
 
+// Additional helper functions
+function showDeduplicationModal() {
+    openDeduplicationPanel(currentMemeId);
+}
+
+async function markRemoved() {
+    if (!currentMemeId) return;
+    try {
+        const response = await fetch(`/memes/${encodeURIComponent(currentMemeId)}`, {
+            method: 'DELETE'
+        });
+        if (response.ok) {
+            showSuccess('Meme marked as removed');
+            bootstrap.Modal.getInstance(document.getElementById('memeModal')).hide();
+            loadMemes();
+        } else {
+            showError('Failed to mark meme as removed');
+        }
+    } catch (error) {
+        console.error('Error removing meme:', error);
+        showError('Failed to remove meme');
+    }
+}
+
 document.addEventListener('DOMContentLoaded', function() {
     console.log('DOM Content Loaded');
     // Only call loadMemes on pages that include the memes container
     if (document.getElementById('memesContainer')) {
         console.log('Calling loadMemes');
         loadMemes();
+        // Check duplicates button only on pages with memes container
+        checkDuplicatesButton();
     } else {
         console.log('memesContainer not present — skipping loadMemes');
     }
-    // Ensure View Duplicates button reflects persisted groups on page load
-    checkDuplicatesButton();
 });

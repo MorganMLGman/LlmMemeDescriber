@@ -1,6 +1,14 @@
+html {
+    height: 100%;
+}
+
 body {
     background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
     min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    margin: 0;
+    padding: 0;
 }
 
 .meme-card {
@@ -9,6 +17,7 @@ body {
     border-radius: 10px;
     cursor: pointer;
     transition: transform 0.2s, box-shadow 0.2s;
+    background-color: white;
 }
 
 .meme-card:hover {
@@ -24,10 +33,14 @@ body {
     border: none;
     box-shadow: 0 4px 15px rgba(0,0,0,0.1);
     border-radius: 10px;
+    background-color: #f8f9fa;
 }
 
 .container-fluid {
-    background: rgba(255, 255, 255, 0.05);
+    flex: 1;
+    max-width: 100%;
+    padding-left: 1rem;
+    padding-right: 1rem;
 }
 .dedup-panel {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;

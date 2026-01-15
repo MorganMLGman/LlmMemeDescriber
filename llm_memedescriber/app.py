@@ -1,6 +1,7 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import asyncio
@@ -274,6 +275,10 @@ async def lifespan(app_instance: FastAPI):
 
 app = FastAPI(title="llm_memedescriber", description="Meme describing service", version="0.0.1", lifespan=lifespan)
 
+# Setup templates
+templates_dir = os.path.join(os.path.dirname(__file__), 'templates')
+templates = Jinja2Templates(directory=templates_dir)
+
 static_dir = os.path.join(os.path.dirname(__file__), 'static')
 if os.path.isdir(static_dir):
     app.mount('/static', StaticFiles(directory=static_dir), name='static')
@@ -345,17 +350,6 @@ def _get_mime_type(ext: str) -> str:
     return mime_types.get(ext, 'application/octet-stream')
 
 
-@app.get("/", response_class=HTMLResponse)
-async def root():
-    """Serve the web UI"""
-    static_dir = os.path.join(os.path.dirname(__file__), 'static')
-    index_path = os.path.join(static_dir, 'index.html')
-    if os.path.isfile(index_path):
-        with open(index_path, 'r', encoding='utf-8') as f:
-            return f.read()
-    return HTMLResponse("<html><body><h1>llm_memedescriber</h1><p>No UI available.</p></body></html>")
-
-
 async def _aget_or_generate_preview(filename: str, is_vid: bool, storage: Any, size: int = 300) -> bytes:
     """Async wrapper for preview generation that uses storage async methods when available."""
     cache_path = _get_cache_path(filename)
@@ -382,45 +376,15 @@ def health() -> Dict[str, Any]:
 
 
 @app.get("/", response_class=HTMLResponse, tags=["ui"])
-def index():
-    """Simple HTML listing of memes with links to download."""
-    html = ["<html><head><title>Meme listing</title></head><body>"]
-    html.append('<h1>Meme listing</h1>')
-    try:
-        rows = []
-        with session_scope(app.state.engine) as session:
-            rows = session.exec(select(Meme)).all()
-        if not rows:
-            html.append('<p>No memes found.</p>')
-        else:
-            html.append('<table border="1" cellpadding="4" cellspacing="0">')
-            html.append('<tr><th>Filename</th><th>Status</th><th>Category</th><th>Description</th><th>Download</th></tr>')
-            for r in rows:
-                fname = r.filename
-                status = r.status or ''
-                cat = r.category or ''
-                desc = (r.description or '').replace('<', '&lt;').replace('>', '&gt;')
-                dl = f'/memes/{fname}/download'
-                html.append(f'<tr><td>{fname}</td><td>{status}</td><td>{cat}</td><td>{desc}</td><td><a href="{dl}">download</a></td></tr>')
-            html.append('</table>')
-    except Exception:
-        html.append('<p>Error reading DB</p>')
-    html.append('</body></html>')
-    return HTMLResponse('\n'.join(html))
+def index(request: Request):
+    """Serve the main meme gallery page."""
+    return templates.TemplateResponse("index.html", {"request": request})
 
 
 @app.get("/duplicates", response_class=HTMLResponse, tags=["ui"])
-def duplicates_page():
+def duplicates_page(request: Request):
     """Serve the duplicates UI page."""
-    static_dir = os.path.join(os.path.dirname(__file__), 'static')
-    page_path = os.path.join(static_dir, 'duplicates.html')
-    if os.path.isfile(page_path):
-        try:
-            return FileResponse(page_path, media_type='text/html')
-        except Exception:
-            with open(page_path, 'r', encoding='utf-8') as f:
-                return HTMLResponse(f.read())
-    return HTMLResponse("<html><body><h1>Duplicates</h1><p>Page not found.</p></body></html>")
+    return templates.TemplateResponse("duplicates.html", {"request": request})
 
 
 @app.get("/memes/{filename}/download", tags=["memes"])
@@ -664,7 +628,7 @@ def get_duplicates_by_group():
     """Get all memes grouped by duplicate_group_id.
     
     Returns list of duplicate groups with all memes in each group.
-    Only includes groups with duplicate_group_id != None.
+    Only includes groups with duplicate_group_id != None and at least 2 memes.
     """
     try:
         with session_scope(app.state.engine) as session:
@@ -686,11 +650,14 @@ def get_duplicates_by_group():
                         "phash": m.phash if m else None,
                         "preview_url": f"/memes/{l.filename}/preview"
                     })
-                groups_out.append({
-                    "group_id": g.id,
-                    "count": len(memes),
-                    "memes": memes
-                })
+                
+                # Only include groups with at least 2 memes (actual duplicates)
+                if len(memes) >= 2:
+                    groups_out.append({
+                        "group_id": g.id,
+                        "count": len(memes),
+                        "memes": memes
+                    })
 
             logger.debug(f"Returning {len(groups_out)} duplicate groups")
             return {"total_groups": len(groups_out), "groups": groups_out}

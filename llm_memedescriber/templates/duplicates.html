@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+
+{% block title %}Duplicate Groups — Meme Describer{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="/static/style.css?v=3">
+{% endblock %}
+
+{% block navbar_controls %}
+<a class="btn btn-sm btn-outline-light" href="/">← Back</a>
+{% endblock %}
+
+{% block content %}
+<div class="row mb-3">
+    <div class="col-12">
+        <h3>Duplicate Groups</h3>
+        <p class="text-muted">Groups of similar memes detected by the deduplication analysis.</p>
+    </div>
+</div>
+
+<div id="duplicatesPageContent" class="row">
+    <div class="col-12" id="duplicatesPageInner">
+        <div class="text-center">
+            <div class="spinner-border text-light" role="status">
+                <span class="visually-hidden">Loading...</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Preview Modal -->
+<div class="modal fade" id="previewModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="previewTitle">Preview</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body text-center">
+                <img id="previewImage" src="" style="width: 100%; max-height: 500px; object-fit: contain; display: none;" alt="Preview">
+                <video id="previewVideo" style="width: 100%; max-height: 500px; object-fit: contain; display: none;" controls autoplay>
+                    <source id="previewVideoSource" src="" type="">
+                    Your browser does not support the video tag.
+                </video>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="/static/app.js?v=3"></script>
+<script>
+    async function loadDuplicatesPage() {
+        const container = document.getElementById('duplicatesPageInner');
+        try {
+            const resp = await fetch('/memes/duplicates-by-group');
+            if (!resp.ok) throw new Error('Failed to fetch duplicates');
+            const data = await resp.json();
+            
+            if (!data.groups || data.groups.length === 0) {
+                container.innerHTML = '<p class="text-muted">No duplicate groups found.</p>';
+                return;
+            }
+            
+            let html = '';
+            for (const group of data.groups) {
+                const members = group.members || [];
+                html += `
+                    <div class="card mb-3">
+                        <div class="card-header">
+                            <h5 class="mb-0">Group ${group.id} (${members.length} memes)</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="row">
+                `;
+                for (const member of members) {
+                    const preview = member.preview_url ? `<img src="${member.preview_url}" style="width: 100%; height: 150px; object-fit: cover; border-radius: 6px; cursor: pointer;" onclick="showPreview('${member.filename}')">` : '<div style="width: 100%; height: 150px; background: #eee; border-radius: 6px; display: flex; align-items: center; justify-content: center;">No preview</div>';
+                    html += `
+                        <div class="col-md-4 mb-3">
+                            ${preview}
+                            <small class="text-muted d-block mt-2">${member.filename}</small>
+                        </div>
+                    `;
+                }
+                html += `
+                            </div>
+                            <div class="mt-3">
+                                <button class="btn btn-sm btn-warning" onclick="showMergeModal(${group.id})">🔄 Merge</button>
+                                <button class="btn btn-sm btn-danger" onclick="deleteGroup(${group.id})">🗑️ Delete Group</button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+            container.innerHTML = html;
+        } catch (e) {
+            console.error('Error loading duplicates:', e);
+            container.innerHTML = '<p class="text-danger">Error loading duplicates</p>';
+        }
+    }
+
+    function showPreview(filename) {
+        const modal = new bootstrap.Modal(document.getElementById('previewModal'));
+        const ext = filename.split('.').pop().toLowerCase();
+        const isVideo = ['mp4', 'webm', 'ogg', 'mov', 'avi'].includes(ext);
+        const img = document.getElementById('previewImage');
+        const video = document.getElementById('previewVideo');
+        const src = document.getElementById('previewVideoSource');
+        
+        if (isVideo) {
+            img.style.display = 'none';
+            video.style.display = 'block';
+            src.src = `/memes/${filename}`;
+            src.type = `video/${ext}`;
+        } else {
+            video.style.display = 'none';
+            img.style.display = 'block';
+            img.src = `/memes/${filename}`;
+        }
+        modal.show();
+    }
+
+    function showMergeModal(groupId) {
+        alert('Merge functionality for group ' + groupId);
+    }
+
+    function deleteGroup(groupId) {
+        if (confirm('Delete this group?')) {
+            alert('Delete functionality for group ' + groupId);
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        loadDuplicatesPage();
+    });
+</script>
+{% endblock %}
