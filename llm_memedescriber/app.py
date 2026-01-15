@@ -606,18 +606,13 @@ def analyze_duplicates():
             session.commit()
 
             logger.info(f"Found {len(result)} duplicate groups with {total_duplicates} duplicates, saved to database")
+            
             return {
                 "total_groups": len(result),
                 "total_duplicates": total_duplicates,
                 "groups": result
             }
             
-            logger.info(f"Found {len(result)} duplicate groups with {total_duplicates} duplicates, saved to database")
-            return {
-                "total_groups": len(result),
-                "total_duplicates": total_duplicates,
-                "groups": result
-            }
     except Exception:
         logger.exception("Failed to analyze duplicates")
         raise HTTPException(status_code=500, detail="Duplicate analysis failed")

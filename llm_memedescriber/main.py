@@ -588,27 +588,9 @@ class App:
                 logger.exception("Failed to write descriptions to listing.json: %s", exc)
 
         if to_add:
-            logger.info("Calculating perceptual hashes for %d newly added memes", len(to_add))
-            try:
-                async def compute_phashes_for_new_memes():
-                    results = []
-                    for filename in to_add:
-                        try:
-                            result = await compute_and_persist_phash(filename, self.storage, self.engine, timestamp=1.0)
-                            results.append((filename, result is not None))
-                        except Exception as e:
-                            logger.debug("Failed to compute phash for %s: %s", filename, e)
-                            results.append((filename, False))
-                    return results
-                
-                try:
-                    phash_results = asyncio.run(compute_phashes_for_new_memes())
-                    successful = sum(1 for _, success in phash_results if success)
-                    logger.debug("Phash calculation for new memes: %d/%d successful", successful, len(to_add))
-                except Exception:
-                    logger.exception("Failed to calculate phashes for newly added memes")
-            except Exception:
-                logger.exception("Failed to compute phashes for newly added memes")
+            logger.info("Scheduling phash calculation for %d newly added memes", len(to_add))
+            # Note: Phashes will be calculated on-demand via /memes/deduplication/analyze API endpoint
+            # Cannot use asyncio.run() here as we're already in a running event loop during shutdown
 
         try:
             with session_scope(self.engine) as session:
