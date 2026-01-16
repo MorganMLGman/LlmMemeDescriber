@@ -254,28 +254,18 @@ body {
     color: #333;
 }
 
-.btn-primary:hover {
-    transform: translateY(-2px);
+.btn {
+    position: relative;
 }
 
-.btn-danger:hover {
-    transform: translateY(-2px);
-}
-
-.btn-warning:hover {
-    transform: translateY(-2px);
-}
-
-.btn-info:hover {
-    transform: translateY(-2px);
-}
-
-.btn-success:hover {
-    transform: translateY(-2px);
-}
-
+.btn-primary:hover,
+.btn-danger:hover,
+.btn-warning:hover,
+.btn-info:hover,
+.btn-success:hover,
 .btn-secondary:hover {
-    transform: translateY(-2px);
+    transform: scale(1.01);
+    box-shadow: 0 12px 24px rgba(0, 0, 0, 0.25);
 }
 
 .table {

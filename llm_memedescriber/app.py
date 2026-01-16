@@ -1143,3 +1143,50 @@ def delete_duplicate_pair(pair: PairDTO):
     except Exception:
         logger.exception("Failed to delete duplicate pair")
         raise HTTPException(status_code=500, detail="Failed to delete duplicate pair")
+
+
+@app.post("/memes/duplicates/delete-group", tags=["deduplication"])
+def delete_duplicate_group(request: MergeDuplicatesRequest):
+    """Delete all duplicates in a group except the primary meme.
+    
+    Does not merge metadata - simply deletes all duplicates and keeps the primary.
+    """
+    if not request.primary_filename or not request.duplicate_filenames:
+        raise HTTPException(status_code=400, detail="primary_filename and duplicate_filenames are required")
+    
+    try:
+        request.primary_filename = sanitize_filename(request.primary_filename)
+        request.duplicate_filenames = [sanitize_filename(f) for f in request.duplicate_filenames]
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    storage = getattr(app.state, 'app_instance', None) and getattr(app.state.app_instance, 'storage', None)
+    if not storage:
+        raise HTTPException(status_code=503, detail='Storage not configured')
+    
+    try:
+        with session_scope(app.state.engine) as session:
+            # Delete all duplicates without merging metadata
+            success = merge_duplicates(
+                session,
+                storage,
+                request.primary_filename,
+                request.duplicate_filenames,
+                merge_metadata=False  # Don't merge metadata, just delete
+            )
+            
+            if not success:
+                raise HTTPException(status_code=404, detail="Primary meme or duplicates not found")
+            
+            logger.info(f"Deleted {len(request.duplicate_filenames)} duplicates from group, keeping {request.primary_filename}")
+            return {
+                "status": "ok",
+                "message": f"Deleted {len(request.duplicate_filenames)} duplicate(s), kept primary: {request.primary_filename}",
+                "primary_filename": request.primary_filename,
+                "deleted_count": len(request.duplicate_filenames)
+            }
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception(f"Failed to delete duplicate group")
+        raise HTTPException(status_code=500, detail="Failed to delete duplicate group")

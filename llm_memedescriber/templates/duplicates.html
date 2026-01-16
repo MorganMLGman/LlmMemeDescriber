@@ -113,6 +113,7 @@
                     html += `<div class="mt-2 d-flex gap-2">`;
                     html += `<button class="btn btn-sm btn-success" onclick="mergeGroupAll(${group.group_id}, '${group.primary_filename.replace(/'/g, "\\'")}')">Merge All</button>`;
                     html += `<button class="btn btn-sm btn-warning" onclick="markGroupNotDuplicate(${group.group_id}, '${group.primary_filename.replace(/'/g, "\\'")}')">Mark as Not Duplicate</button>`;
+                    html += `<button class="btn btn-sm btn-danger" onclick="deleteGroupDuplicates(${group.group_id}, '${group.primary_filename.replace(/'/g, "\\'")}')">Delete All Duplicates</button>`;
                     html += `</div>`;
 
                     html += `</div></div>`;
@@ -159,6 +160,46 @@
         } catch (e) {
             console.error('mark not duplicate failed for', primaryFilename, e);
             showError('Failed to mark group as not duplicate');
+        }
+    };
+
+    window.deleteGroupDuplicates = async function(groupId, primaryFilename) {
+        if (!confirm(`Delete all duplicates from this group except "${primaryFilename}"? This cannot be undone.`)) return;
+
+        try {
+            const rows = document.querySelectorAll(`tbody#group-${groupId} tr`);
+            const allFilenames = Array.from(rows).map(row => {
+                const link = row.querySelector('a');
+                return link ? link.textContent.trim() : null;
+            }).filter(f => f && f !== primaryFilename);
+            
+            if (allFilenames.length === 0) {
+                alert('No duplicates to delete');
+                return;
+            }
+            
+            const resp = await fetch(`/memes/duplicates/delete-group`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    primary_filename: primaryFilename,
+                    duplicate_filenames: allFilenames,
+                    merge_metadata: false
+                })
+            });
+            
+            if (!resp.ok) {
+                const err = await resp.json();
+                throw new Error(err.detail || 'Failed to delete duplicates');
+            }
+            
+            const data = await resp.json();
+            console.debug('delete-group response', data);
+            showSuccess(`Deleted ${data.deleted_count} duplicate(s)`);
+            setTimeout(() => location.reload(), 400);
+        } catch (e) {
+            console.error('delete group duplicates failed for', primaryFilename, e);
+            showError('Failed to delete duplicates: ' + e.message);
         }
     };
 
