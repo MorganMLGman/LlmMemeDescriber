@@ -408,7 +408,11 @@ async def download_meme(filename: str):
         
         ext = _get_extension(filename)
         ctype = _get_mime_type(ext)
-        return StreamingResponse(BytesIO(data), media_type=ctype)
+        return StreamingResponse(
+            BytesIO(data),
+            media_type=ctype,
+            headers={"Content-Length": str(len(data))}
+        )
     except HTTPException:
         raise
     except FileNotFoundError:
