@@ -5,6 +5,7 @@ from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import asyncio
+import hashlib
 from io import BytesIO
 import os
 from typing import Dict, Optional, Any, List
@@ -32,6 +33,8 @@ from .deduplication import (
     list_pair_exceptions,
 )
 from .dup_helpers import get_group_members, get_groups_for_filename
+from .models import Meme, DuplicateGroup as DBDuplicateGroup, MemeDuplicateGroup as DBDupeLink
+from sqlalchemy import desc
 from .storage_helpers import compute_and_persist_phash
 from .preview_helpers import generate_preview, async_generate_preview, restore_preview_cache, save_preview_cache, cleanup_orphaned_cache
 from sqlmodel import select
@@ -335,7 +338,6 @@ app.state._started = False
 
 def _get_cache_path(filename: str) -> str:
     """Get safe cache file path from filename hash."""
-    import hashlib
     name_hash = hashlib.md5(filename.encode()).hexdigest()
     return os.path.join(CACHE_DIR, f"{name_hash}.jpg")
 
@@ -453,7 +455,6 @@ def list_memes(limit: int = DEFAULT_LIST_LIMIT, offset: int = DEFAULT_OFFSET, st
                 q = q.where(Meme.status == status)
             
             if sort.startswith("-"):
-                from sqlalchemy import desc
                 q = q.order_by(desc(getattr(Meme, sort[1:])))
             else:
                 q = q.order_by(getattr(Meme, sort))
@@ -1012,7 +1013,6 @@ def mark_meme_not_duplicate(filename: str):
                     created.append({"id": dup.id, "a": dup.filename_a, "b": dup.filename_b, "is_false_positive": dup.is_false_positive})
 
                     try:
-                        from .models import MemeDuplicateGroup as DBDupeLink
                         links = session.exec(select(DBDupeLink).where(DBDupeLink.group_id == gid, DBDupeLink.filename == filename)).all()
                         for l in links:
                             try:
@@ -1024,7 +1024,6 @@ def mark_meme_not_duplicate(filename: str):
                         logger.debug("Failed to remove group links after creating pair exception for %s and %s", filename, mem_fn)
 
             try:
-                from .models import DuplicateGroup as DBDuplicateGroup, MemeDuplicateGroup as DBDupeLink
                 for gid in group_ids:
                     try:
                         remaining = session.exec(select(DBDupeLink).where(DBDupeLink.group_id == gid)).all()

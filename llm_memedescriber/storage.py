@@ -1,6 +1,7 @@
 import io
 import json
 import logging
+import os
 import subprocess
 import tempfile
 import time
@@ -243,7 +244,6 @@ class WebDavStorage:
                 return frame_data
                 
             finally:
-                import os
                 try:
                     os.unlink(tmp_video_path)
                 except Exception:

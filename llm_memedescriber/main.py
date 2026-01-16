@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import email.utils
 import json
 import logging
 import re
@@ -12,7 +13,7 @@ from google.genai import types
 from sqlmodel import select
 from .db_helpers import session_scope
 
-from .config import parse_interval, load_settings
+from .config import parse_interval, load_settings, configure_logging
 from .constants import *
 from .models import Meme, DuplicateGroup as DBDuplicateGroup, MemeDuplicateGroup as DBDupeLink
 from .deduplication import find_duplicate_groups, calculate_phash
@@ -20,8 +21,11 @@ from .storage import WebDavStorage
 from .storage_workers import StorageWorkerPool
 from .storage_helpers import compute_and_persist_phash
 from .preview_helpers import cleanup_orphaned_cache
+from .genai_client import get_client
+from .db import init_db
 
 logger = logging.getLogger(__name__)
+
 
 def _load_prompt() -> str:
     try:
@@ -35,16 +39,12 @@ PROMPT = _load_prompt()
 
 def main():
     settings = load_settings()
-    from .config import configure_logging
     configure_logging(settings)
     global logger
     logger = logging.getLogger(__name__)
 
     logger.info("Settings loaded")
 
-    from .storage import WebDavStorage
-    from .db import init_db
-    
     base_url = settings.webdav_url.rstrip('/')
     base_storage = WebDavStorage(base_url, auth=(settings.webdav_username, settings.webdav_password))
     try:
@@ -77,7 +77,6 @@ class App:
             self.genai_client = genai_client
         else:
             try:
-                from .genai_client import get_client
                 self.genai_client = get_client(getattr(settings, 'google_genai_api_key', None))
             except Exception:
                 self.genai_client = None
@@ -152,7 +151,6 @@ class App:
                     logger.info("Generated: saved=%d, failed=%d, unsupported=%d", summary.get('saved'), summary.get('failed'), summary.get('unsupported'))
                 
                 if self.export_interval_seconds:
-                    import time
                     now = time.time()
                     if (now - self._last_export_at) >= self.export_interval_seconds:
                         self.export_listing_to_webdav()
@@ -507,8 +505,7 @@ class App:
                                         m.created_at = date_str
                                     else:
                                         try:
-                                            import email.utils as _eu
-                                            dt = _eu.parsedate_to_datetime(date_str)
+                                            dt = email.utils.parsedate_to_datetime(date_str)
                                             m.created_at = dt
                                         except Exception:
                                             try:
@@ -699,8 +696,7 @@ class App:
                                         created_dt = datetime.datetime.fromisoformat(created_str)
                                     except Exception:
                                         try:
-                                            import email.utils as _eu
-                                            created_dt = _eu.parsedate_to_datetime(created_str)
+                                            created_dt = email.utils.parsedate_to_datetime(created_str)
                                         except Exception:
                                             created_dt = None
 
@@ -713,8 +709,7 @@ class App:
                                                 created_dt = date_str
                                             else:
                                                 try:
-                                                    import email.utils as _eu
-                                                    created_dt = _eu.parsedate_to_datetime(date_str)
+                                                    created_dt = email.utils.parsedate_to_datetime(date_str)
                                                 except Exception:
                                                     try:
                                                         created_dt = datetime.datetime.fromisoformat(date_str)

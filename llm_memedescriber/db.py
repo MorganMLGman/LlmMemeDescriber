@@ -2,7 +2,7 @@ import os
 from typing import Optional
 
 from sqlmodel import SQLModel, Session, create_engine, select
-from sqlalchemy import text
+from sqlalchemy import text, func
 import logging
 
 logger = logging.getLogger(__name__)
@@ -45,7 +45,6 @@ def get_stats(session: Session) -> dict:
     
     Returns dict with keys: total, filled, pending, failed, unsupported, completion_percent
     """
-    from sqlalchemy import func
     
     statement = select(
         Meme.status,

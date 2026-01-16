@@ -3,9 +3,11 @@
 import os
 import shutil
 import logging
+from typing import List
 from whoosh.filedb.filestore import FileStorage
 from whoosh.fields import Schema, TEXT, ID, KEYWORD
 from whoosh.qparser import QueryParser, OrGroup
+from whoosh.query import And, Term
 from .db_helpers import session_scope
 from .models import Meme
 from .constants import INDEX_DIR
@@ -165,7 +167,6 @@ def search_memes(query_text: str, limit: int = 50, offset: int = 0) -> List[dict
             query = parser.parse(query_text)
         except Exception as e:
             logger.debug("Query parse error (fallback to simple search): %s", e)
-            from whoosh.query import And, Term
             terms = [
                 Term("filename", word) | Term("description", word) |
                 Term("category", word) | Term("keywords", word) |

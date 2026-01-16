@@ -41,6 +41,7 @@ DEFAULT_PREVIEW_WORKERS = 8
 DEFAULT_STORAGE_WORKERS = 6
 DEFAULT_STORAGE_CONCURRENCY = 2
 
+CERT_REGENERATION_THRESHOLD_DAYS = 30
 
 def _get_extension(filename: str) -> str:
     """Extract file extension safely.
