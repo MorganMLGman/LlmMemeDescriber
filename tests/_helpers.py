@@ -1,8 +1,14 @@
 """Shared test helpers for image and DB utilities used across tests."""
 from contextlib import contextmanager
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 import pytest
 from sqlmodel import SQLModel, create_engine, Session
+from cryptography import x509
+from cryptography.x509.oid import NameOID
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.backends import default_backend
 
 
 DATA_DIR = Path(__file__).parent / "data"
@@ -307,3 +313,71 @@ def set_caplog_level(caplog, level, logger=None):
         caplog.set_level(level, logger=logger)
     else:
         caplog.set_level(level)
+
+def create_test_cert(
+    cert_path: str,
+    key_path: str,
+    days_valid: int = 365,
+    self_signed: bool = True,
+    issuer_cn: str | None = None,
+) -> tuple[str, str]:
+    """Helper to create a test certificate.
+    
+    Args:
+        cert_path: Path where certificate should be written
+        key_path: Path where private key should be written
+        days_valid: Number of days certificate is valid (negative for expired)
+        self_signed: Whether certificate is self-signed
+        issuer_cn: Common name for issuer (if not self-signed)
+    
+    Returns:
+        Tuple of (cert_path, key_path)
+    """
+    private_key = rsa.generate_private_key(
+        public_exponent=65537, key_size=2048, backend=default_backend()
+    )
+
+    subject = x509.Name(
+        [
+            x509.NameAttribute(NameOID.COUNTRY_NAME, "US"),
+            x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, "Test"),
+            x509.NameAttribute(NameOID.LOCALITY_NAME, "Test"),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Test"),
+            x509.NameAttribute(NameOID.COMMON_NAME, "test.example.com"),
+        ]
+    )
+
+    issuer = subject if self_signed else x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, issuer_cn or "CA")])
+
+    if days_valid < 0:
+        not_valid_before = datetime.now(timezone.utc) + timedelta(days=days_valid * 2)
+        not_valid_after = datetime.now(timezone.utc) + timedelta(days=days_valid)
+    else:
+        not_valid_before = datetime.now(timezone.utc)
+        not_valid_after = datetime.now(timezone.utc) + timedelta(days=days_valid)
+
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(private_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(not_valid_before)
+        .not_valid_after(not_valid_after)
+        .sign(private_key, hashes.SHA256(), default_backend())
+    )
+
+    Path(cert_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(cert_path, "wb") as f:
+        f.write(cert.public_bytes(serialization.Encoding.PEM))
+
+    with open(key_path, "wb") as f:
+        f.write(
+            private_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.TraditionalOpenSSL,
+                encryption_algorithm=serialization.NoEncryption(),
+            )
+        )
+
+    return cert_path, key_path

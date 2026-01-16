@@ -5,6 +5,7 @@ import pytest
 import tempfile
 from datetime import datetime, timedelta, timezone
 
+from tests._helpers import create_test_cert
 from llm_memedescriber.ssl_helpers import (
     get_or_create_self_signed_cert,
     validate_certificate_files,
@@ -24,68 +25,6 @@ except ImportError:
     HAS_CRYPTOGRAPHY = False
 
 
-def _create_test_cert(
-    cert_path: str,
-    key_path: str,
-    days_valid: int = 365,
-    self_signed: bool = True,
-    issuer_cn: str | None = None,
-) -> tuple[str, str]:
-    """Helper to create a test certificate."""
-    if not HAS_CRYPTOGRAPHY:
-        pytest.skip("cryptography not installed")
-    
-    private_key = rsa.generate_private_key(
-        public_exponent=65537, key_size=2048, backend=default_backend()
-    )
-
-    subject = x509.Name(
-        [
-            x509.NameAttribute(NameOID.COUNTRY_NAME, "US"),
-            x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, "Test"),
-            x509.NameAttribute(NameOID.LOCALITY_NAME, "Test"),
-            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Test"),
-            x509.NameAttribute(NameOID.COMMON_NAME, "test.example.com"),
-        ]
-    )
-
-    issuer = subject if self_signed else x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, issuer_cn or "CA")])
-
-    # For expired certs, set not_valid_before to past and not_valid_after to further past
-    if days_valid < 0:
-        not_valid_before = datetime.now(timezone.utc) + timedelta(days=days_valid * 2)
-        not_valid_after = datetime.now(timezone.utc) + timedelta(days=days_valid)
-    else:
-        not_valid_before = datetime.now(timezone.utc)
-        not_valid_after = datetime.now(timezone.utc) + timedelta(days=days_valid)
-
-    cert = (
-        x509.CertificateBuilder()
-        .subject_name(subject)
-        .issuer_name(issuer)
-        .public_key(private_key.public_key())
-        .serial_number(x509.random_serial_number())
-        .not_valid_before(not_valid_before)
-        .not_valid_after(not_valid_after)
-        .sign(private_key, hashes.SHA256(), default_backend())
-    )
-
-    Path(cert_path).parent.mkdir(parents=True, exist_ok=True)
-    with open(cert_path, "wb") as f:
-        f.write(cert.public_bytes(serialization.Encoding.PEM))
-
-    with open(key_path, "wb") as f:
-        f.write(
-            private_key.private_bytes(
-                encoding=serialization.Encoding.PEM,
-                format=serialization.PrivateFormat.TraditionalOpenSSL,
-                encryption_algorithm=serialization.NoEncryption(),
-            )
-        )
-
-    return cert_path, key_path
-
-
 class TestGetCertificateExpiration:
     """Tests for certificate expiration reading."""
 
@@ -94,7 +33,7 @@ class TestGetCertificateExpiration:
         with tempfile.TemporaryDirectory() as tmpdir:
             cert_path = os.path.join(tmpdir, "test.crt")
             key_path = os.path.join(tmpdir, "test.key")
-            _create_test_cert(cert_path, key_path, days_valid=100)
+            create_test_cert(cert_path, key_path, days_valid=100)
 
             expiration = _get_certificate_expiration(cert_path)
             assert expiration is not None
@@ -126,7 +65,7 @@ class TestIsSelfSignedCert:
         with tempfile.TemporaryDirectory() as tmpdir:
             cert_path = os.path.join(tmpdir, "self_signed.crt")
             key_path = os.path.join(tmpdir, "self_signed.key")
-            _create_test_cert(cert_path, key_path, self_signed=True)
+            create_test_cert(cert_path, key_path, self_signed=True)
 
             assert _is_self_signed_cert(cert_path) is True
 
@@ -135,7 +74,7 @@ class TestIsSelfSignedCert:
         with tempfile.TemporaryDirectory() as tmpdir:
             cert_path = os.path.join(tmpdir, "signed.crt")
             key_path = os.path.join(tmpdir, "signed.key")
-            _create_test_cert(cert_path, key_path, self_signed=False, issuer_cn="External CA")
+            create_test_cert(cert_path, key_path, self_signed=False, issuer_cn="External CA")
 
             assert _is_self_signed_cert(cert_path) is False
 
@@ -177,7 +116,7 @@ class TestGetOrCreateSelfSignedCertExpiration:
         key_path = os.path.join(cert_dir, "server.key")
 
         # Create a cert that expires within regeneration threshold
-        _create_test_cert(cert_path, key_path, days_valid=CERT_REGENERATION_THRESHOLD_DAYS - 5)
+        create_test_cert(cert_path, key_path, days_valid=CERT_REGENERATION_THRESHOLD_DAYS - 5)
         original_cert_mtime = os.path.getmtime(cert_path)
 
         # Wait a bit and call get_or_create again
@@ -332,17 +271,17 @@ class TestValidateCertificateFiles:
 
     def test_both_certs_provided_and_valid(self, tmp_path):
         """Test with both certificate files provided and valid."""
-        cert_file = tmp_path / "cert.pem"
-        key_file = tmp_path / "key.pem"
-        cert_file.write_text("-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----")
-        key_file.write_text("-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----")
-        
-        result_cert, result_key = validate_certificate_files(
-            str(cert_file), str(key_file)
+        # Use real generated certificates instead of dummy content
+        cert_file, key_file = create_test_cert(
+            str(tmp_path / "cert.pem"),
+            str(tmp_path / "key.pem"),
+            days_valid=365
         )
         
-        assert result_cert == str(cert_file)
-        assert result_key == str(key_file)
+        result_cert, result_key = validate_certificate_files(cert_file, key_file)
+        
+        assert result_cert == cert_file
+        assert result_key == key_file
 
     def test_no_certs_provided_generates_self_signed(self, tmp_path, monkeypatch):
         """Test that self-signed certs are generated when none provided."""
@@ -395,33 +334,37 @@ class TestValidateCertificateFiles:
 
     def test_cert_file_read_error_raises_error(self, tmp_path, monkeypatch):
         """Test that error is raised if certificate file cannot be read."""
-        cert_file = tmp_path / "cert.pem"
-        key_file = tmp_path / "key.pem"
-        cert_file.write_text("-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----")
-        key_file.write_text("-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----")
+        # Use real generated certificates
+        cert_file, key_file = create_test_cert(
+            str(tmp_path / "cert.pem"),
+            str(tmp_path / "key.pem"),
+            days_valid=365
+        )
         
-        # Mock open to raise an exception when reading cert file
-        original_open = open
-        def mock_open(path, *args, **kwargs):
-            if str(path) == str(cert_file) and 'r' in str(args):
+        # Mock the PEM validation to raise an exception
+        import llm_memedescriber.ssl_helpers
+        original_validate = llm_memedescriber.ssl_helpers._validate_pem_format
+        
+        def mock_validate(path, file_type):
+            if path == cert_file:
                 raise IOError("Permission denied")
-            return original_open(path, *args, **kwargs)
+            return original_validate(path, file_type)
         
-        monkeypatch.setattr("builtins.open", mock_open)
+        monkeypatch.setattr(llm_memedescriber.ssl_helpers, "_validate_pem_format", mock_validate)
         
-        with pytest.raises(ValueError, match="Cannot read certificate files"):
-            validate_certificate_files(str(cert_file), str(key_file))
+        with pytest.raises(ValueError, match="Cannot read certificate files|Certificate validation failed"):
+            validate_certificate_files(cert_file, key_file)
 
     def test_cert_path_string_validation(self, tmp_path):
         """Test that cert paths are returned as strings."""
-        cert_file = tmp_path / "cert.pem"
-        key_file = tmp_path / "key.pem"
-        cert_file.write_text("-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----")
-        key_file.write_text("-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----")
-        
-        result_cert, result_key = validate_certificate_files(
-            str(cert_file), str(key_file)
+        # Use real generated certificates
+        cert_file, key_file = create_test_cert(
+            str(tmp_path / "cert.pem"),
+            str(tmp_path / "key.pem"),
+            days_valid=365
         )
+        
+        result_cert, result_key = validate_certificate_files(cert_file, key_file)
         
         assert isinstance(result_cert, str)
         assert isinstance(result_key, str)
@@ -432,20 +375,20 @@ class TestIntegrationScenarios:
 
     def test_production_with_custom_certs_scenario(self, tmp_path):
         """Test scenario: production with custom certificates via env vars."""
-        cert_file = tmp_path / "custom_cert.pem"
-        key_file = tmp_path / "custom_key.pem"
-        
-        cert_file.write_text("-----BEGIN CERTIFICATE-----\nproduction\n-----END CERTIFICATE-----")
-        key_file.write_text("-----BEGIN RSA PRIVATE KEY-----\nproduction\n-----END RSA PRIVATE KEY-----")
-        
-        result_cert, result_key = validate_certificate_files(
-            str(cert_file), str(key_file)
+        # Use real generated certificates
+        cert_file, key_file = create_test_cert(
+            str(tmp_path / "custom_cert.pem"),
+            str(tmp_path / "custom_key.pem"),
+            days_valid=365
         )
         
-        assert result_cert == str(cert_file)
-        assert result_key == str(key_file)
-        with open(result_cert) as f:
-            assert "production" in f.read()
+        result_cert, result_key = validate_certificate_files(cert_file, key_file)
+        
+        assert result_cert == cert_file
+        assert result_key == key_file
+        with open(result_cert, "rb") as f:
+            content = f.read()
+            assert b"BEGIN CERTIFICATE" in content
 
     def test_default_cert_paths(self, tmp_path, monkeypatch):
         """Test that default cert paths are used correctly."""
@@ -487,7 +430,7 @@ class TestValidateCertificateExpiration:
         with tempfile.TemporaryDirectory() as tmpdir:
             cert_path = os.path.join(tmpdir, "expired.crt")
             key_path = os.path.join(tmpdir, "expired.key")
-            _create_test_cert(cert_path, key_path, days_valid=-1)  # Already expired
+            create_test_cert(cert_path, key_path, days_valid=-1)  # Already expired
 
             with pytest.raises(ValueError, match="EXPIRED"):
                 validate_certificate_files(cert_path, key_path)
@@ -497,7 +440,7 @@ class TestValidateCertificateExpiration:
         with tempfile.TemporaryDirectory() as tmpdir:
             cert_path = os.path.join(tmpdir, "expiring.crt")
             key_path = os.path.join(tmpdir, "expiring.key")
-            _create_test_cert(cert_path, key_path, days_valid=15)
+            create_test_cert(cert_path, key_path, days_valid=15)
 
             # Should not raise, but should log warning
             import logging
@@ -514,7 +457,7 @@ class TestValidateCertificateExpiration:
         with tempfile.TemporaryDirectory() as tmpdir:
             cert_path = os.path.join(tmpdir, "valid.crt")
             key_path = os.path.join(tmpdir, "valid.key")
-            _create_test_cert(cert_path, key_path, days_valid=365)
+            create_test_cert(cert_path, key_path, days_valid=365)
 
             import logging
             caplog.set_level(logging.INFO)
@@ -530,7 +473,7 @@ class TestValidateCertificateExpiration:
         with tempfile.TemporaryDirectory() as tmpdir:
             cert_path = os.path.join(tmpdir, "expiring.crt")
             key_path = os.path.join(tmpdir, "expiring.key")
-            _create_test_cert(cert_path, key_path, days_valid=10)
+            create_test_cert(cert_path, key_path, days_valid=10)
 
             # Should NOT raise ValueError
             cert, key = validate_certificate_files(cert_path, key_path)
@@ -544,7 +487,7 @@ class TestValidateCertificateExpiration:
         with tempfile.TemporaryDirectory() as tmpdir:
             cert_path = os.path.join(tmpdir, "expired.crt")
             key_path = os.path.join(tmpdir, "expired.key")
-            _create_test_cert(cert_path, key_path, days_valid=-10)  # Expired 10 days ago
+            create_test_cert(cert_path, key_path, days_valid=-10)  # Expired 10 days ago
 
             # Should raise ValueError
             with pytest.raises(ValueError, match="EXPIRED"):
@@ -556,12 +499,12 @@ class TestValidateCertificateExpiration:
             # Self-signed
             self_signed_cert = os.path.join(tmpdir, "self_signed.crt")
             self_signed_key = os.path.join(tmpdir, "self_signed.key")
-            _create_test_cert(self_signed_cert, self_signed_key, days_valid=365, self_signed=True)
+            create_test_cert(self_signed_cert, self_signed_key, days_valid=365, self_signed=True)
 
             # CA-signed
             ca_signed_cert = os.path.join(tmpdir, "ca_signed.crt")
             ca_signed_key = os.path.join(tmpdir, "ca_signed.key")
-            _create_test_cert(ca_signed_cert, ca_signed_key, days_valid=365, self_signed=False, issuer_cn="My CA")
+            create_test_cert(ca_signed_cert, ca_signed_key, days_valid=365, self_signed=False, issuer_cn="My CA")
 
             # Both should validate if not expired
             cert, key = validate_certificate_files(self_signed_cert, self_signed_key)
@@ -569,3 +512,309 @@ class TestValidateCertificateExpiration:
 
             cert, key = validate_certificate_files(ca_signed_cert, ca_signed_key)
             assert cert == ca_signed_cert
+
+
+# Security Fixes Tests
+
+class TestValidatePemFormat:
+    """Tests for PEM format validation."""
+    
+    def test_validate_certificate_valid_pem(self, tmp_path):
+        """Test that valid certificate PEM is accepted."""
+        # Generate a valid certificate
+        cert_path, key_path = get_or_create_self_signed_cert(str(tmp_path))
+        
+        # Should not raise
+        from llm_memedescriber.ssl_helpers import _validate_pem_format
+        result = _validate_pem_format(cert_path, "certificate")
+        assert result is True
+    
+    def test_validate_key_valid_pem(self, tmp_path):
+        """Test that valid key PEM is accepted."""
+        # Generate a valid certificate
+        cert_path, key_path = get_or_create_self_signed_cert(str(tmp_path))
+        
+        # Should not raise
+        from llm_memedescriber.ssl_helpers import _validate_pem_format
+        result = _validate_pem_format(key_path, "key")
+        assert result is True
+    
+    def test_validate_certificate_invalid_pem(self, tmp_path):
+        """Test that invalid certificate PEM raises ValueError."""
+        from llm_memedescriber.ssl_helpers import _validate_pem_format
+        invalid_cert = tmp_path / "invalid.crt"
+        invalid_cert.write_text("This is not a valid certificate\n")
+        
+        with pytest.raises(ValueError, match="Invalid PEM format for certificate"):
+            _validate_pem_format(str(invalid_cert), "certificate")
+    
+    def test_validate_key_invalid_pem(self, tmp_path):
+        """Test that invalid key PEM raises ValueError."""
+        from llm_memedescriber.ssl_helpers import _validate_pem_format
+        invalid_key = tmp_path / "invalid.key"
+        invalid_key.write_text("This is not a valid key\n")
+        
+        with pytest.raises(ValueError, match="Invalid PEM format for key"):
+            _validate_pem_format(str(invalid_key), "key")
+    
+    def test_validate_nonexistent_file(self, tmp_path):
+        """Test that nonexistent file raises ValueError."""
+        from llm_memedescriber.ssl_helpers import _validate_pem_format
+        nonexistent = tmp_path / "does_not_exist.crt"
+        
+        with pytest.raises(ValueError, match="Invalid PEM format"):
+            _validate_pem_format(str(nonexistent), "certificate")
+
+
+class TestValidateCertKeyMatch:
+    """Tests for certificate and key matching."""
+    
+    def test_matching_cert_and_key(self, tmp_path):
+        """Test that matching certificate and key are accepted."""
+        from llm_memedescriber.ssl_helpers import _validate_cert_key_match
+        cert_path, key_path = get_or_create_self_signed_cert(str(tmp_path))
+        
+        # Should not raise
+        result = _validate_cert_key_match(cert_path, key_path)
+        assert result is True
+    
+    def test_mismatched_key(self, tmp_path):
+        """Test that mismatched key raises ValueError."""
+        from llm_memedescriber.ssl_helpers import _validate_cert_key_match
+        # Generate first cert pair
+        cert_path1, key_path1 = get_or_create_self_signed_cert(str(tmp_path / "cert1"))
+        
+        # Generate second cert pair
+        cert_path2, key_path2 = get_or_create_self_signed_cert(str(tmp_path / "cert2"))
+        
+        # Try to use cert from one pair with key from another
+        with pytest.raises(ValueError, match="Certificate and private key do not match"):
+            _validate_cert_key_match(cert_path1, key_path2)
+    
+    def test_mismatched_cert(self, tmp_path):
+        """Test that mismatched cert raises ValueError."""
+        from llm_memedescriber.ssl_helpers import _validate_cert_key_match
+        # Generate first cert pair
+        cert_path1, key_path1 = get_or_create_self_signed_cert(str(tmp_path / "cert1"))
+        
+        # Generate second cert pair
+        cert_path2, key_path2 = get_or_create_self_signed_cert(str(tmp_path / "cert2"))
+        
+        # Try to use cert from one pair with key from another
+        with pytest.raises(ValueError, match="Certificate and private key do not match"):
+            _validate_cert_key_match(cert_path2, key_path1)
+    
+    def test_invalid_cert_format(self, tmp_path):
+        """Test that invalid cert format raises ValueError."""
+        from llm_memedescriber.ssl_helpers import _validate_cert_key_match
+        invalid_cert = tmp_path / "invalid.crt"
+        invalid_cert.write_text("This is not a valid certificate\n")
+        
+        cert_path, key_path = get_or_create_self_signed_cert(str(tmp_path / "valid"))
+        
+        with pytest.raises(ValueError, match="Failed to validate certificate/key match|Unable to load PEM file"):
+            _validate_cert_key_match(str(invalid_cert), key_path)
+    
+    def test_invalid_key_format(self, tmp_path):
+        """Test that invalid key format raises ValueError."""
+        from llm_memedescriber.ssl_helpers import _validate_cert_key_match
+        invalid_key = tmp_path / "invalid.key"
+        invalid_key.write_text("This is not a valid key\n")
+        
+        cert_path, key_path = get_or_create_self_signed_cert(str(tmp_path / "valid"))
+        
+        with pytest.raises(ValueError, match="Failed to validate certificate/key match|Unable to load PEM file"):
+            _validate_cert_key_match(cert_path, str(invalid_key))
+
+
+class TestIPv6Support:
+    """Tests for IPv6 support in SANs."""
+    
+    def test_ipv6_in_sans(self, tmp_path):
+        """Test that IPv6 loopback (::1) is in SANs."""
+        cert_path, _ = get_or_create_self_signed_cert(str(tmp_path))
+        
+        with open(cert_path, "rb") as f:
+            cert_data = f.read()
+        cert = x509.load_pem_x509_certificate(cert_data, default_backend())
+        
+        # Get SANs
+        san_ext = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName)
+        san_names = [name for name in san_ext.value]
+        
+        # Check that IPv6 ::1 is present
+        ipv6_addresses = [name for name in san_names if isinstance(name, x509.IPAddress)]
+        ipv6_strs = [str(addr.value) for addr in ipv6_addresses]
+        
+        assert "::1" in ipv6_strs, f"IPv6 loopback (::1) not found in SANs: {ipv6_strs}"
+        assert "127.0.0.1" in ipv6_strs, f"IPv4 loopback not found in SANs: {ipv6_strs}"
+
+
+class TestKeySize:
+    """Tests for configurable RSA key size."""
+    
+    def test_custom_key_size_2048(self, tmp_path):
+        """Test that custom 2048-bit key size is generated."""
+        cert_path, _ = get_or_create_self_signed_cert(str(tmp_path), key_size=2048)
+        
+        with open(cert_path, "rb") as f:
+            cert_data = f.read()
+        cert = x509.load_pem_x509_certificate(cert_data, default_backend())
+        
+        key_size = cert.public_key().key_size
+        assert key_size == 2048
+    
+    def test_custom_key_size_4096(self, tmp_path):
+        """Test that custom 4096-bit key size is generated."""
+        cert_path, _ = get_or_create_self_signed_cert(str(tmp_path), key_size=4096)
+        
+        with open(cert_path, "rb") as f:
+            cert_data = f.read()
+        cert = x509.load_pem_x509_certificate(cert_data, default_backend())
+        
+        key_size = cert.public_key().key_size
+        assert key_size == 4096
+
+
+class TestKeyEncryption:
+    """Tests for optional key encryption."""
+    
+    def test_unencrypted_key_by_default(self, tmp_path):
+        """Test that private key is unencrypted by default."""
+        cert_path, key_path = get_or_create_self_signed_cert(str(tmp_path))
+        
+        with open(key_path, "rb") as f:
+            key_data = f.read()
+        
+        key = serialization.load_pem_private_key(key_data, password=None, backend=default_backend())
+        assert key is not None
+    
+    def test_encrypted_key_option(self, tmp_path):
+        """Test that key can be encrypted with encrypt_key=True."""
+        cert_path, key_path = get_or_create_self_signed_cert(
+            str(tmp_path),
+            encrypt_key=True
+        )
+        
+        with open(key_path, "rb") as f:
+            key_data = f.read()
+        
+        key = serialization.load_pem_private_key(
+            key_data, 
+            password=b"development-key-passphrase", 
+            backend=default_backend()
+        )
+        assert key is not None
+
+
+class TestDirectoryPermissions:
+    """Tests for certificate directory permissions."""
+    
+    def test_cert_dir_permissions_0o700(self, tmp_path):
+        """Test that certificate directory has restrictive 0o700 permissions."""
+        if os.name != 'posix':
+            pytest.skip("File permissions are Unix-specific")
+        
+        cert_path, key_path = get_or_create_self_signed_cert(str(tmp_path / "certs"))
+        
+        cert_dir = tmp_path / "certs"
+        
+        dir_stat = cert_dir.stat()
+        dir_mode = dir_stat.st_mode & 0o777
+        
+        assert dir_mode == 0o700, f"Expected 0o700, got {oct(dir_mode)}"
+    
+    def test_key_file_permissions_0o600(self, tmp_path):
+        """Test that private key file has restrictive 0o600 permissions."""
+        if os.name != 'posix':
+            pytest.skip("File permissions are Unix-specific")
+        
+        cert_path, key_path = get_or_create_self_signed_cert(str(tmp_path))
+        
+        key_stat = os.stat(key_path)
+        key_mode = key_stat.st_mode & 0o777
+        
+        assert key_mode == 0o600, f"Expected 0o600, got {oct(key_mode)}"
+    
+    def test_cert_file_permissions_0o644(self, tmp_path):
+        """Test that certificate file has readable 0o644 permissions."""
+        if os.name != 'posix':
+            pytest.skip("File permissions are Unix-specific")
+        
+        cert_path, key_path = get_or_create_self_signed_cert(str(tmp_path))
+        
+        cert_stat = os.stat(cert_path)
+        cert_mode = cert_stat.st_mode & 0o777
+        
+        assert cert_mode == 0o644, f"Expected 0o644, got {oct(cert_mode)}"
+
+
+class TestPreciseDayCalculation:
+    """Tests for precise day calculation (not truncated to integer)."""
+    
+    def test_day_calculation_precision(self, tmp_path):
+        """Test that day calculation uses precise floating point."""
+        cert_path, _ = get_or_create_self_signed_cert(str(tmp_path))
+        
+        expiration = _get_certificate_expiration(cert_path)
+        
+        time_delta = expiration - datetime.now(timezone.utc)
+        days_until_expiry = time_delta.total_seconds() / 86400
+        
+        assert 364 < days_until_expiry < 366, f"Expected ~365 days, got {days_until_expiry}"
+
+
+class TestValidateCertificateFilesWithNewFeatures:
+    """Integration tests for validate_certificate_files with new features."""
+    
+    def test_user_cert_pem_validation(self, tmp_path):
+        """Test that user cert PEM format is validated."""
+        cert_dir = tmp_path / "user"
+        cert_path, key_path = get_or_create_self_signed_cert(str(cert_dir))
+        
+        # Valid certs should pass
+        result_cert, result_key = validate_certificate_files(cert_path, key_path)
+        assert result_cert == cert_path
+        assert result_key == key_path
+    
+    def test_user_cert_key_mismatch_rejected(self, tmp_path):
+        """Test that mismatched cert and key are rejected."""
+        # Generate two separate cert pairs
+        cert1_dir = tmp_path / "cert1"
+        cert2_dir = tmp_path / "cert2"
+        
+        cert_path1, key_path1 = get_or_create_self_signed_cert(str(cert1_dir))
+        cert_path2, key_path2 = get_or_create_self_signed_cert(str(cert2_dir))
+        
+        # Try to use mismatched pair
+        with pytest.raises(ValueError, match="Certificate validation failed|Certificate and private key do not match"):
+            validate_certificate_files(cert_path1, key_path2)
+    
+    def test_user_cert_invalid_pem_rejected(self, tmp_path):
+        """Test that invalid PEM format is rejected."""
+        cert_path = tmp_path / "invalid.crt"
+        key_path = tmp_path / "invalid.key"
+        
+        cert_path.write_text("Not a valid certificate\n")
+        key_path.write_text("Not a valid key\n")
+        
+        with pytest.raises(ValueError, match="Certificate validation failed|Invalid PEM format"):
+            validate_certificate_files(str(cert_path), str(key_path))
+    
+    def test_self_signed_ipv6_support(self, tmp_path):
+        """Test that self-signed certs support IPv6."""
+        cert_path, key_path = get_or_create_self_signed_cert(str(tmp_path))
+        
+        with open(cert_path, "rb") as f:
+            cert_data = f.read()
+        cert = x509.load_pem_x509_certificate(cert_data, default_backend())
+        
+        # Get SANs
+        san_ext = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName)
+        san_names = [name for name in san_ext.value]
+        
+        # Check that IPv6 ::1 is present
+        ipv6_addresses = [name for name in san_names if isinstance(name, x509.IPAddress)]
+        ipv6_strs = [str(addr.value) for addr in ipv6_addresses]
+        
+        assert "::1" in ipv6_strs
