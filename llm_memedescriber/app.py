@@ -4,6 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+from pathlib import Path
 import asyncio
 import hashlib
 from io import BytesIO
@@ -875,6 +876,40 @@ def get_stats_endpoint():
     except Exception:
         logger.exception("Failed to get stats")
         raise HTTPException(status_code=500, detail="Stats failed")
+
+@app.get("/api/prompt", tags=["config"])
+def get_prompt():
+    """Get current prompt (custom or default)."""
+    custom_prompt_path = Path("/data/prompt.txt")
+    
+    if custom_prompt_path.exists():
+        try:
+            return {"prompt": custom_prompt_path.read_text(encoding="utf-8"), "source": "custom"}
+        except Exception as exc:
+            logger.warning("Failed to read custom prompt: %s", exc)
+    
+    try:
+        default_prompt_path = Path(__file__).parent.parent / "PROMPT.txt"
+        return {"prompt": default_prompt_path.read_text(encoding="utf-8"), "source": "default"}
+    except Exception as exc:
+        logger.exception("Failed to read default prompt: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to load prompt")
+
+@app.post("/api/prompt", tags=["config"])
+def save_prompt(request: dict):
+    """Save custom prompt to /data/prompt.txt."""
+    if not request.get("prompt"):
+        raise HTTPException(status_code=400, detail="Prompt cannot be empty")
+    
+    try:
+        prompt_path = Path("/data/prompt.txt")
+        prompt_path.parent.mkdir(parents=True, exist_ok=True)
+        prompt_path.write_text(request["prompt"], encoding="utf-8")
+        logger.info("Custom prompt saved successfully")
+        return {"status": "saved", "source": "custom"}
+    except Exception as exc:
+        logger.exception("Failed to save prompt: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to save prompt")
 
 @app.get("/memes/{filename}/duplicates", tags=["deduplication"])
 def get_meme_duplicates(filename: str):

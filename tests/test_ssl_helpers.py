@@ -240,7 +240,6 @@ class TestGetOrCreateSelfSignedCertExpiration:
         cert_path, _ = get_or_create_self_signed_cert(cert_dir=cert_dir)
 
         try:
-            
             with open(cert_path, "rb") as f:
                 cert_data = f.read()
             cert = x509.load_pem_x509_certificate(cert_data, default_backend())
