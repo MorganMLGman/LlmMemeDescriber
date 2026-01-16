@@ -1,28 +1,32 @@
 """Tests for SSL certificate helpers."""
 import os
-from pathlib import Path
-import pytest
 import tempfile
-from datetime import datetime, timedelta, timezone
+import time
+import platform
+import logging
+from pathlib import Path
+from datetime import datetime, timezone
 
-from tests._helpers import create_test_cert
+import pytest
+
+from cryptography import x509
+from cryptography.x509.oid import NameOID
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.backends import default_backend
+
+import llm_memedescriber.ssl_helpers
 from llm_memedescriber.ssl_helpers import (
     get_or_create_self_signed_cert,
     validate_certificate_files,
     _get_certificate_expiration,
     _is_self_signed_cert,
+    _validate_pem_format,
+    _validate_cert_key_match,
     CERT_REGENERATION_THRESHOLD_DAYS,
 )
 
-try:
-    from cryptography import x509
-    from cryptography.x509.oid import NameOID
-    from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import rsa
-    from cryptography.hazmat.backends import default_backend
-    HAS_CRYPTOGRAPHY = True
-except ImportError:
-    HAS_CRYPTOGRAPHY = False
+from tests._helpers import create_test_cert
 
 
 class TestGetCertificateExpiration:
@@ -96,7 +100,6 @@ class TestGetOrCreateSelfSignedCertExpiration:
         cert_path, key_path = get_or_create_self_signed_cert(cert_dir=cert_dir)
         original_cert_mtime = os.path.getmtime(cert_path)
 
-        import time
         time.sleep(0.1)
 
         cert_path2, key_path2 = get_or_create_self_signed_cert(cert_dir=cert_dir)
@@ -114,7 +117,6 @@ class TestGetOrCreateSelfSignedCertExpiration:
         create_test_cert(cert_path, key_path, days_valid=CERT_REGENERATION_THRESHOLD_DAYS - 5)
         original_cert_mtime = os.path.getmtime(cert_path)
 
-        import time
         time.sleep(0.1)
 
         cert_path_result, key_path_result = get_or_create_self_signed_cert(cert_dir)
@@ -127,7 +129,6 @@ class TestGetOrCreateSelfSignedCertExpiration:
         cert_dir = str(tmp_path)
         cert_path, key_path = get_or_create_self_signed_cert(cert_dir=cert_dir)
 
-        import logging
         caplog.set_level(logging.INFO)
         get_or_create_self_signed_cert(cert_dir=cert_dir)
 
@@ -185,8 +186,6 @@ class TestGetOrCreateSelfSignedCertExpiration:
         cert_path, _ = get_or_create_self_signed_cert(cert_dir=cert_dir, hostname=hostname)
 
         try:
-            from cryptography import x509
-            from cryptography.hazmat.backends import default_backend
             
             with open(cert_path, "rb") as f:
                 cert_data = f.read()
@@ -214,7 +213,6 @@ class TestGetOrCreateSelfSignedCertExpiration:
 
     def test_key_file_permissions(self, tmp_path):
         """Test that private key has restrictive permissions."""
-        import platform
         if platform.system() == "Windows":
             pytest.skip("File permissions work differently on Windows")
         
@@ -242,8 +240,6 @@ class TestGetOrCreateSelfSignedCertExpiration:
         cert_path, _ = get_or_create_self_signed_cert(cert_dir=cert_dir)
 
         try:
-            from cryptography import x509
-            from cryptography.hazmat.backends import default_backend
             
             with open(cert_path, "rb") as f:
                 cert_data = f.read()
@@ -328,7 +324,6 @@ class TestValidateCertificateFiles:
             days_valid=365
         )
         
-        import llm_memedescriber.ssl_helpers
         original_validate = llm_memedescriber.ssl_helpers._validate_pem_format
         
         def mock_validate(path, file_type):
@@ -426,7 +421,6 @@ class TestValidateCertificateExpiration:
             key_path = os.path.join(tmpdir, "expiring.key")
             create_test_cert(cert_path, key_path, days_valid=15)
 
-            import logging
             caplog.set_level(logging.WARNING)
             result_cert, result_key = validate_certificate_files(cert_path, key_path)
 
@@ -441,7 +435,6 @@ class TestValidateCertificateExpiration:
             key_path = os.path.join(tmpdir, "valid.key")
             create_test_cert(cert_path, key_path, days_valid=365)
 
-            import logging
             caplog.set_level(logging.INFO)
             result_cert, result_key = validate_certificate_files(cert_path, key_path)
 
@@ -495,7 +488,6 @@ class TestValidatePemFormat:
         """Test that valid certificate PEM is accepted."""
         cert_path, key_path = get_or_create_self_signed_cert(str(tmp_path))
         
-        from llm_memedescriber.ssl_helpers import _validate_pem_format
         result = _validate_pem_format(cert_path, "certificate")
         assert result is True
     
@@ -503,13 +495,11 @@ class TestValidatePemFormat:
         """Test that valid key PEM is accepted."""
         cert_path, key_path = get_or_create_self_signed_cert(str(tmp_path))
         
-        from llm_memedescriber.ssl_helpers import _validate_pem_format
         result = _validate_pem_format(key_path, "key")
         assert result is True
     
     def test_validate_certificate_invalid_pem(self, tmp_path):
         """Test that invalid certificate PEM raises ValueError."""
-        from llm_memedescriber.ssl_helpers import _validate_pem_format
         invalid_cert = tmp_path / "invalid.crt"
         invalid_cert.write_text("This is not a valid certificate\n")
         
@@ -518,7 +508,6 @@ class TestValidatePemFormat:
     
     def test_validate_key_invalid_pem(self, tmp_path):
         """Test that invalid key PEM raises ValueError."""
-        from llm_memedescriber.ssl_helpers import _validate_pem_format
         invalid_key = tmp_path / "invalid.key"
         invalid_key.write_text("This is not a valid key\n")
         
@@ -527,7 +516,6 @@ class TestValidatePemFormat:
     
     def test_validate_nonexistent_file(self, tmp_path):
         """Test that nonexistent file raises ValueError."""
-        from llm_memedescriber.ssl_helpers import _validate_pem_format
         nonexistent = tmp_path / "does_not_exist.crt"
         
         with pytest.raises(ValueError, match="Invalid PEM format"):
@@ -539,7 +527,6 @@ class TestValidateCertKeyMatch:
     
     def test_matching_cert_and_key(self, tmp_path):
         """Test that matching certificate and key are accepted."""
-        from llm_memedescriber.ssl_helpers import _validate_cert_key_match
         cert_path, key_path = get_or_create_self_signed_cert(str(tmp_path))
         
         # Should not raise
@@ -548,7 +535,6 @@ class TestValidateCertKeyMatch:
     
     def test_mismatched_key(self, tmp_path):
         """Test that mismatched key raises ValueError."""
-        from llm_memedescriber.ssl_helpers import _validate_cert_key_match
         cert_path1, key_path1 = get_or_create_self_signed_cert(str(tmp_path / "cert1"))
         
         cert_path2, key_path2 = get_or_create_self_signed_cert(str(tmp_path / "cert2"))
@@ -558,7 +544,6 @@ class TestValidateCertKeyMatch:
     
     def test_mismatched_cert(self, tmp_path):
         """Test that mismatched cert raises ValueError."""
-        from llm_memedescriber.ssl_helpers import _validate_cert_key_match
         cert_path1, key_path1 = get_or_create_self_signed_cert(str(tmp_path / "cert1"))
         
         cert_path2, key_path2 = get_or_create_self_signed_cert(str(tmp_path / "cert2"))
@@ -568,7 +553,6 @@ class TestValidateCertKeyMatch:
     
     def test_invalid_cert_format(self, tmp_path):
         """Test that invalid cert format raises ValueError."""
-        from llm_memedescriber.ssl_helpers import _validate_cert_key_match
         invalid_cert = tmp_path / "invalid.crt"
         invalid_cert.write_text("This is not a valid certificate\n")
         
@@ -579,7 +563,6 @@ class TestValidateCertKeyMatch:
     
     def test_invalid_key_format(self, tmp_path):
         """Test that invalid key format raises ValueError."""
-        from llm_memedescriber.ssl_helpers import _validate_cert_key_match
         invalid_key = tmp_path / "invalid.key"
         invalid_key.write_text("This is not a valid key\n")
         
