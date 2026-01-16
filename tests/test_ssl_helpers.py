@@ -37,7 +37,6 @@ class TestGetCertificateExpiration:
 
             expiration = _get_certificate_expiration(cert_path)
             assert expiration is not None
-            # Should be approximately 100 days from now
             days_diff = (expiration - datetime.now(timezone.utc)).days
             assert 99 <= days_diff <= 101
 
@@ -94,17 +93,14 @@ class TestGetOrCreateSelfSignedCertExpiration:
     def test_reuse_existing_valid_cert(self, tmp_path):
         """Test reusing existing valid certificate."""
         cert_dir = str(tmp_path / "certs")
-        # Create initial cert
         cert_path, key_path = get_or_create_self_signed_cert(cert_dir=cert_dir)
         original_cert_mtime = os.path.getmtime(cert_path)
 
-        # Wait a bit and call again
         import time
         time.sleep(0.1)
 
         cert_path2, key_path2 = get_or_create_self_signed_cert(cert_dir=cert_dir)
 
-        # Should reuse the same certificate
         assert cert_path == cert_path2
         assert key_path == key_path2
         assert os.path.getmtime(cert_path) == original_cert_mtime
@@ -115,17 +111,14 @@ class TestGetOrCreateSelfSignedCertExpiration:
         cert_path = os.path.join(cert_dir, "server.crt")
         key_path = os.path.join(cert_dir, "server.key")
 
-        # Create a cert that expires within regeneration threshold
         create_test_cert(cert_path, key_path, days_valid=CERT_REGENERATION_THRESHOLD_DAYS - 5)
         original_cert_mtime = os.path.getmtime(cert_path)
 
-        # Wait a bit and call get_or_create again
         import time
         time.sleep(0.1)
 
         cert_path_result, key_path_result = get_or_create_self_signed_cert(cert_dir)
 
-        # Should regenerate the certificate
         assert os.path.getmtime(cert_path) > original_cert_mtime
         assert _is_self_signed_cert(cert_path) is True
 
@@ -134,12 +127,10 @@ class TestGetOrCreateSelfSignedCertExpiration:
         cert_dir = str(tmp_path)
         cert_path, key_path = get_or_create_self_signed_cert(cert_dir=cert_dir)
 
-        # Call again to trigger the expiration check
         import logging
         caplog.set_level(logging.INFO)
         get_or_create_self_signed_cert(cert_dir=cert_dir)
 
-        # Should log that cert expires in X days
         assert "expires in" in caplog.text
 
 
@@ -201,14 +192,12 @@ class TestGetOrCreateSelfSignedCertExpiration:
                 cert_data = f.read()
             cert = x509.load_pem_x509_certificate(cert_data, default_backend())
             
-            # Check CN in subject
             cn_found = False
             for attr in cert.subject:
                 if attr.oid == x509.oid.NameOID.COMMON_NAME and attr.value == hostname:
                     cn_found = True
                     break
             
-            # Check SAN (Subject Alternative Names)
             san_found = False
             try:
                 san_ext = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName)
@@ -271,7 +260,6 @@ class TestValidateCertificateFiles:
 
     def test_both_certs_provided_and_valid(self, tmp_path):
         """Test with both certificate files provided and valid."""
-        # Use real generated certificates instead of dummy content
         cert_file, key_file = create_test_cert(
             str(tmp_path / "cert.pem"),
             str(tmp_path / "key.pem"),
@@ -334,14 +322,12 @@ class TestValidateCertificateFiles:
 
     def test_cert_file_read_error_raises_error(self, tmp_path, monkeypatch):
         """Test that error is raised if certificate file cannot be read."""
-        # Use real generated certificates
         cert_file, key_file = create_test_cert(
             str(tmp_path / "cert.pem"),
             str(tmp_path / "key.pem"),
             days_valid=365
         )
         
-        # Mock the PEM validation to raise an exception
         import llm_memedescriber.ssl_helpers
         original_validate = llm_memedescriber.ssl_helpers._validate_pem_format
         
@@ -357,7 +343,6 @@ class TestValidateCertificateFiles:
 
     def test_cert_path_string_validation(self, tmp_path):
         """Test that cert paths are returned as strings."""
-        # Use real generated certificates
         cert_file, key_file = create_test_cert(
             str(tmp_path / "cert.pem"),
             str(tmp_path / "key.pem"),
@@ -375,7 +360,6 @@ class TestIntegrationScenarios:
 
     def test_production_with_custom_certs_scenario(self, tmp_path):
         """Test scenario: production with custom certificates via env vars."""
-        # Use real generated certificates
         cert_file, key_file = create_test_cert(
             str(tmp_path / "custom_cert.pem"),
             str(tmp_path / "custom_key.pem"),
@@ -442,14 +426,12 @@ class TestValidateCertificateExpiration:
             key_path = os.path.join(tmpdir, "expiring.key")
             create_test_cert(cert_path, key_path, days_valid=15)
 
-            # Should not raise, but should log warning
             import logging
             caplog.set_level(logging.WARNING)
             result_cert, result_key = validate_certificate_files(cert_path, key_path)
 
             assert result_cert == cert_path
             assert result_key == key_path
-            # Should have warning about expiration
             assert "expires in" in caplog.text
 
     def test_accept_user_cert_valid_beyond_30_days(self, caplog):
@@ -465,7 +447,6 @@ class TestValidateCertificateExpiration:
 
             assert result_cert == cert_path
             assert result_key == key_path
-            # Should log success
             assert "is valid" in caplog.text
 
     def test_allows_startup_with_expiring_cert(self):
@@ -475,10 +456,7 @@ class TestValidateCertificateExpiration:
             key_path = os.path.join(tmpdir, "expiring.key")
             create_test_cert(cert_path, key_path, days_valid=10)
 
-            # Should NOT raise ValueError
             cert, key = validate_certificate_files(cert_path, key_path)
-            
-            # But should return the paths
             assert cert == cert_path
             assert key == key_path
 
@@ -487,26 +465,22 @@ class TestValidateCertificateExpiration:
         with tempfile.TemporaryDirectory() as tmpdir:
             cert_path = os.path.join(tmpdir, "expired.crt")
             key_path = os.path.join(tmpdir, "expired.key")
-            create_test_cert(cert_path, key_path, days_valid=-10)  # Expired 10 days ago
+            create_test_cert(cert_path, key_path, days_valid=-10)
 
-            # Should raise ValueError
             with pytest.raises(ValueError, match="EXPIRED"):
                 validate_certificate_files(cert_path, key_path)
 
     def test_self_signed_cert_check(self):
         """Test that validation correctly identifies self-signed vs CA-signed certs."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Self-signed
             self_signed_cert = os.path.join(tmpdir, "self_signed.crt")
             self_signed_key = os.path.join(tmpdir, "self_signed.key")
             create_test_cert(self_signed_cert, self_signed_key, days_valid=365, self_signed=True)
 
-            # CA-signed
             ca_signed_cert = os.path.join(tmpdir, "ca_signed.crt")
             ca_signed_key = os.path.join(tmpdir, "ca_signed.key")
             create_test_cert(ca_signed_cert, ca_signed_key, days_valid=365, self_signed=False, issuer_cn="My CA")
 
-            # Both should validate if not expired
             cert, key = validate_certificate_files(self_signed_cert, self_signed_key)
             assert cert == self_signed_cert
 
@@ -514,27 +488,21 @@ class TestValidateCertificateExpiration:
             assert cert == ca_signed_cert
 
 
-# Security Fixes Tests
-
 class TestValidatePemFormat:
     """Tests for PEM format validation."""
     
     def test_validate_certificate_valid_pem(self, tmp_path):
         """Test that valid certificate PEM is accepted."""
-        # Generate a valid certificate
         cert_path, key_path = get_or_create_self_signed_cert(str(tmp_path))
         
-        # Should not raise
         from llm_memedescriber.ssl_helpers import _validate_pem_format
         result = _validate_pem_format(cert_path, "certificate")
         assert result is True
     
     def test_validate_key_valid_pem(self, tmp_path):
         """Test that valid key PEM is accepted."""
-        # Generate a valid certificate
         cert_path, key_path = get_or_create_self_signed_cert(str(tmp_path))
         
-        # Should not raise
         from llm_memedescriber.ssl_helpers import _validate_pem_format
         result = _validate_pem_format(key_path, "key")
         assert result is True
@@ -581,26 +549,20 @@ class TestValidateCertKeyMatch:
     def test_mismatched_key(self, tmp_path):
         """Test that mismatched key raises ValueError."""
         from llm_memedescriber.ssl_helpers import _validate_cert_key_match
-        # Generate first cert pair
         cert_path1, key_path1 = get_or_create_self_signed_cert(str(tmp_path / "cert1"))
         
-        # Generate second cert pair
         cert_path2, key_path2 = get_or_create_self_signed_cert(str(tmp_path / "cert2"))
         
-        # Try to use cert from one pair with key from another
         with pytest.raises(ValueError, match="Certificate and private key do not match"):
             _validate_cert_key_match(cert_path1, key_path2)
     
     def test_mismatched_cert(self, tmp_path):
         """Test that mismatched cert raises ValueError."""
         from llm_memedescriber.ssl_helpers import _validate_cert_key_match
-        # Generate first cert pair
         cert_path1, key_path1 = get_or_create_self_signed_cert(str(tmp_path / "cert1"))
         
-        # Generate second cert pair
         cert_path2, key_path2 = get_or_create_self_signed_cert(str(tmp_path / "cert2"))
         
-        # Try to use cert from one pair with key from another
         with pytest.raises(ValueError, match="Certificate and private key do not match"):
             _validate_cert_key_match(cert_path2, key_path1)
     
@@ -638,11 +600,9 @@ class TestIPv6Support:
             cert_data = f.read()
         cert = x509.load_pem_x509_certificate(cert_data, default_backend())
         
-        # Get SANs
         san_ext = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName)
         san_names = [name for name in san_ext.value]
         
-        # Check that IPv6 ::1 is present
         ipv6_addresses = [name for name in san_names if isinstance(name, x509.IPAddress)]
         ipv6_strs = [str(addr.value) for addr in ipv6_addresses]
         
@@ -772,21 +732,18 @@ class TestValidateCertificateFilesWithNewFeatures:
         cert_dir = tmp_path / "user"
         cert_path, key_path = get_or_create_self_signed_cert(str(cert_dir))
         
-        # Valid certs should pass
         result_cert, result_key = validate_certificate_files(cert_path, key_path)
         assert result_cert == cert_path
         assert result_key == key_path
     
     def test_user_cert_key_mismatch_rejected(self, tmp_path):
         """Test that mismatched cert and key are rejected."""
-        # Generate two separate cert pairs
         cert1_dir = tmp_path / "cert1"
         cert2_dir = tmp_path / "cert2"
         
         cert_path1, key_path1 = get_or_create_self_signed_cert(str(cert1_dir))
         cert_path2, key_path2 = get_or_create_self_signed_cert(str(cert2_dir))
         
-        # Try to use mismatched pair
         with pytest.raises(ValueError, match="Certificate validation failed|Certificate and private key do not match"):
             validate_certificate_files(cert_path1, key_path2)
     
@@ -809,11 +766,9 @@ class TestValidateCertificateFilesWithNewFeatures:
             cert_data = f.read()
         cert = x509.load_pem_x509_certificate(cert_data, default_backend())
         
-        # Get SANs
         san_ext = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName)
         san_names = [name for name in san_ext.value]
         
-        # Check that IPv6 ::1 is present
         ipv6_addresses = [name for name in san_names if isinstance(name, x509.IPAddress)]
         ipv6_strs = [str(addr.value) for addr in ipv6_addresses]
         

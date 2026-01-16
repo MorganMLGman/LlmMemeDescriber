@@ -207,10 +207,8 @@ class FakeClient:
     def remove(self, path):
         if self.remove_fail_exc is not None:
             raise self.remove_fail_exc
-        # emulate removal; if path not present, raise FileNotFoundError
         if path not in self.mapping and path not in self.file_contents:
             raise FileNotFoundError('not found')
-        # remove from file_contents if present
         self.file_contents.pop(path, None)
         self.mapping.pop(path, None)
         return True

@@ -110,7 +110,6 @@ def _is_self_signed_cert(cert_path: str) -> bool:
         with open(cert_path, "rb") as f:
             cert_data = f.read()
         cert = x509.load_pem_x509_certificate(cert_data, default_backend())
-        # A certificate is self-signed if issuer == subject
         return cert.issuer == cert.subject
     except Exception as exc:
         logger.warning("Failed to check if certificate is self-signed: %s", exc)
@@ -251,17 +250,14 @@ def validate_certificate_files(cert_path: str | None, key_path: str | None) -> t
     if cert_exists and key_exists:
         logger.debug("Validating user-provided certificate: %s", cert_path)
         try:
-            # Validate PEM format for both certificate and key
             _validate_pem_format(cert_path, "certificate")
             _validate_pem_format(key_path, "key")
-            # Validate that certificate and key match
             _validate_cert_key_match(cert_path, key_path)
         except ValueError as exc:
             raise ValueError(f"Certificate validation failed: {exc}") from exc
         except Exception as exc:
             raise ValueError(f"Cannot read certificate files: {exc}") from exc
         
-        # Check if user-provided certificate is expired
         is_self_signed = _is_self_signed_cert(cert_path)
         expiration = _get_certificate_expiration(cert_path)
         

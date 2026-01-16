@@ -619,7 +619,6 @@ class App:
         except Exception:
             logger.exception("Failed to run deduplication analysis after sync_and_process")
 
-        # Clean up orphaned cache entries
         try:
             with session_scope(self.engine) as session:
                 valid_filenames = set(session.exec(select(Meme.filename)).all())

@@ -50,9 +50,7 @@ def _get_extension(filename: str) -> str:
     as having no extension.
     """
     name = str(filename).strip().lower()
-    # find last dot position
     idx = name.rfind('.')
-    # no dot or dot is the first character (hidden file without extension) => no ext
     if idx <= 0:
         return ''
     return name[idx+1:]

@@ -69,7 +69,6 @@ def test_save_preview_cache_ignores_empty_files(tmp_path):
     
     count = preview_helpers.save_preview_cache()
     
-    # Should only count files with content, not empty files
     assert count == 2
     
     with open(manifest_file, 'r') as f:
