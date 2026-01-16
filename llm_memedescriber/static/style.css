@@ -139,7 +139,6 @@ body {
 }
 .table-responsive { max-height: 480px; overflow: auto; }
 
-/* Modal title and body: allow wrapping for long filenames */
 .modal-header .modal-title, #memeTitle {
     white-space: normal !important;
     overflow-wrap: anywhere;
@@ -151,7 +150,6 @@ body {
     word-break: break-word;
 }
 
-/* Additional modal styles */
 .btn-outline-light {
     color: white;
     border-color: rgba(255, 255, 255, 0.4);
