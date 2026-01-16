@@ -884,13 +884,11 @@ def get_meme_duplicates(filename: str):
             if primary_meme.is_false_positive or not primary_meme.phash:
                 return {"primary": None, "duplicates": []}
             
-            # Find groups this filename belongs to via association table
             group_ids = get_groups_for_filename(session, filename)
             if not group_ids:
                 return {"primary": None, "duplicates": []}
 
             duplicates_info = []
-            # Collect unique duplicate filenames across groups
             seen = set()
             for gid in group_ids:
                 members = get_group_members(session, gid)
@@ -981,11 +979,8 @@ def mark_meme_not_duplicate(filename: str):
     
     try:
         with session_scope(app.state.engine) as session:
-            # Instead of a global flag, mark pairwise exceptions between this meme and others
-            # Find the duplicate group containing this meme
             group_ids = get_groups_for_filename(session, filename)
             if not group_ids:
-                # Not in any group: mark false-positive globally
                 success = mark_false_positive(session, filename)
                 if not success:
                     raise HTTPException(status_code=404, detail="Meme not found")
