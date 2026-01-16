@@ -25,7 +25,7 @@ RUN set -e; \
     rm -rf /tmp/ffmpeg* && \
     chmod +x /usr/bin/ffmpeg /usr/bin/ffprobe
 
-RUN mkdir -p /data /cache && chmod 755 /data /cache
+RUN mkdir -p /data && chmod 755 /data
 
 FROM dhi.io/python:3.14-debian13 AS production
 WORKDIR /app
@@ -34,7 +34,6 @@ COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /usr/bin/ffmpeg /usr/bin/ffmpeg
 COPY --from=builder /usr/bin/ffprobe /usr/bin/ffprobe
 COPY --from=builder /data /data
-COPY --from=builder /cache /cache
 VOLUME ["/data"]
 
 ENV PYTHONUNBUFFERED=1
@@ -44,12 +43,12 @@ ENV PATH=/app/.venv/bin:$PATH
 
 COPY llm_memedescriber /app/llm_memedescriber
 COPY PROMPT.txt /app/
-COPY --chmod=0755 entrypoint.sh /app/entrypoint.sh
+COPY --chmod=0755 entrypoint.py /app/entrypoint.py
 
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD ["/app/.venv/bin/python","-c","import urllib.request,sys;\ntry:\n  urllib.request.urlopen('http://localhost:8000')\nexcept Exception:\n  sys.exit(1)"]
 
-ENTRYPOINT ["/app/entrypoint.sh"]
+ENTRYPOINT ["/app/.venv/bin/python", "/app/entrypoint.py"]
 CMD ["python", "-m", "uvicorn", "llm_memedescriber.app:app", "--host", "0.0.0.0", "--port", "8000", "--log-level", "info", "--no-access-log"]

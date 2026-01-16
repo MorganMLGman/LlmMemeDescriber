@@ -49,9 +49,15 @@ class WebDavStorage:
             }
             try:
                 if isinstance(entry, dict):
-                    for k in ('getlastmodified', 'modified', 'creationdate', 'getcreationdate'):
+                    for k in ('getlastmodified', 'modified', 'creationdate', 'getcreationdate', 'getcontentlength', 'size'):
                         if k in entry and entry.get(k) is not None:
-                            meta[k] = entry.get(k)
+                            if k == 'getcontentlength':
+                                try:
+                                    meta['size'] = int(entry.get(k))
+                                except (ValueError, TypeError):
+                                    meta['size'] = 0
+                            else:
+                                meta[k] = entry.get(k)
             except Exception:
                 pass
             results.append(meta)

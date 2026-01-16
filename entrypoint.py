@@ -5,11 +5,9 @@ Performs simple checks and execs the provided command.
 """
 import os
 import sys
-import subprocess
 
 
 def main():
-  # Activate venv by ensuring its bin is first in PATH
   venv_bin = "/app/.venv/bin"
   if os.path.isdir(venv_bin):
     os.environ["PATH"] = venv_bin + ":" + os.environ.get("PATH", "")
@@ -17,14 +15,16 @@ def main():
 
   try:
     uid = os.getuid()
-    gid = os.getgid()
-    user = subprocess.check_output(["id", "-un"]).decode().strip()
-  except Exception:
+  except Exception as e:
+    print(f"[startup] Warning: Failed to get uid: {e}")
     uid = "?"
+  try:
+    gid = os.getgid()
+  except Exception as e:
+    print(f"[startup] Warning: Failed to get gid: {e}")
     gid = "?"
-    user = "?"
 
-  print(f"[startup] Running as: user={user} uid={uid} gid={gid}")
+  print(f"[startup] Running as: uid={uid} gid={gid}")
 
   # Check /data is writable
   test_path = "/data/.llm_mount_test"

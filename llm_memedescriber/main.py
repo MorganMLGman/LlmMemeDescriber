@@ -19,6 +19,7 @@ from .deduplication import find_duplicate_groups, calculate_phash
 from .storage import WebDavStorage
 from .storage_workers import StorageWorkerPool
 from .storage_helpers import compute_and_persist_phash
+from .preview_helpers import cleanup_orphaned_cache
 
 logger = logging.getLogger(__name__)
 
@@ -588,29 +589,9 @@ class App:
                 logger.exception("Failed to write descriptions to listing.json: %s", exc)
 
         if to_add:
-            logger.info("Calculating perceptual hashes for %d newly added memes", len(to_add))
-            try:
-                async def compute_phashes_for_new_memes():
-                    results = []
-                    for filename in to_add:
-                        try:
-                            result = await compute_and_persist_phash(filename, self.storage, self.engine, timestamp=1.0)
-                            results.append((filename, result is not None))
-                        except Exception as e:
-                            logger.debug("Failed to compute phash for %s: %s", filename, e)
-                            results.append((filename, False))
-                    return results
-                
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                try:
-                    phash_results = loop.run_until_complete(compute_phashes_for_new_memes())
-                    successful = sum(1 for _, success in phash_results if success)
-                    logger.debug("Phash calculation for new memes: %d/%d successful", successful, len(to_add))
-                finally:
-                    loop.close()
-            except Exception:
-                logger.exception("Failed to calculate phashes for newly added memes")
+            logger.info("Scheduling phash calculation for %d newly added memes", len(to_add))
+            # Note: Phashes will be calculated on-demand via /memes/deduplication/analyze API endpoint
+            # Cannot use asyncio.run() here as we're already in a running event loop during shutdown
 
         try:
             with session_scope(self.engine) as session:
@@ -637,9 +618,19 @@ class App:
                         link = DBDupeLink(group_id=dg.id, filename=meme.filename)
                         session.add(link)
                 session.commit()
-            logger.info("Deduplication analysis completed after sync: %d groups persisted", len(duplicate_groups))
+            logger.debug("Deduplication analysis completed after sync: %d groups persisted", len(duplicate_groups))
         except Exception:
             logger.exception("Failed to run deduplication analysis after sync_and_process")
+
+        # Clean up orphaned cache entries
+        try:
+            with session_scope(self.engine) as session:
+                valid_filenames = set(session.exec(select(Meme.filename)).all())
+                removed_count = cleanup_orphaned_cache(valid_filenames)
+                if removed_count > 0:
+                    logger.info("Cleaned up %d orphaned cache files after sync", removed_count)
+        except Exception:
+            logger.exception("Failed to cleanup orphaned cache after sync_and_process")
 
         result = {
             'added': len(to_add),

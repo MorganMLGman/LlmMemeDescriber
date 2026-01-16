@@ -2,6 +2,7 @@ services:
   llm-meme-describer:
     image: morganmlg/llm-meme-describer:latest
     container_name: llm-meme-describer
+    user: "1000:1000"
     ports:
       - "8000:8000"
     

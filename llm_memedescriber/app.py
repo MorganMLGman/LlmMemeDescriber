@@ -1,6 +1,7 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import asyncio
@@ -31,7 +32,7 @@ from .deduplication import (
 )
 from .dup_helpers import get_group_members, get_groups_for_filename
 from .storage_helpers import compute_and_persist_phash
-from .preview_helpers import generate_preview, async_generate_preview
+from .preview_helpers import generate_preview, async_generate_preview, restore_preview_cache, save_preview_cache, cleanup_orphaned_cache
 from sqlmodel import select
 from .db_helpers import session_scope
 from .models import Meme, DuplicateGroup as DBDuplicateGroup, MemeDuplicateGroup as DBDupeLink
@@ -47,16 +48,27 @@ async def lifespan(app_instance: FastAPI):
     settings = load_settings()
     configure_logging(settings)
     logger.info("Starting llm_memedescriber FastAPI app (preview cache: %s)", CACHE_DIR)
+    
+    try:
+        logger.debug("Restoring preview cache from disk...")
+        restored = restore_preview_cache()
+        logger.info("Preview cache restored: %d entries", restored)
+    except Exception:
+        logger.exception("Failed to restore preview cache, continuing with empty cache")
+    
     app_instance.state.engine = init_db()
     
     try:
         with session_scope(app_instance.state.engine) as session:
             removed_memes = session.exec(select(Meme).where(Meme.status == 'removed')).all()
             if removed_memes:
+                removed_filenames = {meme.filename for meme in removed_memes}
                 for meme in removed_memes:
                     session.delete(meme)
                 session.commit()
                 logger.info(f"Cleaned up {len(removed_memes)} removed memes from database")
+                # Clean up cache entries for removed memes
+                cleanup_orphaned_cache(set(session.exec(select(Meme.filename)).all()) if session.exec(select(Meme)).first() else set())
     except Exception:
         logger.exception("Failed to clean up removed memes from database")
     storage = None
@@ -234,6 +246,15 @@ async def lifespan(app_instance: FastAPI):
     yield
     
     logger.info("Shutting down llm_memedescriber FastAPI app")
+    
+    # Save preview cache to disk
+    try:
+        logger.info("Saving preview cache to disk...")
+        saved = save_preview_cache()
+        logger.info("Preview cache saved: %d entries", saved)
+    except Exception:
+        logger.exception("Failed to save preview cache on shutdown")
+    
     try:
         if getattr(app_instance.state, 'app_instance', None):
             app_inst = app_instance.state.app_instance
@@ -256,6 +277,10 @@ async def lifespan(app_instance: FastAPI):
 
 
 app = FastAPI(title="llm_memedescriber", description="Meme describing service", version="0.0.1", lifespan=lifespan)
+
+# Setup templates
+templates_dir = os.path.join(os.path.dirname(__file__), 'templates')
+templates = Jinja2Templates(directory=templates_dir)
 
 static_dir = os.path.join(os.path.dirname(__file__), 'static')
 if os.path.isdir(static_dir):
@@ -328,35 +353,6 @@ def _get_mime_type(ext: str) -> str:
     return mime_types.get(ext, 'application/octet-stream')
 
 
-@app.get("/", response_class=HTMLResponse)
-async def root():
-    """Serve the web UI"""
-    static_dir = os.path.join(os.path.dirname(__file__), 'static')
-    index_path = os.path.join(static_dir, 'index.html')
-    if os.path.isfile(index_path):
-        with open(index_path, 'r', encoding='utf-8') as f:
-            return f.read()
-    return HTMLResponse("<html><body><h1>llm_memedescriber</h1><p>No UI available.</p></body></html>")
-
-def _get_or_generate_preview(filename: str, is_vid: bool, storage: Any, size: int = 300) -> bytes:
-    """Get preview from cache directory or generate it.
-    
-    Uses tmpfs cache at /cache to avoid regenerating.
-    Returns JPEG bytes.
-    Raises HTTPException on failure.
-    """
-    try:
-        return generate_preview(filename, is_vid, storage, size=size)
-    except FileNotFoundError:
-        logger.info('File not found: %s', filename)
-        raise HTTPException(status_code=404, detail='File not found in storage')
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.exception('Failed to generate preview for %s: %s', filename, exc)
-        raise HTTPException(status_code=500, detail='Preview generation failed')
-
-
 async def _aget_or_generate_preview(filename: str, is_vid: bool, storage: Any, size: int = 300) -> bytes:
     """Async wrapper for preview generation that uses storage async methods when available."""
     cache_path = _get_cache_path(filename)
@@ -383,45 +379,15 @@ def health() -> Dict[str, Any]:
 
 
 @app.get("/", response_class=HTMLResponse, tags=["ui"])
-def index():
-    """Simple HTML listing of memes with links to download."""
-    html = ["<html><head><title>Meme listing</title></head><body>"]
-    html.append('<h1>Meme listing</h1>')
-    try:
-        rows = []
-        with session_scope(app.state.engine) as session:
-            rows = session.exec(select(Meme)).all()
-        if not rows:
-            html.append('<p>No memes found.</p>')
-        else:
-            html.append('<table border="1" cellpadding="4" cellspacing="0">')
-            html.append('<tr><th>Filename</th><th>Status</th><th>Category</th><th>Description</th><th>Download</th></tr>')
-            for r in rows:
-                fname = r.filename
-                status = r.status or ''
-                cat = r.category or ''
-                desc = (r.description or '').replace('<', '&lt;').replace('>', '&gt;')
-                dl = f'/memes/{fname}/download'
-                html.append(f'<tr><td>{fname}</td><td>{status}</td><td>{cat}</td><td>{desc}</td><td><a href="{dl}">download</a></td></tr>')
-            html.append('</table>')
-    except Exception:
-        html.append('<p>Error reading DB</p>')
-    html.append('</body></html>')
-    return HTMLResponse('\n'.join(html))
+def index(request: Request):
+    """Serve the main meme gallery page."""
+    return templates.TemplateResponse("index.html", {"request": request})
 
 
 @app.get("/duplicates", response_class=HTMLResponse, tags=["ui"])
-def duplicates_page():
+def duplicates_page(request: Request):
     """Serve the duplicates UI page."""
-    static_dir = os.path.join(os.path.dirname(__file__), 'static')
-    page_path = os.path.join(static_dir, 'duplicates.html')
-    if os.path.isfile(page_path):
-        try:
-            return FileResponse(page_path, media_type='text/html')
-        except Exception:
-            with open(page_path, 'r', encoding='utf-8') as f:
-                return HTMLResponse(f.read())
-    return HTMLResponse("<html><body><h1>Duplicates</h1><p>Page not found.</p></body></html>")
+    return templates.TemplateResponse("duplicates.html", {"request": request})
 
 
 @app.get("/memes/{filename}/download", tags=["memes"])
@@ -442,7 +408,11 @@ async def download_meme(filename: str):
         
         ext = _get_extension(filename)
         ctype = _get_mime_type(ext)
-        return StreamingResponse(BytesIO(data), media_type=ctype)
+        return StreamingResponse(
+            BytesIO(data),
+            media_type=ctype,
+            headers={"Content-Length": str(len(data))}
+        )
     except HTTPException:
         raise
     except FileNotFoundError:
@@ -568,6 +538,23 @@ def debug_db_schema():
         raise HTTPException(status_code=500, detail="Failed to read DB schema")
 
 
+@app.post("/sync", tags=["sync"])
+def trigger_sync():
+    """Manually trigger a sync job to check for new/removed memes from WebDAV.
+    
+    Returns dict with added, removed, saved, failed, unfilled, unsupported counts.
+    """
+    try:
+        if not hasattr(app.state, 'app_instance') or app.state.app_instance is None:
+            raise HTTPException(status_code=503, detail="Application not fully initialized")
+        
+        result = app.state.app_instance.sync_and_process()
+        return result
+    except Exception as e:
+        logger.exception("Error during manual sync: %s", e)
+        raise HTTPException(status_code=500, detail=f"Sync failed: {str(e)}")
+
+
 @app.post("/memes/deduplication/analyze", tags=["deduplication"])
 def analyze_duplicates():
     """Analyze all memes and find duplicate groups using perceptual hashing.
@@ -643,18 +630,13 @@ def analyze_duplicates():
             session.commit()
 
             logger.info(f"Found {len(result)} duplicate groups with {total_duplicates} duplicates, saved to database")
+            
             return {
                 "total_groups": len(result),
                 "total_duplicates": total_duplicates,
                 "groups": result
             }
             
-            logger.info(f"Found {len(result)} duplicate groups with {total_duplicates} duplicates, saved to database")
-            return {
-                "total_groups": len(result),
-                "total_duplicates": total_duplicates,
-                "groups": result
-            }
     except Exception:
         logger.exception("Failed to analyze duplicates")
         raise HTTPException(status_code=500, detail="Duplicate analysis failed")
@@ -665,9 +647,11 @@ def get_duplicates_by_group():
     """Get all memes grouped by duplicate_group_id.
     
     Returns list of duplicate groups with all memes in each group.
-    Only includes groups with duplicate_group_id != None.
+    Primary is automatically selected as the file with largest size.
+    Only includes groups with duplicate_group_id != None and at least 2 memes.
     """
     try:
+        storage = getattr(app.state, 'app_instance', None) and getattr(app.state.app_instance, 'storage', None)
         with session_scope(app.state.engine) as session:
             groups_out = []
             groups = session.exec(select(DBDuplicateGroup)).all()
@@ -682,16 +666,54 @@ def get_duplicates_by_group():
                 memes = []
                 for l in links:
                     m = meme_map.get(l.filename)
+                    file_size = 0
+                    if storage:
+                        try:
+                            try:
+                                file_entries = storage.client.ls(l.filename)
+                                if file_entries and isinstance(file_entries[0], dict):
+                                    entry = file_entries[0]
+                                    logger.debug(f"WebDAV entry for {l.filename}: {entry}")
+                                    for size_field in ('getcontentlength', 'size'):
+                                        if size_field in entry:
+                                            try:
+                                                file_size = int(entry[size_field])
+                                                logger.debug(f"Found {size_field}={file_size} for {l.filename}")
+                                                break
+                                            except (ValueError, TypeError):
+                                                pass
+                            except Exception as e:
+                                logger.debug(f"WebDAV ls failed for {l.filename}: {e}")
+                                pass
+                        except Exception:
+                            pass
+                        
+                        if file_size == 0:
+                            try:
+                                logger.debug(f"Downloading {l.filename} to measure size")
+                                data = storage.download_file(l.filename)
+                                file_size = len(data) if data else 0
+                                logger.debug(f"Downloaded {l.filename}, size={file_size}")
+                            except Exception as e:
+                                logger.debug(f"Download fallback failed for {l.filename}: {e}")
+                                file_size = 0
+                    
                     memes.append({
                         "filename": l.filename,
                         "phash": m.phash if m else None,
-                        "preview_url": f"/memes/{l.filename}/preview"
+                        "preview_url": f"/memes/{l.filename}/preview",
+                        "size": file_size
                     })
-                groups_out.append({
-                    "group_id": g.id,
-                    "count": len(memes),
-                    "memes": memes
-                })
+                
+                if len(memes) >= 2:
+                    primary_meme = max(memes, key=lambda x: x['size']) if memes else memes[0]
+                    
+                    groups_out.append({
+                        "group_id": g.id,
+                        "count": len(memes),
+                        "primary_filename": primary_meme['filename'],
+                        "memes": memes
+                    })
 
             logger.debug(f"Returning {len(groups_out)} duplicate groups")
             return {"total_groups": len(groups_out), "groups": groups_out}
@@ -866,13 +888,11 @@ def get_meme_duplicates(filename: str):
             if primary_meme.is_false_positive or not primary_meme.phash:
                 return {"primary": None, "duplicates": []}
             
-            # Find groups this filename belongs to via association table
             group_ids = get_groups_for_filename(session, filename)
             if not group_ids:
                 return {"primary": None, "duplicates": []}
 
             duplicates_info = []
-            # Collect unique duplicate filenames across groups
             seen = set()
             for gid in group_ids:
                 members = get_group_members(session, gid)
@@ -963,11 +983,8 @@ def mark_meme_not_duplicate(filename: str):
     
     try:
         with session_scope(app.state.engine) as session:
-            # Instead of a global flag, mark pairwise exceptions between this meme and others
-            # Find the duplicate group containing this meme
             group_ids = get_groups_for_filename(session, filename)
             if not group_ids:
-                # Not in any group: mark false-positive globally
                 success = mark_false_positive(session, filename)
                 if not success:
                     raise HTTPException(status_code=404, detail="Meme not found")
@@ -1130,3 +1147,50 @@ def delete_duplicate_pair(pair: PairDTO):
     except Exception:
         logger.exception("Failed to delete duplicate pair")
         raise HTTPException(status_code=500, detail="Failed to delete duplicate pair")
+
+
+@app.post("/memes/duplicates/delete-group", tags=["deduplication"])
+def delete_duplicate_group(request: MergeDuplicatesRequest):
+    """Delete all duplicates in a group except the primary meme.
+    
+    Does not merge metadata - simply deletes all duplicates and keeps the primary.
+    """
+    if not request.primary_filename or not request.duplicate_filenames:
+        raise HTTPException(status_code=400, detail="primary_filename and duplicate_filenames are required")
+    
+    try:
+        request.primary_filename = sanitize_filename(request.primary_filename)
+        request.duplicate_filenames = [sanitize_filename(f) for f in request.duplicate_filenames]
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    storage = getattr(app.state, 'app_instance', None) and getattr(app.state.app_instance, 'storage', None)
+    if not storage:
+        raise HTTPException(status_code=503, detail='Storage not configured')
+    
+    try:
+        with session_scope(app.state.engine) as session:
+            # Delete all duplicates without merging metadata
+            success = merge_duplicates(
+                session,
+                storage,
+                request.primary_filename,
+                request.duplicate_filenames,
+                merge_metadata=False  # Don't merge metadata, just delete
+            )
+            
+            if not success:
+                raise HTTPException(status_code=404, detail="Primary meme or duplicates not found")
+            
+            logger.info(f"Deleted {len(request.duplicate_filenames)} duplicates from group, keeping {request.primary_filename}")
+            return {
+                "status": "ok",
+                "message": f"Deleted {len(request.duplicate_filenames)} duplicate(s), kept primary: {request.primary_filename}",
+                "primary_filename": request.primary_filename,
+                "deleted_count": len(request.duplicate_filenames)
+            }
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception(f"Failed to delete duplicate group")
+        raise HTTPException(status_code=500, detail="Failed to delete duplicate group")

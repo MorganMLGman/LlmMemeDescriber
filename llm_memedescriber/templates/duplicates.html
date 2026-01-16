@@ -1,0 +1,256 @@
+{% extends "base.html" %}
+
+{% block title %}Duplicate Groups — Meme Describer{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="/static/style.css?v=3">
+{% endblock %}
+
+{% block navbar_controls %}
+<a class="btn btn-sm btn-outline-light" href="/">← Back</a>
+{% endblock %}
+
+{% block content %}
+<div class="row mb-3">
+    <div class="col-12">
+        <h3>Duplicate Groups</h3>
+        <p class="text-muted">Groups of similar memes detected by the deduplication analysis.</p>
+    </div>
+</div>
+
+<div id="duplicatesPageContent" class="row">
+    <div class="col-12" id="duplicatesPageInner">
+        <div class="text-center">
+            <div class="spinner-border text-light" role="status">
+                <span class="visually-hidden">Loading...</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Preview Modal -->
+<div class="modal fade" id="previewModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="previewTitle">Preview</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body text-center">
+                <img id="previewImage" src="" style="width: 100%; max-height: 500px; object-fit: contain; display: none;" alt="Preview">
+                <video id="previewVideo" style="width: 100%; max-height: 500px; object-fit: contain; display: none;" controls autoplay>
+                    <source id="previewVideoSource" src="" type="">
+                    Your browser does not support the video tag.
+                </video>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="/static/app.js?v=3"></script>
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const container = document.getElementById('duplicatesPageInner');
+        container.innerHTML = '<div class="spinner-border" role="status"><span class="visually-hidden">Loading...</span></div>';
+        (async function load() {
+            try {
+                const response = await fetch('/memes/duplicates-by-group');
+                if (!response.ok) throw new Error('Failed to load groups');
+                const data = await response.json();
+
+                if (!data.groups || data.groups.length === 0) {
+                    container.innerHTML = '<p class="text-muted">No duplicate groups found.</p>';
+                    return;
+                }
+
+                let html = `<p class="mb-3"><strong>Found ${data.total_groups} duplicate group(s)</strong></p>`;
+
+                data.groups.forEach((group, groupIdx) => {
+                    html += `<div class="card mb-3"><div class="card-body">`;
+                    html += `<h6 class="card-title">Group ${group.group_id + 1}: ${group.count} meme(s)</h6>`;
+                    
+                    const formatSize = (bytes) => {
+                        if (bytes === 0) return '? bytes';
+                        const k = 1024;
+                        const sizes = ['B', 'KB', 'MB', 'GB'];
+                        const i = Math.floor(Math.log(bytes) / Math.log(k));
+                        return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
+                    };
+
+                    html += `<div class="table-responsive"><table class="table table-hover align-middle"><thead class="table-light"><tr style="color: #333 !important;">`;
+                    html += `<th style="color: #333 !important;">File</th>`;
+                    html += `<th style="width:120px; color: #333 !important;">Size</th>`;
+                    html += `<th style="width:100px; color: #333 !important;">Status</th>`;
+                    html += `</tr></thead><tbody id="group-${group.group_id}">`;
+
+                    group.memes.forEach((meme) => {
+                        const preview = meme.preview_url || '';
+                        const isPrimary = meme.filename === group.primary_filename;
+                        const statusBadge = isPrimary ? 
+                            '<span class="badge bg-success">Keep (Primary)</span>' : 
+                            '<span class="badge bg-danger">Delete</span>';
+                        
+                        html += `<tr>`;
+                        // file column
+                        html += `<td>`;
+                        html += `<div class="d-flex align-items-center gap-3">`;
+                        html += `<img src="${preview}" style="height:60px;width:80px;object-fit:cover;border-radius:6px;cursor:pointer;" onclick="openPreview('${meme.filename.replace(/'/g, "\\'")}'); return false;" alt="preview">`;
+                        html += `<div class="flex-grow-1">`;
+                        html += `<a href="#" onclick="openPreview('${meme.filename.replace(/'/g, "\\'")}'); return false;" class="fw-semibold">${meme.filename.length>60? meme.filename.substring(0,60)+'...': meme.filename}</a>`;
+                        html += `</div></div>`;
+                        html += `</td>`;
+                        // size column
+                        html += `<td style="color: #333;"><strong>${formatSize(meme.size)}</strong></td>`;
+                        // status column
+                        html += `<td>${statusBadge}</td>`;
+                        html += `</tr>`;
+                    });
+
+                    html += `</tbody></table></div>`;
+                    // group actions - simplified
+                    html += `<div class="mt-2 d-flex gap-2">`;
+                    html += `<button class="btn btn-sm btn-success" onclick="mergeGroupAll(${group.group_id}, '${group.primary_filename.replace(/'/g, "\\'")}')">Merge All</button>`;
+                    html += `<button class="btn btn-sm btn-warning" onclick="markGroupNotDuplicate(${group.group_id}, '${group.primary_filename.replace(/'/g, "\\'")}')">Mark as Not Duplicate</button>`;
+                    html += `<button class="btn btn-sm btn-danger" onclick="deleteGroupDuplicates(${group.group_id}, '${group.primary_filename.replace(/'/g, "\\'")}')">Delete All Duplicates</button>`;
+                    html += `</div>`;
+
+                    html += `</div></div>`;
+                });
+
+                container.innerHTML = html;
+            } catch (error) {
+                console.error(error);
+                container.innerHTML = `<div class="alert alert-danger">Error loading duplicate groups: ${error.message}</div>`;
+            }
+        })();
+    });
+    
+    // Handlers for group actions - simplified version
+    window.mergeGroupAll = async function(groupId, primaryFilename) {
+        if (!confirm(`Merge all duplicates into ${primaryFilename}? This will keep only the largest file and merge all metadata.`)) return;
+        
+        // Get all filenames from this group
+        const rows = document.querySelectorAll(`tbody#group-${groupId} tr`);
+        const allFilenames = Array.from(rows).map(row => {
+            const link = row.querySelector('a');
+            return link ? link.textContent.trim() : null;
+        }).filter(f => f && f !== primaryFilename);
+        
+        if (allFilenames.length === 0) {
+            alert('No duplicates to merge');
+            return;
+        }
+        
+        // Always merge all metadata sources
+        await mergeDuplicates(primaryFilename, allFilenames, allFilenames);
+    };
+
+    window.markGroupNotDuplicate = async function(groupId, primaryFilename) {
+        if (!confirm('Mark this group as not duplicate? This will create pairwise exceptions for the selected primary.')) return;
+
+        try {
+            const resp = await fetch(`/memes/${encodeURIComponent(primaryFilename)}/mark-not-duplicate`, { method: 'POST' });
+            if (!resp.ok) throw new Error('Failed to mark group as not duplicate');
+            const data = await resp.json();
+            console.debug('mark-not-duplicate response', data);
+            showSuccess('Group marked as not duplicate (pairwise exceptions created)');
+            setTimeout(() => location.reload(), 400);
+        } catch (e) {
+            console.error('mark not duplicate failed for', primaryFilename, e);
+            showError('Failed to mark group as not duplicate');
+        }
+    };
+
+    window.deleteGroupDuplicates = async function(groupId, primaryFilename) {
+        if (!confirm(`Delete all duplicates from this group except "${primaryFilename}"? This cannot be undone.`)) return;
+
+        try {
+            const rows = document.querySelectorAll(`tbody#group-${groupId} tr`);
+            const allFilenames = Array.from(rows).map(row => {
+                const link = row.querySelector('a');
+                return link ? link.textContent.trim() : null;
+            }).filter(f => f && f !== primaryFilename);
+            
+            if (allFilenames.length === 0) {
+                alert('No duplicates to delete');
+                return;
+            }
+            
+            const resp = await fetch(`/memes/duplicates/delete-group`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    primary_filename: primaryFilename,
+                    duplicate_filenames: allFilenames,
+                    merge_metadata: false
+                })
+            });
+            
+            if (!resp.ok) {
+                const err = await resp.json();
+                throw new Error(err.detail || 'Failed to delete duplicates');
+            }
+            
+            const data = await resp.json();
+            console.debug('delete-group response', data);
+            showSuccess(`Deleted ${data.deleted_count} duplicate(s)`);
+            setTimeout(() => location.reload(), 400);
+        } catch (e) {
+            console.error('delete group duplicates failed for', primaryFilename, e);
+            showError('Failed to delete duplicates: ' + e.message);
+        }
+    };
+
+    window.openPreview = function(filename) {
+        try {
+            // Remove quotes if filename is JSON stringified
+            filename = typeof filename === 'string' ? filename.replace(/^"|"$/g, '') : filename;
+            
+            const isVideo = /\.(mp4|webm|mov|mkv|avi|flv)$/i.test(filename);
+            const imageElement = document.getElementById('previewImage');
+            const videoElement = document.getElementById('previewVideo');
+            const videoSource = document.getElementById('previewVideoSource');
+            const titleEl = document.getElementById('previewTitle');
+
+            titleEl.textContent = filename;
+
+            if (isVideo) {
+                imageElement.style.display = 'none';
+                videoElement.style.display = 'block';
+
+                videoSource.src = `/memes/${encodeURIComponent(filename)}/download`;
+
+                const ext = filename.split('.').pop().toLowerCase();
+                const mimeTypes = {
+                    'mp4': 'video/mp4',
+                    'webm': 'video/webm',
+                    'mkv': 'video/x-matroska',
+                    'avi': 'video/x-msvideo',
+                    'flv': 'video/x-flv'
+                };
+                videoSource.type = mimeTypes[ext] || 'video/mp4';
+                videoElement.load();
+            } else {
+                videoElement.style.display = 'none';
+                imageElement.style.display = 'block';
+                imageElement.src = `/memes/${encodeURIComponent(filename)}/preview?size=600`;
+            }
+
+            const modal = new bootstrap.Modal(document.getElementById('previewModal'));
+            
+            document.getElementById('previewModal').addEventListener('hide.bs.modal', () => {
+                const video = document.getElementById('previewVideo');
+                video.pause();
+                video.currentTime = 0;
+            }, { once: true });
+
+            modal.show();
+        } catch (error) {
+            console.error('Error opening preview:', error);
+            alert('Failed to open preview');
+        }
+    };
+</script>
+{% endblock %}

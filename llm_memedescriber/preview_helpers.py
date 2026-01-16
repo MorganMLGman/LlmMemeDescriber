@@ -1,13 +1,14 @@
 import hashlib
 import os
 import logging
+import json
 from io import BytesIO
 from typing import Any
 
 import asyncio
 from PIL import Image
 
-from .constants import CACHE_DIR, PREVIEW_JPEG_QUALITY_IMAGE
+from .constants import CACHE_DIR, PREVIEW_CACHE_METADATA, PREVIEW_JPEG_QUALITY_IMAGE
 from .storage_helpers import call_storage
 
 logger = logging.getLogger(__name__)
@@ -53,8 +54,8 @@ def generate_preview(filename: str, is_vid: bool, storage: Any, size: int = 300)
         os.makedirs(CACHE_DIR, exist_ok=True)
         with open(cache_path, 'wb') as f:
             f.write(preview_bytes)
-    except Exception:
-        logger.debug('Failed to write preview cache for %s', filename)
+    except Exception as e:
+        logger.warning('Failed to write preview cache for %s to %s: %s', filename, cache_path, e)
 
     return preview_bytes
 
@@ -98,8 +99,8 @@ async def async_generate_preview(filename: str, is_vid: bool, storage: Any, size
                 with open(cache_path, 'wb') as f:
                     f.write(preview_bytes)
             await loop.run_in_executor(None, _write_cache)
-        except Exception:
-            logger.debug('Failed to write preview cache for %s', filename)
+        except Exception as e:
+            logger.warning('Failed to write preview cache for %s to %s: %s', filename, cache_path, e)
 
         return preview_bytes
     except FileNotFoundError:
@@ -107,3 +108,171 @@ async def async_generate_preview(filename: str, is_vid: bool, storage: Any, size
     except Exception as e:
         logger.exception('Failed to generate preview for %s: %s', filename, e)
         raise
+
+
+def save_preview_cache() -> int:
+    """
+    Save the current preview cache to disk.
+    Scans CACHE_DIR for all jpg files and copies them to /data/preview_cache.
+    Also saves a manifest with filenames.
+    
+    Returns:
+        Number of cached previews saved to disk.
+    """
+    try:
+        if not os.path.isdir(CACHE_DIR):
+            logger.info(f"Cache directory does not exist: {CACHE_DIR}")
+            preview_cache_dir = os.path.dirname(PREVIEW_CACHE_METADATA)
+            os.makedirs(preview_cache_dir, exist_ok=True)
+            cache_manifest = {'cached_previews': [], 'count': 0}
+            with open(PREVIEW_CACHE_METADATA, 'w') as f:
+                json.dump(cache_manifest, f, indent=2)
+            return 0
+        
+        cached_files = []
+        try:
+            all_files = os.listdir(CACHE_DIR)
+            logger.debug(f"Files in {CACHE_DIR}: {all_files}")
+            for filename in all_files:
+                if filename.endswith('.jpg'):
+                    file_path = os.path.join(CACHE_DIR, filename)
+                    try:
+                        # Only include files with actual content (> 0 bytes)
+                        if os.path.getsize(file_path) > 0:
+                            cached_files.append(filename)
+                    except OSError:
+                        pass
+        except OSError as e:
+            logger.warning(f"Failed to list files in {CACHE_DIR}: {e}")
+            return 0
+        
+        logger.info(f"Found {len(cached_files)} jpg files with content in cache")
+        
+        preview_cache_dir = os.path.dirname(PREVIEW_CACHE_METADATA)
+        os.makedirs(preview_cache_dir, exist_ok=True)
+        
+        cache_manifest = {
+            'cached_previews': cached_files,
+            'count': len(cached_files)
+        }
+        
+        with open(PREVIEW_CACHE_METADATA, 'w') as f:
+            json.dump(cache_manifest, f, indent=2)
+        
+        logger.info(f"Saved preview cache manifest with {len(cached_files)} files to {preview_cache_dir}")
+        return len(cached_files)
+    except Exception as e:
+        logger.exception(f"Failed to save preview cache: {e}")
+        return 0
+
+
+def restore_preview_cache() -> int:
+    """
+    Restore preview cache by verifying cached files listed in manifest exist in CACHE_DIR.
+    Since manifest and cache files are both in /data/cache, no copying is needed.
+    
+    Returns:
+        Number of cache files verified to exist.
+    """
+    try:
+        if not os.path.isfile(PREVIEW_CACHE_METADATA):
+            logger.info(f"No preview cache manifest found at {PREVIEW_CACHE_METADATA}")
+            return 0
+        
+        with open(PREVIEW_CACHE_METADATA, 'r') as f:
+            cache_manifest = json.load(f)
+        
+        cached_files = cache_manifest.get('cached_previews', [])
+        verified_count = 0
+        
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        
+        for filename in cached_files:
+            cache_path = os.path.join(CACHE_DIR, filename)
+            try:
+                # Verify file exists AND has content (size > 0)
+                if os.path.isfile(cache_path) and os.path.getsize(cache_path) > 0:
+                    verified_count += 1
+                else:
+                    logger.debug(f"Cache file missing or empty: {filename}")
+            except Exception as e:
+                logger.debug(f"Failed to verify cache file {filename}: {e}")
+        
+        logger.info(f"Verified {verified_count} preview cache files from {CACHE_DIR}")
+        return verified_count
+    except Exception as e:
+        logger.exception(f"Failed to restore preview cache: {e}")
+        return 0
+
+
+def remove_cache_entry(filename: str) -> bool:
+    """
+    Remove a cache entry for a specific filename.
+    
+    Args:
+        filename: The filename whose cache entry should be removed.
+        
+    Returns:
+        True if removed successfully or file didn't exist, False if an error occurred.
+    """
+    try:
+        cache_path = _cache_path(filename)
+        if os.path.isfile(cache_path):
+            os.remove(cache_path)
+            logger.debug(f"Removed cache entry for: {filename}")
+            return True
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to remove cache entry for {filename}: {e}")
+        return False
+
+
+def cleanup_orphaned_cache(valid_filenames: set) -> int:
+    """
+    Remove cache entries that don't have corresponding filenames in the provided set.
+    This is called when files are removed from the database to keep cache in sync.
+    
+    Args:
+        valid_filenames: Set of filenames that should have cache entries (from database).
+        
+    Returns:
+        Number of orphaned cache files removed.
+    """
+    try:
+        if not os.path.isdir(CACHE_DIR):
+            return 0
+        
+        removed_count = 0
+        try:
+            all_files = os.listdir(CACHE_DIR)
+        except OSError as e:
+            logger.warning(f"Failed to list files in {CACHE_DIR}: {e}")
+            return 0
+        
+        for filename in all_files:
+            if not filename.endswith('.jpg'):
+                continue
+            
+            # Check if this cache file corresponds to any valid filename
+            is_orphaned = True
+            for valid_filename in valid_filenames:
+                if _cache_path(valid_filename) == os.path.join(CACHE_DIR, filename):
+                    is_orphaned = False
+                    break
+            
+            if is_orphaned:
+                try:
+                    cache_path = os.path.join(CACHE_DIR, filename)
+                    os.remove(cache_path)
+                    logger.debug(f"Removed orphaned cache file: {filename}")
+                    removed_count += 1
+                except Exception as e:
+                    logger.warning(f"Failed to remove orphaned cache file {filename}: {e}")
+        
+        if removed_count > 0:
+            logger.info(f"Removed {removed_count} orphaned cache files")
+        
+        return removed_count
+    except Exception as e:
+        logger.exception(f"Failed to cleanup orphaned cache: {e}")
+        return 0

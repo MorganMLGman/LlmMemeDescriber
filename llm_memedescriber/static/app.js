@@ -2,15 +2,20 @@ const API_URL = '';
 let currentMemeId = null;
 let allMemes = [];
 let filteredMemes = [];
-let currentPage = 1;
+let displayedMemes = [];
 const itemsPerPage = 100;
-let totalPages = 1;
+let currentOffset = 0;
+let isLoading = false;
+let hasMoreMemes = true;
+let totalMemeCount = 0;
+let searchQuery = '';
+let apiOffset = 0;
+let totalFetched = 0;
 
 async function loadMemes() {
     try {
         console.log('=== Starting loadMemes ===');
         
-        // First, test if API is responsive
         console.log('Testing API health...');
         const healthResponse = await fetch(`/health`, { timeout: 2000 });
         console.log('Health check response:', healthResponse.status);
@@ -19,70 +24,27 @@ async function loadMemes() {
             throw new Error(`API not responding: ${healthResponse.status}`);
         }
         
-        console.log('API is responsive, fetching memes...');
+        console.log('API is responsive, initializing memes list...');
         
-        // Fetch with timeout (5 seconds)
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 5000);
+        allMemes = [];
+        filteredMemes = [];
+        displayedMemes = [];
+        apiOffset = 0;
+        totalFetched = 0;
+        currentOffset = 0;
+        hasMoreMemes = true;
+        searchQuery = '';
         
-        const response = await fetch(`/memes?limit=500&offset=0`, {
-            signal: controller.signal
-        });
-        
-        clearTimeout(timeoutId);
-        
-        console.log('Response status:', response.status);
-        if (!response.ok) {
-            throw new Error(`API error: ${response.status} ${response.statusText}`);
-        }
-        
-        const data = await response.json();
-        console.log('First batch received:', data.length, 'items');
-        
-        allMemes = Array.isArray(data) ? data : (data.memes || []);
-        
-        // Try to fetch more pages if available
-        let offset = 500;
-        let hasMore = allMemes.length === 500;
-        
-        while (hasMore) {
-            try {
-                const nextResponse = await fetch(`/memes?limit=500&offset=${offset}`, {
-                    signal: controller.signal
-                });
-                
-                if (!nextResponse.ok) break;
-                
-                const nextData = await nextResponse.json();
-                const nextMemes = Array.isArray(nextData) ? nextData : (nextData.memes || []);
-                
-                console.log(`Batch at offset ${offset}:`, nextMemes.length, 'items');
-                
-                if (nextMemes.length === 0) break;
-                
-                allMemes = allMemes.concat(nextMemes);
-                offset += 500;
-                hasMore = nextMemes.length === 500;
-            } catch (e) {
-                console.log('Stopped pagination:', e.message);
-                break;
-            }
-        }
-        
-        console.log('Total memes loaded:', allMemes.length);
-        
-        filteredMemes = allMemes;
-        currentPage = 1;
-        totalPages = Math.ceil(filteredMemes.length / itemsPerPage);
+        await fetchMoreFromAPI();
         
         const total = allMemes.length;
         const processed = allMemes.filter(m => m.processed === true).length;
         const pending = total - processed;
         updateStats({total_memes: total, processed_memes: processed, unprocessed_memes: pending});
         
-        console.log('Calling renderMemes with', total, 'memes');
-        renderMemes();
-        renderPagination();
+        console.log('Calling renderInitial...');
+        renderInitial();
+        setupInfiniteScroll();
         console.log('=== Memes loaded successfully ===');
     } catch (error) {
         console.error('Error loading memes:', error);
@@ -90,33 +52,182 @@ async function loadMemes() {
     }
 }
 
-function renderMemes() {
+async function startSyncJob() {
+    try {
+        console.log('Starting sync job...');
+        
+        const refreshBtn = document.querySelector('button[onclick="startSyncJob()"]');
+        const originalText = refreshBtn.textContent;
+        refreshBtn.disabled = true;
+        refreshBtn.textContent = '⏳ Syncing...';
+        
+        const response = await fetch('/sync', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+        
+        if (!response.ok) {
+            throw new Error(`Sync failed: ${response.status} ${response.statusText}`);
+        }
+        
+        const result = await response.json();
+        console.log('Sync completed:', result);
+        
+        showSuccess(`Sync completed: ${result.added} added, ${result.removed} removed, ${result.saved} saved`);
+        
+        // Reload memes after sync
+        await loadMemes();
+    } catch (error) {
+        console.error('Error during sync:', error);
+        showError(`Sync failed: ${error.message}`);
+    } finally {
+        const refreshBtn = document.querySelector('button[onclick="startSyncJob()"]');
+        refreshBtn.disabled = false;
+        refreshBtn.textContent = 'Refresh';
+    }
+}
+
+async function fetchMoreFromAPI() {
+    if (isLoading) return;
+    
+    isLoading = true;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+    
+    try {
+        console.log(`Fetching from API: offset=${apiOffset}, limit=2000`);
+        
+        const response = await fetch(`/memes?limit=2000&offset=${apiOffset}`, {
+            signal: controller.signal
+        });
+        
+        clearTimeout(timeoutId);
+        
+        if (!response.ok) {
+            throw new Error(`API error: ${response.status} ${response.statusText}`);
+        }
+        
+        const data = await response.json();
+        const newMemes = Array.isArray(data) ? data : (data.memes || []);
+        
+        console.log(`API returned ${newMemes.length} memes from offset ${apiOffset}`);
+        
+        if (newMemes.length > 0) {
+            allMemes = allMemes.concat(newMemes);
+            filteredMemes = allMemes;
+            totalFetched = allMemes.length;
+            apiOffset += newMemes.length;
+            
+            hasMoreMemes = newMemes.length === 2000;
+        } else {
+            hasMoreMemes = false;
+        }
+        
+        console.log(`Total memes in memory: ${allMemes.length}, hasMore: ${hasMoreMemes}`);
+    } catch (error) {
+        console.error('Error fetching from API:', error);
+        hasMoreMemes = false;
+    } finally {
+        isLoading = false;
+    }
+}
+
+function renderInitial() {
     const container = document.getElementById('memesContainer');
     if (!container) {
-        console.debug('renderMemes: #memesContainer not found, skipping render');
+        console.debug('renderInitial: #memesContainer not found, skipping render');
         return;
     }
     
-    if (filteredMemes.length === 0) {
+    displayedMemes = [];
+    currentOffset = 0;
+    container.innerHTML = '';
+    loadMoreMemes();
+}
+
+function loadMoreMemes() {
+    if (isLoading) {
+        console.log('loadMoreMemes skipped - already loading');
+        return;
+    }
+    
+    console.log(`loadMoreMemes: currentOffset=${currentOffset}, displayedMemes=${displayedMemes.length}, allMemes=${allMemes.length}, itemsPerPage=${itemsPerPage}`);
+    
+    if (currentOffset + itemsPerPage > allMemes.length && hasMoreMemes) {
+        console.log('Need more data from API - fetching...');
+        const loadingIndicator = document.getElementById('loadingIndicator');
+        if (loadingIndicator) {
+            loadingIndicator.style.display = 'block';
+        }
+        fetchMoreFromAPI().then(() => {
+            loadMoreMemesFromCached();
+        });
+    } else {
+        loadMoreMemesFromCached();
+    }
+}
+
+function loadMoreMemesFromCached() {
+    const loadingIndicator = document.getElementById('loadingIndicator');
+    
+    try {
+        const nextBatch = filteredMemes.slice(currentOffset, currentOffset + itemsPerPage);
+        
+        if (nextBatch.length === 0) {
+            const endMessage = document.getElementById('endOfListMessage');
+            if (endMessage) {
+                endMessage.style.display = 'block';
+            }
+            if (loadingIndicator) {
+                loadingIndicator.style.display = 'none';
+            }
+            console.log('No more memes to display');
+            return;
+        }
+        
+        displayedMemes = displayedMemes.concat(nextBatch);
+        currentOffset += itemsPerPage;
+        
+        if (currentOffset >= filteredMemes.length && !hasMoreMemes) {
+            const endMessage = document.getElementById('endOfListMessage');
+            if (endMessage) {
+                endMessage.style.display = 'block';
+            }
+        }
+        
+        renderDisplayedMemes();
+        
+    } catch (error) {
+        console.error('Error loading more memes:', error);
+        showError('Error loading more memes');
+    } finally {
+        const loadingIndicator = document.getElementById('loadingIndicator');
+        if (loadingIndicator) {
+            loadingIndicator.style.display = 'none';
+        }
+    }
+}
+
+function renderDisplayedMemes() {
+    const container = document.getElementById('memesContainer');
+    if (!container) {
+        console.debug('renderDisplayedMemes: #memesContainer not found, skipping render');
+        return;
+    }
+    
+    if (displayedMemes.length === 0) {
         container.innerHTML = `
             <div class="col-12 text-center py-5">
                 <p class="text-muted">No memes found</p>
             </div>
         `;
-        renderPagination();
         return;
     }
 
-    totalPages = Math.ceil(filteredMemes.length / itemsPerPage);
-    if (currentPage > totalPages) currentPage = totalPages;
-    if (currentPage < 1) currentPage = 1;
-    
-    const startIdx = (currentPage - 1) * itemsPerPage;
-    const endIdx = startIdx + itemsPerPage;
-    const pageItems = filteredMemes.slice(startIdx, endIdx);
-
     try {
-        container.innerHTML = pageItems.map(meme => `
+        container.innerHTML = displayedMemes.map(meme => `
             <div class="col-md-6 col-lg-4">
                 <div class="card meme-card h-100 position-relative">
                     ${(meme.duplicate_group_id && meme.is_false_positive !== true) ? 
@@ -132,7 +243,7 @@ function renderMemes() {
                          onerror="this.src='/static/placeholder.png'">
                     <div class="card-body d-flex flex-column cursor-pointer" onclick="viewMeme('${meme.filename}')">
                         <h6 class="card-title text-truncate">${escapeHtml(meme.filename)}</h6>
-                        <p class="card-text text-muted small flex-grow-1">
+                        <p class="card-text mb-2 small flex-grow-1">
                             ${escapeHtml((meme.description || '').substring(0, 100))}...
                         </p>
                         <small class="text-secondary">
@@ -146,43 +257,30 @@ function renderMemes() {
         console.error('Error rendering memes:', error);
         container.innerHTML = `<div class="col-12"><div class="alert alert-danger">Error rendering memes: ${error.message}</div></div>`;
     }
-    
-    renderPagination();
 }
 
-function renderPagination() {
-    const container = document.getElementById('paginationContainer');
-    if (!container) return;
+function setupInfiniteScroll() {
+    const observer = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+            if (entry.isIntersecting && !isLoading) {
+                console.log('Sentinel element visible - loading more memes');
+                const loadingIndicator = document.getElementById('loadingIndicator');
+                if (loadingIndicator) {
+                    loadingIndicator.style.display = 'block';
+                }
+                loadMoreMemes();
+            }
+        });
+    }, { threshold: 0.1 });
     
-    if (totalPages <= 1) {
-        container.innerHTML = '';
-        return;
+    let sentinel = document.getElementById('scrollSentinel');
+    if (!sentinel) {
+        sentinel = document.createElement('div');
+        sentinel.id = 'scrollSentinel';
+        sentinel.style.height = '100px';
+        document.getElementById('memesContainer').parentElement.appendChild(sentinel);
     }
-    
-    let html = '<nav aria-label="Page navigation"><ul class="pagination justify-content-center">';
-    
-    html += `<li class="page-item ${currentPage === 1 ? 'disabled' : ''}">`;
-    html += `<a class="page-link" href="#" onclick="goToPage(${currentPage - 1}); return false;">Previous</a>`;
-    html += '</li>';
-    
-    for (let i = 1; i <= totalPages; i++) {
-        html += `<li class="page-item ${currentPage === i ? 'active' : ''}">`;
-        html += `<a class="page-link" href="#" onclick="goToPage(${i}); return false;">${i}</a>`;
-        html += '</li>';
-    }
-    
-    html += `<li class="page-item ${currentPage === totalPages ? 'disabled' : ''}">`;
-    html += `<a class="page-link" href="#" onclick="goToPage(${currentPage + 1}); return false;">Next</a>`;
-    html += '</li>';
-    
-    html += '</ul></nav>';
-    container.innerHTML = html;
-}
-
-function goToPage(page) {
-    currentPage = page;
-    renderMemes();
-    document.getElementById('memesContainer').scrollIntoView({behavior: 'smooth'});
+    observer.observe(sentinel);
 }
 
 function updateStats(stats) {
@@ -210,6 +308,8 @@ function handleSearch() {
         clearBtn.style.display = 'none';
     }
     
+    searchQuery = query;
+    
     if (!query) {
         filteredMemes = allMemes;
     } else {
@@ -222,18 +322,34 @@ function handleSearch() {
         );
     }
     
-    currentPage = 1;
-    totalPages = Math.ceil(filteredMemes.length / itemsPerPage);
-    renderMemes();
+    displayedMemes = [];
+    currentOffset = 0;
+    hasMoreMemes = filteredMemes.length > 0;
+    
+    const endMessage = document.getElementById('endOfListMessage');
+    if (endMessage) {
+        endMessage.style.display = 'none';
+    }
+    
+    loadMoreMemes();
 }
 
 function clearSearch() {
     document.getElementById('searchInput').value = '';
     document.getElementById('clearSearchBtn').style.display = 'none';
     filteredMemes = allMemes;
-    currentPage = 1;
-    totalPages = Math.ceil(filteredMemes.length / itemsPerPage);
-    renderMemes();
+    searchQuery = '';
+    
+    displayedMemes = [];
+    currentOffset = 0;
+    hasMoreMemes = filteredMemes.length > 0;
+    
+    const endMessage = document.getElementById('endOfListMessage');
+    if (endMessage) {
+        endMessage.style.display = 'none';
+    }
+    
+    loadMoreMemes();
 }
 
 async function viewMeme(memeFilename) {
@@ -277,7 +393,24 @@ async function viewMeme(memeFilename) {
         }
         
         document.getElementById('memeCategory').value = meme.category || '';
-        document.getElementById('memeKeywords').value = meme.keywords || '';
+        
+        const keywordsList = (meme.keywords || '').split(',').map(k => k.trim()).filter(k => k);
+        window.currentKeywords = keywordsList;
+        renderKeywordBadges();
+        
+        document.getElementById('memeKeywordsInput').value = '';
+        document.getElementById('memeKeywordsInput').onkeydown = function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                const newKeyword = this.value.trim();
+                if (newKeyword && !window.currentKeywords.includes(newKeyword)) {
+                    window.currentKeywords.push(newKeyword);
+                    renderKeywordBadges();
+                    this.value = '';
+                }
+            }
+        };
+        
         document.getElementById('memeTextInImage').value = meme.text_in_image || '';
         document.getElementById('memeDescription').value = meme.description || '';
         
@@ -289,32 +422,21 @@ async function viewMeme(memeFilename) {
         
         document.getElementById('memeDetails').textContent = details;
         
-        // Show deduplication button if has duplicates
         const dedupeBtn = document.getElementById('dedupeBtn');
         const recalcBtn = document.getElementById('recalcPhashBtn');
         
         if (!meme.phash) {
-            // No phash - show recalculate button
             recalcBtn.style.display = 'inline-block';
             dedupeBtn.style.display = 'none';
         } else if (meme.duplicate_group_id && !meme.is_false_positive) {
-            // Has phash and duplicates - show dedup button
             dedupeBtn.style.display = 'inline-block';
             recalcBtn.style.display = 'none';
         } else {
-            // Has phash but no duplicates
             dedupeBtn.style.display = 'none';
             recalcBtn.style.display = 'none';
         }
         
         const modal = new bootstrap.Modal(document.getElementById('memeModal'));
-        
-        document.getElementById('memeModal').addEventListener('hide.bs.modal', () => {
-            const video = document.getElementById('memeVideo');
-            video.pause();
-            video.currentTime = 0;
-        }, { once: true });
-        
         modal.show();
     } catch (error) {
         console.error('Error loading meme:', error);
@@ -322,8 +444,56 @@ async function viewMeme(memeFilename) {
     }
 }
 
+function searchByKeyword(keyword) {
+    const modal = bootstrap.Modal.getInstance(document.getElementById('memeModal'));
+    if (modal) {
+        modal.hide();
+    }
+    
+    document.getElementById('searchInput').value = keyword;
+    handleSearch();
+}
+
+function renderKeywordBadges() {
+    const container = document.getElementById('keywordsBadges');
+    container.innerHTML = '';
+    window.currentKeywords.forEach((keyword, idx) => {
+        const badge = document.createElement('span');
+        badge.className = 'badge bg-primary d-flex align-items-center gap-2';
+        badge.style.padding = '6px 10px';
+        badge.style.cursor = 'pointer';
+        badge.title = 'Click to search';
+        
+        const textSpan = document.createElement('span');
+        textSpan.textContent = keyword;
+        textSpan.style.cursor = 'pointer';
+        textSpan.onclick = (e) => {
+            e.stopPropagation();
+            searchByKeyword(keyword);
+        };
+        
+        const closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.className = 'btn-close btn-close-white';
+        closeBtn.style.fontSize = '0.7rem';
+        closeBtn.title = 'Remove';
+        closeBtn.onclick = (e) => {
+            e.stopPropagation();
+            removeKeyword(idx);
+        };
+        
+        badge.appendChild(textSpan);
+        badge.appendChild(closeBtn);
+        container.appendChild(badge);
+    });
+}
+
+function removeKeyword(idx) {
+    window.currentKeywords.splice(idx, 1);
+    renderKeywordBadges();
+}
+
     function openMemeDetail(filename) {
-        // Wrapper to open meme detail modal from duplicates list
         try {
             viewMeme(filename);
         } catch (e) {
@@ -332,14 +502,12 @@ async function viewMeme(memeFilename) {
         }
     }
 
-    async function saveMeme() {
+async function saveMeme() {
     if (!currentMemeId) return;
     
     const category = document.getElementById('memeCategory').value;
-    const keywords = document.getElementById('memeKeywords').value;
+    const keywords = (window.currentKeywords || []).join(', ');
     const description = document.getElementById('memeDescription').value;
-
-            // copyMemeName removed: button was removed in HTML; title now wraps
     
     try {
         const response = await fetch(`/memes/${encodeURIComponent(currentMemeId)}`, {
@@ -384,6 +552,7 @@ async function deleteMeme() {
         showSuccess('Meme deleted!');
         bootstrap.Modal.getInstance(document.getElementById('memeModal')).hide();
         loadMemes();
+        checkDuplicatesButton();
     } catch (error) {
         console.error('Error deleting meme:', error);
         showError('Failed to delete meme');
@@ -432,7 +601,6 @@ function truncateFilename(name, maxLen) {
     return name.substring(0, maxLen - 3) + '...';
 }
 
-// Deduplication functions
 async function getPhashStatus() {
     try {
         const response = await fetch('/memes/phash-status');
@@ -490,7 +658,7 @@ async function openDeduplicationPanel(filename) {
         html += '<div class="table-responsive">';
         html += '<table class="table table-hover">';
         html += '<thead class="table-dark"><tr>';
-        html += '<th style="width:48px;"></th>'; // primary radio
+        html += '<th style="width:48px;"></th>';
         html += '<th>File</th>';
         html += '<th style="width:160px;">Actions</th>';
         html += '</tr></thead><tbody>';
@@ -501,12 +669,10 @@ async function openDeduplicationPanel(filename) {
             const similarityPercent = isPrimary ? 100 : Math.round((similarity / 64) * 100);
 
             html += '<tr>';
-            // primary radio
             html += `<td class="align-middle text-center">`;
             html += `<input class="form-check-input" type="radio" name="primaryMeme" value="${escapeHtml(meme.filename)}" ${isPrimary ? 'checked' : ''}>`;
             html += `</td>`;
 
-            // file details column
             html += '<td class="align-middle">';
             html += `<div class="d-flex align-items-center gap-3">`;
             html += `<img src="${meme.preview_url}" style="height:60px; width:80px; object-fit:cover; border-radius:6px;" alt="preview">`;
@@ -527,7 +693,6 @@ async function openDeduplicationPanel(filename) {
             html += `</div></div>`;
             html += '</td>';
 
-            // actions
             html += '<td class="align-middle">';
             html += `<div class="d-flex gap-2 justify-content-end">`;
             html += `<button class="btn btn-sm btn-danger" onclick="deleteDuplicateRow('${escapeHtml(meme.filename)}')">Delete</button>`;
@@ -539,7 +704,6 @@ async function openDeduplicationPanel(filename) {
 
         html += '</tbody></table></div>';
 
-        // Action buttons
         html += '<div class="mt-3 d-flex gap-2 justify-content-start">';
         html += `<button class="btn btn-danger" onclick="confirmMergeDuplicates('${escapeHtml(filename)}')">Merge Selected</button>`;
         html += `<button class="btn btn-warning" onclick="markNotDuplicate('${escapeHtml(filename)}')">Mark as Not Duplicate</button>`;
@@ -557,7 +721,6 @@ async function openDeduplicationPanel(filename) {
 }
 
 async function confirmMergeDuplicates(oldPrimaryFilename) {
-    // Get selected primary from radio button
     const selectedPrimary = document.querySelector('input[name="primaryMeme"]:checked')?.value;
 
     if (!selectedPrimary) {
@@ -565,14 +728,11 @@ async function confirmMergeDuplicates(oldPrimaryFilename) {
         return;
     }
 
-    // Get selected duplicate rows (checkboxes)
     const checked = Array.from(document.querySelectorAll('input.select-dup:checked'))
         .map(cb => cb.value);
 
-    // Exclude primary from duplicates
     const duplicateFilenames = checked.filter(f => f !== selectedPrimary);
 
-    // If none explicitly selected, default to all except primary
     if (duplicateFilenames.length === 0) {
         const allRadios = document.querySelectorAll('input[name="primaryMeme"]');
         const allFilenames = Array.from(allRadios).map(rb => rb.value);
@@ -591,7 +751,6 @@ async function confirmMergeDuplicates(oldPrimaryFilename) {
         }
     }
 
-    // gather metadata_sources from checked includeMeta checkboxes (if present)
     const metadataSources = Array.from(document.querySelectorAll('input[name="includeMeta"]:checked'))
         .map(cb => cb.value)
         .filter(fn => fn !== selectedPrimary);
@@ -622,7 +781,6 @@ async function mergeDuplicates(primaryFilename, duplicateFilenames, metadataSour
         }
 
         showSuccess('Duplicates merged successfully!');
-        // Safely hide modals if they exist on the current page
         try {
             const dedupEl = document.getElementById('deduplicationModal');
             const dedupInstance = dedupEl && bootstrap && bootstrap.Modal ? bootstrap.Modal.getInstance(dedupEl) : null;
@@ -634,7 +792,14 @@ async function mergeDuplicates(primaryFilename, duplicateFilenames, metadataSour
         } catch (e) {
             console.debug('No modals to hide on this page');
         }
-        loadMemes();
+        
+        const isDuplicatesPage = window.location.pathname.includes('/duplicates');
+        if (isDuplicatesPage) {
+            setTimeout(() => location.reload(), 400);
+        } else {
+            loadMemes();
+            checkDuplicatesButton();
+        }
     } catch (error) {
         console.error('Error merging duplicates:', error);
         showError('Failed to merge duplicates: ' + (error.message || ''));
@@ -647,7 +812,6 @@ function deleteDuplicateRow(filename) {
         .then(resp => {
             if (!resp.ok) throw new Error('Delete failed');
             showSuccess('File deleted');
-            // remove row checkbox and radio
             const rows = Array.from(document.querySelectorAll('input.select-dup'));
             for (const cb of rows) {
                 if (cb.value === filename) {
@@ -661,14 +825,12 @@ function deleteDuplicateRow(filename) {
 }
 
 async function mergeSingleDuplicate(filename) {
-    // Merge a single duplicate into the selected primary (or the primary row)
     const selectedPrimary = document.querySelector('input[name="primaryMeme"]:checked')?.value;
     const primary = selectedPrimary || document.querySelector('input[name="primaryMeme"]')?.value;
     if (!primary) { showError('No primary selected'); return; }
 
     if (!confirm('Merge "' + filename + '" into "' + primary + '"?')) return;
 
-    // gather metadata_sources for this row if includeMeta checkbox exists
     const metaCheckbox = Array.from(document.querySelectorAll('input[name="includeMeta"]')).find(cb => cb.value === filename);
     const metadataSources = metaCheckbox && metaCheckbox.checked ? [filename] : [];
 
@@ -761,15 +923,59 @@ async function checkDuplicatesButton() {
     }
 }
 
+function showDeduplicationModal() {
+    openDeduplicationPanel(currentMemeId);
+}
+
+async function markRemoved() {
+    if (!currentMemeId) return;
+    try {
+        const response = await fetch(`/memes/${encodeURIComponent(currentMemeId)}`, {
+            method: 'DELETE'
+        });
+        if (response.ok) {
+            showSuccess('Meme marked as removed');
+            bootstrap.Modal.getInstance(document.getElementById('memeModal')).hide();
+            loadMemes();
+        } else {
+            showError('Failed to mark meme as removed');
+        }
+    } catch (error) {
+        console.error('Error removing meme:', error);
+        showError('Failed to remove meme');
+    }
+}
+
 document.addEventListener('DOMContentLoaded', function() {
     console.log('DOM Content Loaded');
-    // Only call loadMemes on pages that include the memes container
+    
+    // Set up video autoplay/stop listeners for the modal
+    const memeModalEl = document.getElementById('memeModal');
+    if (memeModalEl) {
+        memeModalEl.addEventListener('show.bs.modal', () => {
+            const video = document.getElementById('memeVideo');
+            if (video && video.style.display === 'block') {
+                // Use setTimeout to ensure video is fully ready
+                setTimeout(() => {
+                    video.play().catch(err => console.log('Autoplay failed:', err));
+                }, 50);
+            }
+        });
+        
+        memeModalEl.addEventListener('hide.bs.modal', () => {
+            const video = document.getElementById('memeVideo');
+            if (video) {
+                video.pause();
+                video.currentTime = 0;
+            }
+        });
+    }
+    
     if (document.getElementById('memesContainer')) {
         console.log('Calling loadMemes');
         loadMemes();
+        checkDuplicatesButton();
     } else {
         console.log('memesContainer not present — skipping loadMemes');
     }
-    // Ensure View Duplicates button reflects persisted groups on page load
-    checkDuplicatesButton();
 });
