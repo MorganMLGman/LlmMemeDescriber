@@ -12,6 +12,13 @@ let searchQuery = '';
 let apiOffset = 0;
 let totalFetched = 0;
 
+function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
 async function loadMemes() {
     try {
         console.log('=== Starting loadMemes ===');
@@ -40,7 +47,7 @@ async function loadMemes() {
         console.log('=== Memes loaded successfully ===');
     } catch (error) {
         console.error('Error loading memes:', error);
-        showError(`Failed to load memes: ${error.message}`);
+        showAlert(`Failed to load memes: ${error.message}`, 'error');
     }
 }
 
@@ -53,7 +60,7 @@ function resetMemeState() {
     currentOffset = 0;
     hasMoreMemes = true;
     searchQuery = '';
-}}
+}
 
 function setSyncButtonState(enabled) {
     const refreshBtn = document.querySelector('button[onclick="startSyncJob()"]');
@@ -508,12 +515,12 @@ async function saveMeme() {
         
         if (!response.ok) throw new Error('Failed to save');
         
-        showSuccess('Meme updated!');
+        showAlert('Meme updated!', 'success');
         bootstrap.Modal.getInstance(document.getElementById('memeModal')).hide();
         loadMemes();
     } catch (error) {
         console.error('Error saving meme:', error);
-        showError('Failed to save meme');
+        showAlert('Failed to save meme', 'error');
     }
 }
 
@@ -539,13 +546,13 @@ async function deleteMeme() {
         
         if (!response.ok) throw new Error('Failed to delete');
         
-        showSuccess('Meme deleted!');
+        showAlert('Meme deleted!', 'success');
         bootstrap.Modal.getInstance(document.getElementById('memeModal')).hide();
         loadMemes();
         checkDuplicatesButton();
     } catch (error) {
         console.error('Error deleting meme:', error);
-        showError('Failed to delete meme');
+        showAlert('Failed to delete meme', 'error');
     }
 }
 
@@ -584,10 +591,6 @@ function showEndOfList(show = true) {
     if (message) {
         message.style.display = show ? 'block' : 'none';
     }
-}
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
 }
 
 function formatBytes(bytes) {
@@ -643,7 +646,7 @@ async function openDeduplicationPanel(filename) {
         const data = await response.json();
         
         if (!data.duplicates || data.duplicates.length === 0) {
-            showError('No duplicates found for this meme');
+            showAlert('No duplicates found for this meme', 'error');
             return;
         }
         
@@ -717,7 +720,7 @@ async function openDeduplicationPanel(filename) {
         new bootstrap.Modal(document.getElementById('deduplicationModal')).show();
     } catch (error) {
         console.error('Error loading duplicates:', error);
-        showError('Failed to load duplicates');
+        showAlert('Failed to load duplicates', 'error');
     }
 }
 
@@ -858,12 +861,12 @@ async function markNotDuplicate(filename) {
         
         if (!response.ok) throw new Error('Failed to mark');
         
-        showSuccess('Meme marked as not a duplicate');
+        showAlert('Meme marked as not a duplicate', 'success');
         bootstrap.Modal.getInstance(document.getElementById('deduplicationModal')).hide();
         loadMemes();
     } catch (error) {
         console.error('Error marking not duplicate:', error);
-        showError('Failed to mark as not duplicate');
+        showAlert('Failed to mark as not duplicate', 'error');
     }
 }
 
