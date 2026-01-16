@@ -4,7 +4,7 @@ services:
     container_name: llm-meme-describer
     user: "1000:1000"
     ports:
-      - "8000:8000"
+      - "8443:8443"
     
     # Volume mounts
     volumes:
@@ -39,6 +39,18 @@ services:
       # IANA timezone for log timestamps (e.g., UTC, Europe/Warsaw, America/New_York)
       # Default: UTC
       TIMEZONE: "UTC"
+      
+      # === SSL/TLS Configuration (OPTIONAL) ===
+      # If no certificates provided, self-signed certificates are auto-generated in /data/certs/
+      # This is safe for development and when deployed behind a reverse proxy (e.g., Cloudflare)
+      # 
+      # For production with provided certificates (via secrets or files):
+      # SSL_CERT_FILE: "/run/secrets/ssl_cert_file"  # Certificate (PEM format)
+      # SSL_KEY_FILE: "/run/secrets/ssl_key_file"    # Private key (PEM format)
+      # SSL_HOSTNAME: "example.com"                   # CN for self-signed cert generation
+      #
+      # The app listens on https://0.0.0.0:8443 (HTTPS only)
+      # Access via: https://localhost:8443 (localhost) or https://your-domain.com (behind proxy)
       
       # === Google Generative AI Configuration ===
       # Model to use for analysis
@@ -81,13 +93,17 @@ services:
       - google_genai_api_key
       - webdav_username
       - webdav_password
+      # Optional: SSL certificate secrets (for production deployments)
+      # Uncomment if providing your own certificates:
+      # - ssl_cert_file
+      # - ssl_key_file
     
     # Restart policy
     restart: unless-stopped
     
     # Health check
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "python", "-c", "import urllib.request,ssl,sys; ctx=ssl.create_default_context(); ctx.check_hostname=False; ctx.verify_mode=ssl.CERT_NONE; urllib.request.urlopen('https://localhost:8443/health', context=ctx, timeout=5)"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -103,3 +119,10 @@ secrets:
   
   webdav_password:
     file: ./secrets/webdav_password
+  
+  # Optional: SSL certificate secrets for production deployments
+  # If using your own certificates, uncomment and update paths:
+  # ssl_cert_file:
+  #   file: ./certs/server.crt
+  # ssl_key_file:
+  #   file: ./certs/server.key

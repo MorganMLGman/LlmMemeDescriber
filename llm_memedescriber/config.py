@@ -4,7 +4,7 @@ import sys
 import os
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import field_validator, ValidationError
+from pydantic import field_validator, ValidationError, ConfigDict
 from pydantic_settings import BaseSettings
 import logging
 
@@ -12,6 +12,10 @@ logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
+    model_config = ConfigDict(
+        env_ignore_empty=False
+    )
+    
     logging_level: str = "INFO"
     google_genai_api_key: str | None = None
     google_genai_model: str = "gemini-2.5-flash"
@@ -26,6 +30,9 @@ class Settings(BaseSettings):
     max_generation_attempts: int = 3
     auto_start_worker: bool = True
     backfill_from_listing_on_empty_db: bool = True
+    ssl_cert_file: str | None = None
+    ssl_key_file: str | None = None
+    ssl_hostname: str = "localhost"
 
     @field_validator("run_interval", "export_listing_interval")
     @classmethod
@@ -70,6 +77,32 @@ class Settings(BaseSettings):
         if secret:
             logger.debug("Using docker secret for %s", info.field_name)
             return secret
+        return v
+
+    @field_validator("ssl_cert_file", "ssl_key_file", mode="before")
+    @classmethod
+    def _ignore_system_default_ssl_paths(cls, v, info):
+        """
+        Ignore system default SSL certificate paths that may be set in the environment.
+        Only use SSL certificates if explicitly provided by the user.
+        
+        System defaults like /etc/ssl/certs/ca-certificates.crt should be treated as "not set".
+        """
+        if not v:
+            return None
+        
+        # List of system default certificate paths to ignore
+        system_defaults = {
+            "/etc/ssl/certs/ca-certificates.crt",  # Debian/Ubuntu
+            "/etc/pki/tls/certs/ca-bundle.crt",    # CentOS/RHEL
+            "/etc/ssl/certs/ca-bundle.crt",        # OpenSUSE
+            "/etc/ssl/ca-bundle.pem",               # OpenSUSE
+        }
+        
+        if v in system_defaults:
+            logger.debug("Ignoring system default SSL path for %s: %s", info.field_name, v)
+            return None
+        
         return v
 
 

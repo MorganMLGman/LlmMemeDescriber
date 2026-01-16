@@ -18,9 +18,9 @@ class Meme(SQLModel, table=True):
     created_at: datetime.datetime = Field(default_factory=lambda: datetime.datetime.now(datetime.timezone.utc))
     updated_at: datetime.datetime = Field(default_factory=lambda: datetime.datetime.now(datetime.timezone.utc))
     
-    phash: Optional[str] = Field(default=None, index=True)  # perceptual hash
+    phash: Optional[str] = Field(default=None, index=True)
     
-    is_false_positive: bool = Field(default=False)  # user marked as "not a duplicate"
+    is_false_positive: bool = Field(default=False)
 
 
 class Duplicate(SQLModel, table=True):

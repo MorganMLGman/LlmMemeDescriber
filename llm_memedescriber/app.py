@@ -20,6 +20,7 @@ from .main import App
 from .storage import WebDavStorage
 from .storage_workers import StorageWorkerPool
 from .genai_client import get_client
+from .ssl_helpers import validate_certificate_files
 from .search import rebuild_index, add_meme_to_index, search_memes as whoosh_search
 from .deduplication import (
     find_duplicate_groups,
@@ -50,6 +51,16 @@ async def lifespan(app_instance: FastAPI):
     logger.info("Starting llm_memedescriber FastAPI app (preview cache: %s)", CACHE_DIR)
     
     try:
+        cert_path, key_path = validate_certificate_files(
+            getattr(settings, 'ssl_cert_file', None),
+            getattr(settings, 'ssl_key_file', None)
+        )
+        logger.info("SSL certificates configured: %s", cert_path)
+    except Exception as exc:
+        logger.error("Failed to initialize SSL certificates: %s", exc)
+        raise
+    
+    try:
         logger.debug("Restoring preview cache from disk...")
         restored = restore_preview_cache()
         logger.info("Preview cache restored: %d entries", restored)
@@ -67,7 +78,6 @@ async def lifespan(app_instance: FastAPI):
                     session.delete(meme)
                 session.commit()
                 logger.info(f"Cleaned up {len(removed_memes)} removed memes from database")
-                # Clean up cache entries for removed memes
                 cleanup_orphaned_cache(set(session.exec(select(Meme.filename)).all()) if session.exec(select(Meme)).first() else set())
     except Exception:
         logger.exception("Failed to clean up removed memes from database")
@@ -247,7 +257,6 @@ async def lifespan(app_instance: FastAPI):
     
     logger.info("Shutting down llm_memedescriber FastAPI app")
     
-    # Save preview cache to disk
     try:
         logger.info("Saving preview cache to disk...")
         saved = save_preview_cache()
@@ -278,7 +287,6 @@ async def lifespan(app_instance: FastAPI):
 
 app = FastAPI(title="llm_memedescriber", description="Meme describing service", version="0.0.1", lifespan=lifespan)
 
-# Setup templates
 templates_dir = os.path.join(os.path.dirname(__file__), 'templates')
 templates = Jinja2Templates(directory=templates_dir)
 
