@@ -13,7 +13,8 @@ logger = logging.getLogger(__name__)
 
 class Settings(BaseSettings):
     model_config = ConfigDict(
-        env_ignore_empty=False
+        env_ignore_empty=False,
+        case_sensitive=False  # Make env vars case-insensitive
     )
     
     logging_level: str = "INFO"
@@ -37,8 +38,10 @@ class Settings(BaseSettings):
     # Security settings
     debug_mode: bool = False  # Set to False in production to enforce HTTPS
     
-    # OIDC Authentication settings
-    oidc_enabled: bool = False
+    # Authentication modes (mutually exclusive - only one can be True)
+    public_mode: bool = False  # No authentication, all endpoints public
+    oidc_enabled: bool = False  # OIDC authentication via external provider
+    basic_auth: bool = False  # Basic HTTP authentication (future)
     oidc_provider_url: str | None = None
     oidc_client_id: str | None = None
     oidc_client_secret: str | None = None
@@ -81,6 +84,25 @@ class Settings(BaseSettings):
             raise ValueError("jwt_expiry_days must be <= 365")
         return int(v)
 
+    @field_validator("public_mode", mode="before")
+    @classmethod
+    def validate_auth_modes(cls, v, info):
+        """Ensure exactly one authentication mode is enabled."""
+        data = info.data
+        modes_enabled = sum([
+            v if isinstance(v, bool) else v.lower() == 'true' if isinstance(v, str) else False,  # public_mode
+            data.get('oidc_enabled', False),
+            data.get('basic_auth', False)
+        ])
+        
+        if modes_enabled == 0:
+            raise ValueError("At least one authentication mode must be enabled: public_mode, oidc_enabled, or basic_auth")
+        
+        if modes_enabled > 1:
+            raise ValueError("Only one authentication mode can be enabled: public_mode, oidc_enabled, or basic_auth")
+        
+        return v
+
     @field_validator("oidc_enabled", mode="before")
     @classmethod
     def validate_oidc_config(cls, v, info):
@@ -88,21 +110,33 @@ class Settings(BaseSettings):
         if not v:
             return v
         
-        # Check if OIDC settings are present
-        data = info.data
-        required_fields = ['oidc_provider_url', 'oidc_client_id', 'oidc_client_secret', 'oidc_redirect_uri', 'jwt_secret']
-        missing = [f for f in required_fields if not data.get(f)]
+        return v
+    
+    def model_post_init(self, __context):
+        """Check OIDC configuration after all fields are loaded."""
+        if not self.oidc_enabled:
+            if self.public_mode:
+                logger.info("PUBLIC_MODE enabled - all authentication disabled")
+            return
+        
+        required_fields = [
+            ('oidc_provider_url', self.oidc_provider_url),
+            ('oidc_client_id', self.oidc_client_id),
+            ('oidc_client_secret', self.oidc_client_secret),
+            ('oidc_redirect_uri', self.oidc_redirect_uri),
+            ('jwt_secret', self.jwt_secret)
+        ]
+        
+        missing = [name for name, value in required_fields if not value]
         
         if missing:
             logger.warning("OIDC enabled but missing settings: %s", missing)
         else:
             logger.info("OIDC Configuration:")
-            logger.info("  Provider URL: %s", data.get('oidc_provider_url'))
-            logger.info("  Client ID: %s...", str(data.get('oidc_client_id', ''))[:30])
-            logger.info("  Redirect URI: %s", data.get('oidc_redirect_uri'))
-            logger.info("  Scopes: %s", data.get('oidc_scopes'))
-        
-        return v
+            logger.info("  Provider URL: %s", self.oidc_provider_url)
+            logger.info("  Client ID: %s...", str(self.oidc_client_id)[:30])
+            logger.info("  Redirect URI: %s", self.oidc_redirect_uri)
+            logger.info("  Scopes: %s", self.oidc_scopes)
 
     @field_validator("google_genai_api_key", "webdav_url", "webdav_username", "webdav_password", "oidc_client_secret", "jwt_secret", mode="before")
     @classmethod

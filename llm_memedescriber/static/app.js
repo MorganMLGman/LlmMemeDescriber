@@ -97,6 +97,20 @@ function resetMemeState() {
     searchQuery = '';
 }
 
+function showLogoutButton() {
+    fetch('/api/csrf-token')
+        .then(response => {
+            const logoutBtn = document.getElementById('logoutBtn');
+            if (logoutBtn) {
+                logoutBtn.style.display = response.status === 401 ? 'none' : 'inline-block';
+            }
+        })
+        .catch(() => {
+            const logoutBtn = document.getElementById('logoutBtn');
+            if (logoutBtn) logoutBtn.style.display = 'none';
+        });
+}
+
 function setSyncButtonState(enabled) {
     const refreshBtn = document.querySelector('button[onclick="startSyncJob()"]');
     refreshBtn.disabled = !enabled;

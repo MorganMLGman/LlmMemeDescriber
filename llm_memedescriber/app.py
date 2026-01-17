@@ -19,7 +19,7 @@ import logging
 
 from pydantic import BaseModel
 
-from .config import load_settings, configure_logging, parse_interval
+from .config import load_settings, configure_logging, parse_interval, Settings
 from .constants import *
 from .constants import _get_extension
 from .db import init_db, get_stats, get_meme_by_filename
@@ -51,6 +51,17 @@ from sqlalchemy import text
 from .auth import OIDCAuthContext, hash_token, generate_state_token, verify_api_token_not_revoked, verify_api_token_not_revoked
 
 logger = logging.getLogger(__name__)
+
+
+# Global settings instance for dependency injection
+_settings_instance: Optional[Any] = None
+
+def get_settings() -> Any:
+    """Dependency to get the global settings instance."""
+    global _settings_instance
+    if _settings_instance is None:
+        _settings_instance = load_settings()
+    return _settings_instance
 
 
 @asynccontextmanager
@@ -420,11 +431,16 @@ async def cleanup_sessions_periodically():
 
 
 # Authorization dependency for FastAPI
-def require_auth(request: Request) -> Dict[str, Any]:
+def require_auth(request: Request, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
     """Dependency to require authentication (session cookie or bearer token).
     
     For API bearer tokens, also verifies the token has not been revoked.
+    If public_mode is enabled, returns a public user without authentication.
     """
+    # Public mode bypasses all authentication
+    if settings.public_mode:
+        return {"sub": "public-user", "public": True}
+    
     auth_context = get_auth_context()
     
     # Check session cookie first
@@ -556,17 +572,17 @@ def login_page(request: Request):
 
 
 @app.get("/", response_class=HTMLResponse, tags=["ui"])
-def index(request: Request, user_info: Optional[Dict] = Depends(optional_auth)):
-    """Serve the main meme gallery page. Redirects to login if not authenticated."""
-    if not user_info:
+def index(request: Request, settings: Settings = Depends(get_settings), user_info: Optional[Dict] = Depends(optional_auth)):
+    """Serve the main meme gallery page. Redirects to login if not authenticated (unless public_mode)."""
+    if not settings.public_mode and not user_info:
         return RedirectResponse(url="/login", status_code=302)
     return templates.TemplateResponse("index.html", {"request": request})
 
 
 @app.get("/duplicates", response_class=HTMLResponse, tags=["ui"])
-def duplicates_page(request: Request, user_info: Optional[Dict] = Depends(optional_auth)):
-    """Serve the duplicates UI page. Requires authentication."""
-    if not user_info:
+def duplicates_page(request: Request, settings: Settings = Depends(get_settings), user_info: Optional[Dict] = Depends(optional_auth)):
+    """Serve the duplicates UI page. Requires authentication (unless public_mode)."""
+    if not settings.public_mode and not user_info:
         return RedirectResponse(url="/login", status_code=302)
     return templates.TemplateResponse("duplicates.html", {"request": request})
 

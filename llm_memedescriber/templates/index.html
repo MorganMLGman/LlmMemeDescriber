@@ -13,7 +13,7 @@
         style="display: none;">Clear</button>
 <button class="btn btn-sm btn-outline-light" onclick="startSyncJob()">Refresh</button>
 <button type="button" class="btn btn-sm btn-outline-light" onclick="showPromptModal()">⚙️ Prompt</button>
-<button type="button" class="btn btn-sm btn-outline-danger" onclick="logout()">Logout</button>
+<button type="button" id="logoutBtn" class="btn btn-sm btn-outline-danger" onclick="logout()" style="display: none;">Logout</button>
 {% endblock %}
 
 {% block content %}
@@ -161,6 +161,7 @@
 <script>
     document.addEventListener('DOMContentLoaded', function() {
         console.log('DOM Content Loaded');
+        showLogoutButton();
         if (document.getElementById('memesContainer')) {
             console.log('Calling loadMemes');
             loadMemes();
