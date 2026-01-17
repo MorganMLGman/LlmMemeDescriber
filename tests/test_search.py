@@ -250,14 +250,13 @@ def test_remove_meme_from_index_handles_writer_exception(monkeypatch, tmp_path, 
     class BadFS:
         def __init__(self, path):
             pass
-        def has_index(self):
-            return True
         def open_index(self):
             return FakeIndex()
     monkeypatch.setattr(search, 'FileStorage', BadFS)
 
     caplog.set_level('WARNING')
     search.remove_meme_from_index(42)
+    # With new try/except implementation, exceptions are caught and logged as warning
     assert any('Failed to remove meme from index' in r.message for r in caplog.records)
 
 
