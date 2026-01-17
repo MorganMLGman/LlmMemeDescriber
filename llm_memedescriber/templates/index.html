@@ -3,7 +3,7 @@
 {% block title %}Meme Describer{% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="/static/style.css?v=3">
+<link rel="stylesheet" href="/static/style.css?v=4">
 {% endblock %}
 
 {% block navbar_controls %}
@@ -13,6 +13,7 @@
         style="display: none;">Clear</button>
 <button class="btn btn-sm btn-outline-light" onclick="startSyncJob()">Refresh</button>
 <button type="button" class="btn btn-sm btn-outline-light" onclick="showPromptModal()">⚙️ Prompt</button>
+<button type="button" class="btn btn-sm btn-outline-danger" onclick="logout()">Logout</button>
 {% endblock %}
 
 {% block content %}
@@ -156,7 +157,7 @@
 {% endblock %}
 
 {% block extra_scripts %}
-<script src="/static/app.js?v=3"></script>
+<script src="/static/app.js?v=4"></script>
 <script>
     document.addEventListener('DOMContentLoaded', function() {
         console.log('DOM Content Loaded');

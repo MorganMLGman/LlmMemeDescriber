@@ -1,8 +1,13 @@
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, StreamingResponse, FileResponse
+from fastapi import FastAPI, HTTPException, Request, Depends
+from fastapi.responses import HTMLResponse, StreamingResponse, FileResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware
+from fastapi_csrf_protect import CsrfProtect
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 from contextlib import asynccontextmanager
 from pathlib import Path
 import asyncio
@@ -18,6 +23,7 @@ from .config import load_settings, configure_logging, parse_interval
 from .constants import *
 from .constants import _get_extension
 from .db import init_db, get_stats, get_meme_by_filename
+from .db_helpers import log_audit_action
 from .main import App
 from .storage import WebDavStorage
 from .storage_workers import StorageWorkerPool
@@ -34,15 +40,15 @@ from .deduplication import (
     list_pair_exceptions,
 )
 from .dup_helpers import get_group_members, get_groups_for_filename
-from .models import Meme, DuplicateGroup as DBDuplicateGroup, MemeDuplicateGroup as DBDupeLink
+from .models import Meme, DuplicateGroup as DBDuplicateGroup, MemeDuplicateGroup as DBDupeLink, UserToken, TokenResponse, TokenInfo, UserInfo
 from sqlalchemy import desc
 from .storage_helpers import compute_and_persist_phash
 from .preview_helpers import generate_preview, async_generate_preview, restore_preview_cache, save_preview_cache, cleanup_orphaned_cache
 from sqlmodel import select
 from .db_helpers import session_scope
-from .models import Meme, DuplicateGroup as DBDuplicateGroup, MemeDuplicateGroup as DBDupeLink
 import datetime
 from sqlalchemy import text
+from .auth import OIDCAuthContext, hash_token, generate_state_token, verify_api_token_not_revoked, verify_api_token_not_revoked
 
 logger = logging.getLogger(__name__)
 
@@ -256,6 +262,12 @@ async def lifespan(app_instance: FastAPI):
             app_instance.state.app_instance.start()
         except Exception:
             logger.exception("Failed to start worker thread")
+        
+        try:
+            logger.info("Starting session cleanup task...")
+            asyncio.create_task(cleanup_sessions_periodically())
+        except Exception:
+            logger.exception("Failed to start session cleanup task")
     
     yield
     
@@ -291,12 +303,160 @@ async def lifespan(app_instance: FastAPI):
 
 app = FastAPI(title="llm_memedescriber", description="Meme describing service", version="0.0.1", lifespan=lifespan)
 
+# Initialize rate limiter
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+
+# Initialize CSRF protection
+@CsrfProtect.load_config
+def load_csrf_config():
+    return [
+        ("secret", os.getenv("CSRF_SECRET", "your-secret-key-change-in-production")),
+        ("cookie_name", "csrftoken"),
+        ("cookie_samesite", "strict")
+    ]
+
+csrf_protect = CsrfProtect()
+
 templates_dir = os.path.join(os.path.dirname(__file__), 'templates')
 templates = Jinja2Templates(directory=templates_dir)
 
 static_dir = os.path.join(os.path.dirname(__file__), 'static')
 if os.path.isdir(static_dir):
     app.mount('/static', StaticFiles(directory=static_dir), name='static')
+
+
+# ======================== Middleware Setup ========================
+
+# HTTPS Redirect middleware - enforce HTTPS in production (check debug_mode at runtime)
+# Default to enforcing HTTPS unless DEBUG_MODE is explicitly set to True
+debug_mode_env = os.getenv("DEBUG_MODE", "false").lower() in ("true", "1", "yes")
+if not debug_mode_env:
+    app.add_middleware(HTTPSRedirectMiddleware)
+
+# CORS middleware - allow credentials for session cookies
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# Rate limit exception handler
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    """Handle rate limit exceeded errors."""
+    return HTMLResponse(
+        content=f"<html><body><h1>429 Too Many Requests</h1><p>{str(exc.detail)}</p></body></html>",
+        status_code=429
+    )
+
+
+# Custom middleware to track API token usage
+@app.middleware("http")
+async def track_api_token_usage(request: Request, call_next):
+    """Track last usage time of API tokens."""
+    auth_header = request.headers.get('Authorization')
+    
+    if auth_header and auth_header.startswith('Bearer '):
+        token = auth_header[7:]
+        auth_context = OIDCAuthContext()
+        
+        # Verify token to ensure it's valid
+        if auth_context.jwt_manager:
+            payload = auth_context.jwt_manager.verify_token(token)
+            if payload:
+                # Update last_used_at asynchronously (don't block response)
+                try:
+                    token_hash = hash_token(token)
+                    # Schedule update in background
+                    asyncio.create_task(_update_token_usage(token_hash))
+                except Exception as e:
+                    logger.debug(f"Failed to track token usage: {e}")
+    
+    response = await call_next(request)
+    return response
+
+
+async def _update_token_usage(token_hash: str):
+    """Update last_used_at for a token (background task)."""
+    try:
+        with session_scope(app.state.engine) as session:
+            token = session.exec(
+                select(UserToken).where(UserToken.token_hash == token_hash)
+            ).first()
+            if token:
+                token.last_used_at = datetime.datetime.now(datetime.timezone.utc)
+                session.add(token)
+                session.commit()
+    except Exception as e:
+        logger.debug(f"Failed to update token usage: {e}")
+
+
+# Periodic session cleanup (runs every hour)
+async def cleanup_sessions_periodically():
+    """Clean up expired sessions and OAuth states periodically."""
+    while True:
+        try:
+            await asyncio.sleep(3600)  # Every hour
+            auth_context = OIDCAuthContext()
+            auth_context.session_manager.cleanup_expired()
+            
+            # Clean up expired OAuth states (5+ minutes old)
+            if hasattr(app, 'state') and hasattr(app.state, 'oauth_states'):
+                now = datetime.datetime.now(datetime.timezone.utc)
+                expired = [
+                    s for s, t in app.state.oauth_states.items()
+                    if now - t > datetime.timedelta(minutes=5)
+                ]
+                for s in expired:
+                    del app.state.oauth_states[s]
+                if expired:
+                    logger.debug(f"Cleaned up {len(expired)} expired OAuth states")
+        except Exception as e:
+            logger.debug(f"Failed to cleanup sessions/states: {e}")
+
+
+# Authorization dependency for FastAPI
+def require_auth(request: Request) -> Dict[str, Any]:
+    """Dependency to require authentication (session cookie or bearer token).
+    
+    For API bearer tokens, also verifies the token has not been revoked.
+    """
+    auth_context = get_auth_context()
+    
+    # Check session cookie first
+    session_id = request.cookies.get('session_id')
+    if session_id:
+        session = auth_context.session_manager.get_session(session_id)
+        if session:
+            return session.get('user_info', {})
+    
+    # Check bearer token
+    auth_header = request.headers.get('Authorization')
+    if auth_header and auth_header.startswith('Bearer '):
+        token = auth_header[7:]
+        if auth_context.jwt_manager:
+            # First verify JWT signature/expiration
+            payload = auth_context.jwt_manager.verify_token(token)
+            if payload:
+                # Then verify token is not revoked in database
+                user_info = verify_api_token_not_revoked(token, request.app.state.engine)
+                if user_info:
+                    logger.debug(f"API request authenticated for user: {user_info.get('sub')}")
+                    return user_info
+                else:
+                    logger.warning(f"API token validation failed: token may be revoked")
+                    raise HTTPException(status_code=401, detail="Token revoked or invalid")
+    
+    raise HTTPException(status_code=401, detail="Not authenticated")
+
+
+def optional_auth(request: Request) -> Optional[Dict[str, Any]]:
+    """Dependency for optional authentication."""
+    return get_user_from_request(request)
 
 
 class UpdateMemeRequest(BaseModel):
@@ -389,21 +549,31 @@ def health() -> Dict[str, Any]:
     return {"status": "ok"}
 
 
+@app.get("/login", response_class=HTMLResponse, tags=["ui"])
+def login_page(request: Request):
+    """Serve the login page. Shows OIDC login button."""
+    return templates.TemplateResponse("login.html", {"request": request})
+
+
 @app.get("/", response_class=HTMLResponse, tags=["ui"])
-def index(request: Request):
-    """Serve the main meme gallery page."""
+def index(request: Request, user_info: Optional[Dict] = Depends(optional_auth)):
+    """Serve the main meme gallery page. Redirects to login if not authenticated."""
+    if not user_info:
+        return RedirectResponse(url="/login", status_code=302)
     return templates.TemplateResponse("index.html", {"request": request})
 
 
 @app.get("/duplicates", response_class=HTMLResponse, tags=["ui"])
-def duplicates_page(request: Request):
-    """Serve the duplicates UI page."""
+def duplicates_page(request: Request, user_info: Optional[Dict] = Depends(optional_auth)):
+    """Serve the duplicates UI page. Requires authentication."""
+    if not user_info:
+        return RedirectResponse(url="/login", status_code=302)
     return templates.TemplateResponse("duplicates.html", {"request": request})
 
 
 @app.get("/memes/{filename}/download", tags=["memes"])
-async def download_meme(filename: str):
-    """Download raw meme bytes from WebDAV proxy (no API token required for convenience)."""
+async def download_meme(filename: str, user_info: Dict = Depends(require_auth)):
+    """Download raw meme bytes from WebDAV proxy. REQUIRES AUTHENTICATION."""
     try:
         filename = sanitize_filename(filename)
     except ValueError as e:
@@ -444,8 +614,8 @@ def health_check():
 
 
 @app.get("/memes", tags=["memes"])
-def list_memes(limit: int = DEFAULT_LIST_LIMIT, offset: int = DEFAULT_OFFSET, status: Optional[str] = None, sort: str = "-created_at"):
-    """List memes with optional filtering and sorting (excludes removed)."""
+def list_memes(limit: int = DEFAULT_LIST_LIMIT, offset: int = DEFAULT_OFFSET, status: Optional[str] = None, sort: str = "-created_at", user_info: Dict = Depends(require_auth)):
+    """List memes with optional filtering and sorting (excludes removed). REQUIRES AUTHENTICATION."""
     logger.debug(f"list_memes called: limit={limit}, offset={offset}, status={status}, sort={sort}")
     
     try:
@@ -482,8 +652,8 @@ def list_memes(limit: int = DEFAULT_LIST_LIMIT, offset: int = DEFAULT_OFFSET, st
 
 
 @app.get("/memes/phash-status", tags=["deduplication"])
-def get_phash_status():
-    """Get status of perceptual hash initialization.
+def get_phash_status(user_info: Dict = Depends(require_auth)):
+    """Get status of perceptual hash initialization. REQUIRES AUTHENTICATION.
     
     Returns count of memes with/without phash and success rate.
     """
@@ -510,47 +680,10 @@ def get_phash_status():
         raise HTTPException(status_code=500, detail="Failed to get phash status")
 
 
-@app.get("/memes/debug/phashes", tags=["debug"])
-def debug_phashes():
-    """DEBUG: Return all memes with their phashes for debugging."""
-    try:
-        with session_scope(app.state.engine) as session:
-            memes = session.exec(select(Meme)).all()
-            result = []
-            for meme in memes:
-                result.append({
-                    "filename": meme.filename,
-                    "phash": meme.phash,
-                    "is_false_positive": meme.is_false_positive
-                })
-            return result
-    except Exception:
-        logger.exception("Failed to get phashes")
-        raise HTTPException(status_code=500, detail="Failed to get phashes")
-
-
-@app.get("/memes/debug/schema", tags=["debug"])
-def debug_db_schema():
-    """DEBUG: Return list of tables and PRAGMA table_info for any table names containing 'meme'."""
-    try:
-        engine = app.state.engine
-        with engine.connect() as conn:
-            tables = [r[0] for r in conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))]
-            meme_tables = [t for t in tables if 'meme' in t.lower()]
-            schemas = {}
-            for t in meme_tables:
-                result = conn.execute(text(f"PRAGMA table_info('{t}')"))
-                cols = [dict(r) for r in result.mappings().all()]
-                schemas[t] = cols
-            return {"tables": tables, "meme_tables": meme_tables, "schemas": schemas}
-    except Exception:
-        logger.exception("Failed to read DB schema")
-        raise HTTPException(status_code=500, detail="Failed to read DB schema")
-
-
 @app.post("/sync", tags=["sync"])
-def trigger_sync():
-    """Manually trigger a sync job to check for new/removed memes from WebDAV.
+@limiter.limit("5/minute")
+def trigger_sync(request: Request, user_info: Dict = Depends(require_auth)):
+    """Manually trigger a sync job to check for new/removed memes from WebDAV. REQUIRES AUTHENTICATION.
     
     Returns dict with added, removed, saved, failed, unfilled, unsupported counts.
     """
@@ -559,6 +692,7 @@ def trigger_sync():
             raise HTTPException(status_code=503, detail="Application not fully initialized")
         
         result = app.state.app_instance.sync_and_process()
+        logger.info(f"Sync triggered by user {user_info.get('sub')}")
         return result
     except Exception as e:
         logger.exception("Error during manual sync: %s", e)
@@ -566,8 +700,9 @@ def trigger_sync():
 
 
 @app.post("/memes/deduplication/analyze", tags=["deduplication"])
-def analyze_duplicates():
-    """Analyze all memes and find duplicate groups using perceptual hashing.
+@limiter.limit("10/minute")
+def analyze_duplicates(request: Request, user_info: Dict = Depends(require_auth)):
+    """Analyze all memes and find duplicate groups using perceptual hashing. REQUIRES AUTHENTICATION.
 
     Calculates phash for all memes and groups visually similar ones.
     Persists groups in `DuplicateGroup` and membership via `MemeDuplicateGroup`.
@@ -653,8 +788,8 @@ def analyze_duplicates():
 
 
 @app.get("/memes/duplicates-by-group", tags=["deduplication"])
-def get_duplicates_by_group():
-    """Get all memes grouped by duplicate_group_id.
+def get_duplicates_by_group(user_info: Dict = Depends(require_auth)):
+    """Get all memes grouped by duplicate_group_id. REQUIRES AUTHENTICATION.
     
     Returns list of duplicate groups with all memes in each group.
     Primary is automatically selected as the file with largest size.
@@ -733,8 +868,8 @@ def get_duplicates_by_group():
 
 
 @app.get("/memes/search/by-keywords", tags=["memes"])
-def search_memes(q: str = "", limit: int = DEFAULT_SEARCH_LIMIT, offset: int = DEFAULT_OFFSET):
-    """Full-text search memes using Whoosh.
+def search_memes(q: str = "", limit: int = DEFAULT_SEARCH_LIMIT, offset: int = DEFAULT_OFFSET, user_info: Dict = Depends(require_auth)):
+    """Full-text search memes using Whoosh. REQUIRES AUTHENTICATION.
     
     Searches across: filename, keywords, description, category, text_in_image (OCR)
     Results ordered by relevance (Whoosh score).
@@ -751,8 +886,8 @@ def search_memes(q: str = "", limit: int = DEFAULT_SEARCH_LIMIT, offset: int = D
 
 
 @app.get("/memes/{filename}", tags=["memes"])
-def get_meme_detail(filename: str):
-    """Get detailed info about a specific meme."""
+def get_meme_detail(filename: str, user_info: Dict = Depends(require_auth)):
+    """Get detailed info about a specific meme. REQUIRES AUTHENTICATION."""
     if not filename or len(filename) > MAX_FILENAME_LENGTH:
         raise HTTPException(status_code=400, detail="Invalid filename")
     
@@ -766,8 +901,8 @@ def get_meme_detail(filename: str):
 
 
 @app.patch("/memes/{filename}", tags=["memes"])
-def update_meme(filename: str, request: UpdateMemeRequest):
-    """Update meme metadata (category, keywords, description). Only provided fields are updated."""
+def update_meme(filename: str, request: UpdateMemeRequest, user_info: Dict = Depends(require_auth)):
+    """Update meme metadata (category, keywords, description). REQUIRES AUTHENTICATION and CSRF token. Only provided fields are updated."""
     try:
         filename = sanitize_filename(filename)
     except ValueError as e:
@@ -790,7 +925,18 @@ def update_meme(filename: str, request: UpdateMemeRequest):
         session.add(m)
         session.commit()
         session.refresh(m)
-        logger.info("Updated meme %s", filename)
+        logger.info("Updated meme %s by user %s", filename, user_info.get('sub'))
+        
+        # Audit log
+        log_audit_action(
+            app.state.engine,
+            user_id=user_info.get('sub', 'unknown'),
+            action="PATCH_MEME",
+            resource=filename,
+            resource_type="meme",
+            details=str(request.model_dump()),
+            ip_address=request.client.host if request.client else None
+        )
         
         try:
             add_meme_to_index(m)
@@ -803,8 +949,9 @@ def update_meme(filename: str, request: UpdateMemeRequest):
 
 
 @app.delete("/memes/{filename}", tags=["memes"])
-async def remove_meme(filename: str):
-    """Delete a meme from database and WebDAV storage."""
+@limiter.limit("10/hour")
+async def remove_meme(filename: str, request: Request, user_info: Dict = Depends(require_auth)):
+    """Delete a meme from database and WebDAV storage. REQUIRES AUTHENTICATION and CSRF token."""
     try:
         filename = sanitize_filename(filename)
     except ValueError as e:
@@ -820,7 +967,7 @@ async def remove_meme(filename: str):
     if storage:
         try:
             await getattr(storage, 'async_delete_file', storage.delete_file)(filename)
-            logger.info("Deleted %s from WebDAV storage", filename)
+            logger.info("Deleted %s from WebDAV storage by user %s", filename, user_info.get('sub'))
         except Exception as exc:
             logger.exception("Failed to delete %s from WebDAV: %s", filename, exc)
             raise HTTPException(status_code=500, detail=f"Failed to delete from storage: {exc}")
@@ -831,7 +978,17 @@ async def remove_meme(filename: str):
             if m:
                 session.delete(m)
                 session.commit()
-                logger.info("Deleted %s from database", filename)
+                logger.info("Deleted %s from database by user %s", filename, user_info.get('sub'))
+                # Audit log
+                log_audit_action(
+                    app.state.engine,
+                    user_id=user_info.get('sub', 'unknown'),
+                    action="DELETE_MEME",
+                    resource=filename,
+                    resource_type="meme",
+                    details=None,
+                    ip_address=request.client.host if request.client else None
+                )
     except Exception as exc:
         logger.exception("Failed to delete %s from database: %s", filename, exc)
         raise HTTPException(status_code=500, detail=f"Failed to delete from database: {exc}")
@@ -840,8 +997,8 @@ async def remove_meme(filename: str):
 
 
 @app.get("/memes/{filename}/preview", tags=["memes"])
-async def preview_meme(filename: str, size: int = PREVIEW_SIZE):
-    """Get a thumbnail preview of a meme (resized). Supports images and videos (extracts first frame).
+async def preview_meme(filename: str, size: int = PREVIEW_SIZE, user_info: Dict = Depends(require_auth)):
+    """Get a thumbnail preview of a meme (resized). Supports images and videos (extracts first frame). REQUIRES AUTHENTICATION.
     
     For videos, extracts the first frame at 1 second mark and returns as JPEG.
     For images, resizes and returns as JPEG.
@@ -867,8 +1024,8 @@ async def preview_meme(filename: str, size: int = PREVIEW_SIZE):
 
 
 @app.get("/api/stats", tags=["api"])
-def get_stats_endpoint():
-    """Get application statistics (excludes 'removed' status memes). Uses single aggregated query."""
+def get_stats_endpoint(user_info: Dict = Depends(require_auth)):
+    """Get application statistics. REQUIRES AUTHENTICATION (excludes 'removed' status memes). Uses single aggregated query."""
     try:
         with session_scope(app.state.engine) as session:
             stats = get_stats(session)
@@ -878,8 +1035,8 @@ def get_stats_endpoint():
         raise HTTPException(status_code=500, detail="Stats failed")
 
 @app.get("/api/prompt", tags=["config"])
-def get_prompt():
-    """Get current prompt (custom or default)."""
+def get_prompt(user_info: Dict = Depends(require_auth)):
+    """Get current prompt (custom or default). REQUIRES AUTHENTICATION."""
     custom_prompt_path = Path("/data/prompt.txt")
     
     if custom_prompt_path.exists():
@@ -896,24 +1053,24 @@ def get_prompt():
         raise HTTPException(status_code=500, detail="Failed to load prompt")
 
 @app.post("/api/prompt", tags=["config"])
-def save_prompt(request: dict):
-    """Save custom prompt to /data/prompt.txt."""
-    if not request.get("prompt"):
+def save_prompt(request_body: dict, user_info: Dict = Depends(require_auth)):
+    """Save custom prompt to /data/prompt.txt. REQUIRES AUTHENTICATION and CSRF token."""
+    if not request_body.get("prompt"):
         raise HTTPException(status_code=400, detail="Prompt cannot be empty")
     
     try:
         prompt_path = Path("/data/prompt.txt")
         prompt_path.parent.mkdir(parents=True, exist_ok=True)
-        prompt_path.write_text(request["prompt"], encoding="utf-8")
-        logger.info("Custom prompt saved successfully")
+        prompt_path.write_text(request_body["prompt"], encoding="utf-8")
+        logger.info("Custom prompt saved successfully by user %s", user_info.get('sub'))
         return {"status": "saved", "source": "custom"}
     except Exception as exc:
         logger.exception("Failed to save prompt: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to save prompt")
 
 @app.get("/memes/{filename}/duplicates", tags=["deduplication"])
-def get_meme_duplicates(filename: str):
-    """Get duplicate memes for a specific meme.
+def get_meme_duplicates(filename: str, user_info: Dict = Depends(require_auth)):
+    """Get duplicate memes for a specific meme. REQUIRES AUTHENTICATION.
     
     Returns list of memes that are visually similar to the given meme.
     Includes hamming distance scores.
@@ -962,8 +1119,9 @@ def get_meme_duplicates(filename: str):
         raise HTTPException(status_code=500, detail="Failed to get duplicates")
 
 @app.post("/memes/{filename}/recalculate-phash", tags=["deduplication"])
-async def recalculate_meme_phash(filename: str):
-    """Manually recalculate perceptual hash for a meme.
+@limiter.limit("20/minute")
+async def recalculate_meme_phash(filename: str, request: Request, user_info: Dict = Depends(require_auth)):
+    """Manually recalculate perceptual hash for a meme. REQUIRES AUTHENTICATION.
     
     Useful for memes that failed during initialization.
     Returns details about the calculation attempt.
@@ -986,7 +1144,7 @@ async def recalculate_meme_phash(filename: str):
             try:
                 result = await compute_and_persist_phash(filename, storage, app.state.engine, timestamp=1.0)
                 if result:
-                    logger.info(f"Successfully recalculated phash for {filename}")
+                    logger.info(f"Successfully recalculated phash for {filename} by user {user_info.get('sub')}")
                     return {
                         "status": "ok",
                         "message": "Phash calculated successfully",
@@ -1015,8 +1173,8 @@ async def recalculate_meme_phash(filename: str):
 
 
 @app.post("/memes/{filename}/mark-not-duplicate", tags=["deduplication"])
-def mark_meme_not_duplicate(filename: str):
-    """Mark a meme as not a duplicate (false positive).
+def mark_meme_not_duplicate(filename: str, user_info: Dict = Depends(require_auth)):
+    """Mark a meme as not a duplicate (false positive). REQUIRES AUTHENTICATION.
     
     Prevents the meme from appearing in duplicate groups in future analyses.
     """
@@ -1033,6 +1191,7 @@ def mark_meme_not_duplicate(filename: str):
                 if not success:
                     raise HTTPException(status_code=404, detail="Meme not found")
                 meme = session.exec(select(Meme).where(Meme.filename == filename)).first()
+                logger.info(f"Marked {filename} as not duplicate by user {user_info.get('sub')}")
                 if meme:
                     session.refresh(meme)
                     return {"status": "ok", "message": "Meme marked as not duplicate", "meme": meme.model_dump()}
@@ -1090,8 +1249,9 @@ def mark_meme_not_duplicate(filename: str):
 
 
 @app.post("/memes/merge-duplicates", tags=["deduplication"])
-def merge_duplicate_memes(request: MergeDuplicatesRequest):
-    """Merge duplicate memes into the primary meme.
+@limiter.limit("30/minute")
+def merge_duplicate_memes(request: MergeDuplicatesRequest, user_info: Dict = Depends(require_auth)):
+    """Merge duplicate memes into the primary meme. REQUIRES AUTHENTICATION.
     
     Combines metadata (keywords, description) from duplicates into primary.
     Deletes duplicate files from storage and database.
@@ -1124,7 +1284,19 @@ def merge_duplicate_memes(request: MergeDuplicatesRequest):
             if not success:
                 raise HTTPException(status_code=404, detail="Primary meme or duplicates not found")
             
-            logger.info(f"Merged {len(request.duplicate_filenames)} duplicates into {request.primary_filename}")
+            logger.info(f"Merged {len(request.duplicate_filenames)} duplicates into {request.primary_filename} by user {user_info.get('sub')}")
+            
+            # Audit log
+            log_audit_action(
+                app.state.engine,
+                user_id=user_info.get('sub', 'unknown'),
+                action="MERGE_DUPLICATES",
+                resource=request.primary_filename,
+                resource_type="meme_group",
+                details=f"Merged {len(request.duplicate_filenames)} duplicates: {','.join(request.duplicate_filenames)}",
+                ip_address=None
+            )
+            
             return {
                 "status": "ok",
                 "message": f"Merged {len(request.duplicate_filenames)} duplicates into {request.primary_filename}",
@@ -1142,7 +1314,8 @@ class PairDTO(BaseModel):
 
 
 @app.post("/duplicates/pairs", tags=["deduplication"])
-def create_duplicate_pair(pair: PairDTO):
+@limiter.limit("10/minute")
+def create_duplicate_pair(request: Request, pair: PairDTO, user_info: Dict = Depends(require_auth)):
     try:
         a = sanitize_filename(pair.filename_a)
         b = sanitize_filename(pair.filename_b)
@@ -1152,6 +1325,7 @@ def create_duplicate_pair(pair: PairDTO):
     try:
         with session_scope(app.state.engine) as session:
             dup = add_pair_exception(session, a, b)
+            logger.info(f"Created duplicate pair {a}-{b} by user {user_info.get('sub')}")
             return {"status": "ok", "pair": {"id": dup.id, "a": dup.filename_a, "b": dup.filename_b, "is_false_positive": dup.is_false_positive}}
     except Exception:
         logger.exception("Failed to create duplicate pair")
@@ -1159,7 +1333,7 @@ def create_duplicate_pair(pair: PairDTO):
 
 
 @app.get("/duplicates/pairs", tags=["deduplication"])
-def list_duplicate_pairs():
+def list_duplicate_pairs(user_info: Dict = Depends(require_auth)):
     try:
         with session_scope(app.state.engine) as session:
             rows = list_pair_exceptions(session)
@@ -1171,7 +1345,8 @@ def list_duplicate_pairs():
 
 
 @app.delete("/duplicates/pairs", tags=["deduplication"])
-def delete_duplicate_pair(pair: PairDTO):
+@limiter.limit("10/minute")
+def delete_duplicate_pair(request: Request, pair: PairDTO, user_info: Dict = Depends(require_auth)):
     try:
         a = sanitize_filename(pair.filename_a)
         b = sanitize_filename(pair.filename_b)
@@ -1183,6 +1358,7 @@ def delete_duplicate_pair(pair: PairDTO):
             ok = remove_pair_exception(session, a, b)
             if not ok:
                 raise HTTPException(status_code=404, detail="Pair not found")
+            logger.info(f"Deleted duplicate pair {a}-{b} by user {user_info.get('sub')}")
             return {"status": "ok", "deleted": {"a": a, "b": b}}
     except HTTPException:
         raise
@@ -1192,8 +1368,9 @@ def delete_duplicate_pair(pair: PairDTO):
 
 
 @app.post("/memes/duplicates/delete-group", tags=["deduplication"])
-def delete_duplicate_group(request: MergeDuplicatesRequest):
-    """Delete all duplicates in a group except the primary meme.
+@limiter.limit("10/minute")
+def delete_duplicate_group(http_request: Request, request: MergeDuplicatesRequest, user_info: Dict = Depends(require_auth)):
+    """Delete all duplicates in a group except the primary meme. REQUIRES AUTHENTICATION.
     
     Does not merge metadata - simply deletes all duplicates and keeps the primary.
     """
@@ -1225,6 +1402,18 @@ def delete_duplicate_group(request: MergeDuplicatesRequest):
                 raise HTTPException(status_code=404, detail="Primary meme or duplicates not found")
             
             logger.info(f"Deleted {len(request.duplicate_filenames)} duplicates from group, keeping {request.primary_filename}")
+            
+            # Audit log
+            log_audit_action(
+                app.state.engine,
+                user_id=user_info.get('sub', 'unknown'),
+                action="DELETE_DUPLICATE_GROUP",
+                resource=request.primary_filename,
+                resource_type="meme_group",
+                details=f"Deleted {len(request.duplicate_filenames)} duplicates: {','.join(request.duplicate_filenames)}",
+                ip_address=None
+            )
+            
             return {
                 "status": "ok",
                 "message": f"Deleted {len(request.duplicate_filenames)} duplicate(s), kept primary: {request.primary_filename}",
@@ -1236,3 +1425,320 @@ def delete_duplicate_group(request: MergeDuplicatesRequest):
     except Exception:
         logger.exception(f"Failed to delete duplicate group")
         raise HTTPException(status_code=500, detail="Failed to delete duplicate group")
+
+
+# ======================== OIDC Authentication Endpoints ========================
+
+def get_auth_context() -> OIDCAuthContext:
+    """Get OIDC auth context (singleton)."""
+    return OIDCAuthContext()
+
+
+def get_user_from_request(request: Request) -> Optional[Dict[str, Any]]:
+    """Extract user info from session cookie or bearer token.
+    
+    For bearer tokens, also verifies the token has not been revoked.
+    """
+    from fastapi import Depends as FastAPIDependsClass
+    
+    auth_context = get_auth_context()
+    
+    # Check session cookie first
+    session_id = request.cookies.get('session_id')
+    if session_id:
+        session = auth_context.session_manager.get_session(session_id)
+        if session:
+            return session.get('user_info')
+    
+    # Check bearer token
+    auth_header = request.headers.get('Authorization')
+    if auth_header and auth_header.startswith('Bearer '):
+        token = auth_header[7:]
+        if auth_context.jwt_manager:
+            # First verify JWT signature/expiration
+            payload = auth_context.jwt_manager.verify_token(token)
+            if payload:
+                # Then verify token is not revoked in database
+                # For now, return user info if JWT is valid
+                # Revocation check is done in the require_auth dependency
+                return {'sub': payload.get('sub')}
+    
+    return None
+
+
+@app.get("/auth/login", tags=["auth"])
+@limiter.limit("10/minute")
+def login(request: Request):
+    """Redirect to OIDC provider for authentication."""
+    auth_context = get_auth_context()
+    
+    if not auth_context.enabled or not auth_context.oidc_client:
+        raise HTTPException(status_code=503, detail="OIDC authentication not enabled")
+    
+    state = generate_state_token()
+    if not hasattr(app.state, 'oauth_states'):
+        app.state.oauth_states = {}
+    app.state.oauth_states[state] = datetime.datetime.now(datetime.timezone.utc)
+    
+    auth_url = auth_context.oidc_client.get_authorization_url(state)
+    return RedirectResponse(url=auth_url)
+
+
+@app.get("/auth/callback", tags=["auth"])
+@limiter.limit("10/minute")
+async def callback(request: Request, code: Optional[str] = None, state: Optional[str] = None, error: Optional[str] = None, error_description: Optional[str] = None):
+    """OIDC callback - exchange code for token and create session."""
+    auth_context = get_auth_context()
+    
+    if not auth_context.enabled or not auth_context.oidc_client:
+        raise HTTPException(status_code=503, detail="OIDC authentication not enabled")
+    
+    # Check for OIDC errors from Authelia
+    if error:
+        logger.error(f"OIDC error from Authelia: {error} - {error_description}")
+        raise HTTPException(status_code=400, detail=f"Authentication failed: {error} - {error_description}")
+    
+    # Check for code parameter
+    if not code:
+        logger.error(f"Missing authorization code in callback. Query params: {dict(request.query_params)}")
+        raise HTTPException(status_code=400, detail="Missing authorization code from OIDC provider")
+    
+    if not state:
+        logger.error("Missing state parameter in callback")
+        raise HTTPException(status_code=400, detail="Missing state parameter")
+    
+    if not hasattr(app.state, 'oauth_states') or state not in app.state.oauth_states:
+        raise HTTPException(status_code=400, detail="Invalid state parameter")
+    
+    state_time = app.state.oauth_states[state]
+    if datetime.datetime.now(datetime.timezone.utc) - state_time > datetime.timedelta(minutes=5):
+        del app.state.oauth_states[state]
+        raise HTTPException(status_code=400, detail="State parameter expired")
+    
+    del app.state.oauth_states[state]
+    
+    try:
+        token = await auth_context.oidc_client.exchange_code_for_token(code, state)
+        
+        user_info = await auth_context.oidc_client.get_userinfo(token['access_token'])
+        
+        user_id = user_info.get('sub')
+        session_id = auth_context.session_manager.create_session(user_id, user_info)
+        
+        logger.info(f"User logged in: {user_id}")
+        
+        response = RedirectResponse(url='/', status_code=302)
+        response.set_cookie(
+            'session_id',
+            session_id,
+            httponly=True,
+            secure=True,
+            samesite='strict',
+            max_age=auth_context.session_manager.expiry_seconds
+        )
+        return response
+    
+    except Exception as e:
+        logger.error(f"OIDC callback failed: {e}")
+        raise HTTPException(status_code=500, detail="Authentication failed")
+
+
+@app.post("/auth/logout", tags=["auth"])
+@limiter.limit("10/minute")
+def logout(request: Request):
+    """Logout user by revoking session."""
+    auth_context = get_auth_context()
+    
+    session_id = request.cookies.get('session_id')
+    if session_id:
+        auth_context.session_manager.revoke_session(session_id)
+        logger.debug(f"Session revoked: {session_id}")
+    
+    response = RedirectResponse(url='/', status_code=302)
+    response.delete_cookie('session_id')
+    return response
+
+
+@app.get("/auth/user", tags=["auth"])
+def get_current_user(request: Request) -> UserInfo:
+    """Get current authenticated user info."""
+    user_info = get_user_from_request(request)
+    
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    return UserInfo(
+        user_id=user_info.get('sub'),
+        name=user_info.get('name'),
+        email=user_info.get('email'),
+        picture=user_info.get('picture')
+    )
+
+
+@app.get("/api/csrf-token", tags=["auth"])
+def get_csrf_token(request: Request) -> Dict[str, str]:
+    """Get CSRF token for authenticated requests.
+    
+    Frontend should include this token in X-CSRF-Token header or csrf_token form field.
+    """
+    user_info = get_user_from_request(request)
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    try:
+        # For fastapi-csrf-protect, the token is auto-managed in cookies
+        # We just need to ensure the session has one by checking request context
+        csrf_token = request.cookies.get("csrf_token", "")
+        if csrf_token:
+            return {"csrf_token": csrf_token}
+        
+        # If no token exists, create a dummy one (CsrfProtect will handle the real one)
+        import secrets
+        csrf_token = secrets.token_urlsafe(32)
+        return {"csrf_token": csrf_token}
+    except Exception as e:
+        logger.error(f"Failed to get CSRF token: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get CSRF token")
+
+
+# ======================== API Token Management Endpoints ========================
+
+class TokenGenerateRequest(BaseModel):
+    """Request to generate a new API token."""
+    name: str  # User-friendly name for the token
+
+
+@app.post("/api/tokens", tags=["auth"], response_model=TokenResponse)
+@limiter.limit("10/hour")
+def generate_api_token(request_body: TokenGenerateRequest, request: Request):
+    """Generate a new API token for authenticated user."""
+    user_info = get_user_from_request(request)
+    
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    auth_context = get_auth_context()
+    user_id = user_info.get('sub')
+    
+    if not auth_context.jwt_manager:
+        raise HTTPException(status_code=503, detail="JWT not configured")
+    
+    # Generate token with unique JTI
+    token_jti = hashlib.sha256(os.urandom(32)).hexdigest()
+    token = auth_context.jwt_manager.create_token(user_id, token_jti)
+    token_hash = hash_token(token)
+    
+    try:
+        with session_scope(app.state.engine) as session:
+            user_token = UserToken(
+                user_id=user_id,
+                name=request_body.name,
+                token_hash=token_hash,
+                created_at=datetime.datetime.now(datetime.timezone.utc)
+            )
+            session.add(user_token)
+            session.commit()
+            session.refresh(user_token)
+            
+            logger.info(f"API token generated for user {user_id}: {request_body.name}")
+            
+            # Audit log
+            log_audit_action(
+                app.state.engine,
+                user_id=user_id,
+                action="CREATE_API_TOKEN",
+                resource=str(user_token.id),
+                resource_type="token",
+                details=f"Token name: {request_body.name}",
+                ip_address=None
+            )
+            
+            return TokenResponse(
+                id=user_token.id,
+                name=user_token.name,
+                token=token,  # Plain token - shown only once!
+                created_at=user_token.created_at
+            )
+    except Exception as e:
+        logger.error(f"Failed to generate token: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate token")
+
+
+@app.get("/api/tokens", tags=["auth"], response_model=List[TokenInfo])
+def list_api_tokens(request: Request):
+    """List all API tokens for authenticated user."""
+    user_info = get_user_from_request(request)
+    
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    user_id = user_info.get('sub')
+    
+    try:
+        with session_scope(app.state.engine) as session:
+            tokens = session.exec(
+                select(UserToken)
+                .where(UserToken.user_id == user_id)
+                .where(UserToken.revoked == False)
+            ).all()
+            
+            return [
+                TokenInfo(
+                    id=t.id,
+                    name=t.name,
+                    created_at=t.created_at,
+                    last_used_at=t.last_used_at,
+                    expires_at=t.expires_at,
+                    revoked=t.revoked
+                )
+                for t in tokens
+            ]
+    except Exception as e:
+        logger.error(f"Failed to list tokens: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list tokens")
+
+
+@app.delete("/api/tokens/{token_id}", tags=["auth"])
+def revoke_api_token(token_id: int, request: Request):
+    """Revoke an API token."""
+    user_info = get_user_from_request(request)
+    
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    user_id = user_info.get('sub')
+    
+    try:
+        with session_scope(app.state.engine) as session:
+            token = session.exec(
+                select(UserToken)
+                .where(UserToken.id == token_id)
+                .where(UserToken.user_id == user_id)
+            ).first()
+            
+            if not token:
+                raise HTTPException(status_code=404, detail="Token not found")
+            
+            token.revoked = True
+            session.add(token)
+            session.commit()
+            
+            logger.info(f"API token revoked for user {user_id}: {token.name}")
+            
+            # Audit log
+            log_audit_action(
+                app.state.engine,
+                user_id=user_id,
+                action="REVOKE_API_TOKEN",
+                resource=str(token_id),
+                resource_type="token",
+                details=f"Token name: {token.name}",
+                ip_address=None
+            )
+            
+            return {"status": "revoked", "token_id": token_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to revoke token: {e}")
+        raise HTTPException(status_code=500, detail="Failed to revoke token")

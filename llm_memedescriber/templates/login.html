@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login - Meme Describer</title>
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        }
+        
+        .login-container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            padding: 40px;
+            width: 100%;
+            max-width: 400px;
+            animation: slideUp 0.3s ease-out;
+        }
+        
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        .login-header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        
+        .login-header img {
+            height: 80px;
+            width: 80px;
+            margin-bottom: 15px;
+            border-radius: 8px;
+        }
+        
+        .login-header h1 {
+            color: #333;
+            font-size: 28px;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+        
+        .login-header p {
+            color: #666;
+            font-size: 14px;
+            margin: 0;
+        }
+        
+        .login-content {
+            margin-bottom: 25px;
+        }
+        
+        .info-box {
+            background: #f8f9fa;
+            border-left: 4px solid #667eea;
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            font-size: 14px;
+            color: #555;
+        }
+        
+        .btn-login {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border: none;
+            color: white;
+            padding: 12px;
+            font-size: 16px;
+            font-weight: 600;
+            border-radius: 8px;
+            width: 100%;
+            transition: all 0.3s ease;
+            cursor: pointer;
+        }
+        
+        .btn-login:hover {
+            background: linear-gradient(135deg, #764ba2 0%, #667eea 100%);
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px rgba(102, 126, 234, 0.4);
+            color: white;
+            text-decoration: none;
+        }
+        
+        .btn-login:active {
+            transform: translateY(0);
+        }
+        
+        .security-notice {
+            background: #e7f3ff;
+            border: 1px solid #b3d9ff;
+            color: #004085;
+            padding: 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            text-align: center;
+            margin-top: 20px;
+        }
+        
+        .security-icon {
+            margin-right: 5px;
+        }
+        
+        .status-message {
+            display: none;
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 15px;
+            font-size: 14px;
+        }
+        
+        .status-message.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+            display: block;
+        }
+        
+        .status-message.loading {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <div class="login-header">
+            <img src="/static/favicon-squircle.png" alt="Meme Describer Logo">
+            <h1>Meme Describer</h1>
+            <p>Sign in to continue</p>
+        </div>
+        
+        <div id="statusMessage" class="status-message"></div>
+        
+        <div class="login-content">
+            <div class="info-box">
+                🔐 Secure login via OIDC authentication. Your credentials are never shared with this application.
+            </div>
+            
+            <button class="btn-login" id="loginBtn" onclick="handleLogin()">
+                Sign in with OIDC
+            </button>
+        </div>
+        
+        <div class="security-notice">
+            <span class="security-icon">🛡️</span>
+            <strong>Secure Connection:</strong> This site uses HTTPS to protect your information.
+        </div>
+    </div>
+
+    <script>
+        function showMessage(text, type = 'error') {
+            const messageEl = document.getElementById('statusMessage');
+            messageEl.textContent = text;
+            messageEl.className = `status-message ${type}`;
+        }
+
+        async function handleLogin() {
+            const btn = document.getElementById('loginBtn');
+            
+            try {
+                btn.disabled = true;
+                showMessage('Redirecting to login...', 'loading');
+                
+                // Check if OIDC is enabled and redirect to /auth/login
+                const response = await fetch('/health');
+                if (response.ok) {
+                    // OIDC should be enabled, redirect to login endpoint
+                    window.location.href = '/auth/login';
+                } else {
+                    showMessage('Service temporarily unavailable. Please try again.', 'error');
+                    btn.disabled = false;
+                }
+            } catch (error) {
+                console.error('Login error:', error);
+                showMessage('Failed to initiate login. Please try again.', 'error');
+                btn.disabled = false;
+            }
+        }
+
+        // Check query params for error messages
+        const urlParams = new URLSearchParams(window.location.search);
+        if (urlParams.has('error')) {
+            showMessage(`Login failed: ${urlParams.get('error')}`, 'error');
+        } else if (urlParams.has('message')) {
+            showMessage(urlParams.get('message'), 'loading');
+        }
+
+        // Auto-focus on login button
+        window.addEventListener('load', () => {
+            document.getElementById('loginBtn').focus();
+        });
+    </script>
+</body>
+</html>

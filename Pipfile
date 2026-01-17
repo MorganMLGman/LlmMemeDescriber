@@ -17,6 +17,11 @@ whoosh-reloaded = ">=2.7.4"
 imagehash = ">=4.3.1"
 jinja2 = "*"
 cryptography = "*"
+authlib = "*"
+python-jose = {extras = ["cryptography"], version = "*"}
+httpx = "*"
+slowapi = "*"
+fastapi-csrf-protect = "*"
 
 [requires]
 python_version = "3.14"

@@ -33,6 +33,24 @@ class Settings(BaseSettings):
     ssl_cert_file: str | None = None
     ssl_key_file: str | None = None
     ssl_hostname: str = "localhost"
+    
+    # Security settings
+    debug_mode: bool = False  # Set to False in production to enforce HTTPS
+    
+    # OIDC Authentication settings
+    oidc_enabled: bool = False
+    oidc_provider_url: str | None = None
+    oidc_client_id: str | None = None
+    oidc_client_secret: str | None = None
+    oidc_redirect_uri: str | None = None
+    oidc_scopes: str = "openid profile email"
+    oidc_verify_ssl: bool = True  # Verify OIDC provider SSL certificate (default: True)
+    oidc_ca_bundle_path: str | None = None  # Path to CA bundle for OIDC provider verification (optional)
+    
+    # JWT settings for API tokens
+    jwt_secret: str | None = None
+    jwt_expiry_days: int = 30
+    session_expiry_seconds: int = 86400
 
     @field_validator("run_interval", "export_listing_interval")
     @classmethod
@@ -54,7 +72,39 @@ class Settings(BaseSettings):
             raise ValueError("max_generation_attempts must be <= 10")
         return int(v)
 
-    @field_validator("google_genai_api_key", "webdav_url", "webdav_username", "webdav_password", mode="before")
+    @field_validator("jwt_expiry_days")
+    @classmethod
+    def validate_jwt_expiry(cls, v):
+        if int(v) < 1:
+            raise ValueError("jwt_expiry_days must be >= 1")
+        if int(v) > 365:
+            raise ValueError("jwt_expiry_days must be <= 365")
+        return int(v)
+
+    @field_validator("oidc_enabled", mode="before")
+    @classmethod
+    def validate_oidc_config(cls, v, info):
+        """If OIDC is enabled, verify all required settings are present."""
+        if not v:
+            return v
+        
+        # Check if OIDC settings are present
+        data = info.data
+        required_fields = ['oidc_provider_url', 'oidc_client_id', 'oidc_client_secret', 'oidc_redirect_uri', 'jwt_secret']
+        missing = [f for f in required_fields if not data.get(f)]
+        
+        if missing:
+            logger.warning("OIDC enabled but missing settings: %s", missing)
+        else:
+            logger.info("OIDC Configuration:")
+            logger.info("  Provider URL: %s", data.get('oidc_provider_url'))
+            logger.info("  Client ID: %s...", str(data.get('oidc_client_id', ''))[:30])
+            logger.info("  Redirect URI: %s", data.get('oidc_redirect_uri'))
+            logger.info("  Scopes: %s", data.get('oidc_scopes'))
+        
+        return v
+
+    @field_validator("google_genai_api_key", "webdav_url", "webdav_username", "webdav_password", "oidc_client_secret", "jwt_secret", mode="before")
     @classmethod
     def _prefer_docker_secret(cls, v, info):
         """

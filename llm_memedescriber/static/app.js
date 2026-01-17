@@ -11,6 +11,38 @@ let totalMemeCount = 0;
 let searchQuery = '';
 let apiOffset = 0;
 let totalFetched = 0;
+let csrfToken = null;
+
+// ======================== CSRF Token Management ========================
+
+async function initializeCSRFToken() {
+    // Initialize CSRF token on page load for authenticated requests.
+    try {
+        const response = await fetch('/api/csrf-token');
+        if (response.ok) {
+            const data = await response.json();
+            csrfToken = data.csrf_token;
+            console.log('CSRF token initialized successfully');
+        } else {
+            console.warn('Failed to initialize CSRF token (may not be authenticated)');
+        }
+    } catch (error) {
+        console.warn('CSRF token initialization skipped:', error);
+    }
+}
+
+function getSecurityHeaders() {
+    // Return security headers including CSRF token if available.
+    const headers = {
+        'Content-Type': 'application/json'
+    };
+    if (csrfToken) {
+        headers['X-CSRF-Token'] = csrfToken;
+    }
+    return headers;
+}
+
+// ======================== HTML Utility ========================
 
 function escapeHtml(text) {
     if (!text) return '';
@@ -22,6 +54,9 @@ function escapeHtml(text) {
 async function loadMemes() {
     try {
         console.log('=== Starting loadMemes ===');
+        
+        // Initialize CSRF token first
+        await initializeCSRFToken();
         
         console.log('Testing API health...');
         const healthResponse = await fetch(`/health`, { timeout: 2000 });
@@ -509,7 +544,7 @@ async function saveMeme() {
     try {
         const response = await fetch(`/memes/${encodeURIComponent(currentMemeId)}`, {
             method: 'PATCH',
-            headers: {'Content-Type': 'application/json'},
+            headers: getSecurityHeaders(),
             body: JSON.stringify({category, keywords, description})
         });
         
@@ -813,7 +848,10 @@ async function mergeDuplicates(primaryFilename, duplicateFilenames, metadataSour
 
 function deleteDuplicateRow(filename) {
     if (!confirm('Delete "' + filename + '" permanently?')) return;
-    fetch(`/memes/${encodeURIComponent(filename)}`, { method: 'DELETE' })
+    fetch(`/memes/${encodeURIComponent(filename)}`, { 
+        method: 'DELETE',
+        headers: getSecurityHeaders()
+    })
         .then(resp => {
             if (!resp.ok) throw new Error('Delete failed');
             showAlert('File deleted', 'success');
@@ -1017,9 +1055,7 @@ async function savePrompt() {
     try {
         const response = await fetch('/api/prompt', {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
+            headers: getSecurityHeaders(),
             body: JSON.stringify({ prompt: promptText })
         });
         
@@ -1037,6 +1073,27 @@ async function savePrompt() {
     } catch (error) {
         console.error('Error saving prompt:', error);
         alert('Failed to save prompt');
+    }
+}
+
+async function logout() {
+    if (confirm('Are you sure you want to logout?')) {
+        try {
+            const response = await fetch('/auth/logout', {
+                method: 'POST',
+                headers: getSecurityHeaders()
+            });
+            
+            if (response.ok) {
+                window.location.href = '/login';
+            } else {
+                console.error('Logout failed:', response.status);
+                alert('Failed to logout');
+            }
+        } catch (error) {
+            console.error('Logout error:', error);
+            alert('Error during logout');
+        }
     }
 }
 
