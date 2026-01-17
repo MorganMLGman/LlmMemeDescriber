@@ -367,6 +367,12 @@ def duplicates_page(request: Request):
     return templates.TemplateResponse("duplicates.html", {"request": request})
 
 
+@app.get("/pending", response_class=HTMLResponse, tags=["ui"])
+def pending_page(request: Request):
+    """Serve the pending memes UI page."""
+    return templates.TemplateResponse("pending.html", {"request": request})
+
+
 @app.get("/memes/{filename}/download", tags=["memes"])
 async def download_meme(filename: str):
     """Download raw meme bytes from WebDAV proxy (no API token required for convenience)."""
@@ -936,6 +942,18 @@ def get_stats_endpoint():
     except Exception:
         logger.exception("Failed to get stats")
         raise HTTPException(status_code=500, detail="Stats failed")
+
+
+@app.get("/api/pending-memes", tags=["api"])
+def get_pending_memes():
+    """Get all memes with 'pending' status waiting for description generation."""
+    try:
+        with session_scope(app.state.engine) as session:
+            memes = session.exec(select(Meme).where(Meme.status == 'pending')).all()
+            return [m.model_dump() for m in memes]
+    except Exception as e:
+        logger.exception("Failed to get pending memes")
+        raise HTTPException(status_code=500, detail=f"Failed to get pending memes: {str(e)}")
 
 @app.get("/memes/{filename}/duplicates", tags=["deduplication"])
 def get_meme_duplicates(filename: str):

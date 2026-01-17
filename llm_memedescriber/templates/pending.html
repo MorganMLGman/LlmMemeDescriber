@@ -1,0 +1,253 @@
+{% extends "base.html" %}
+
+{% block title %}Pending Memes — Meme Describer{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="/static/style.css?v=3">
+{% endblock %}
+
+{% block navbar_controls %}
+<a class="btn btn-sm btn-outline-light" href="/">← Back</a>
+{% endblock %}
+
+{% block content %}
+<div class="row mb-3">
+    <div class="col-12">
+        <h3>Pending Memes</h3>
+        <p class="text-muted">Memes waiting for description generation. Batch process or generate individually.</p>
+    </div>
+</div>
+
+<div class="row mb-3">
+    <div class="col-12">
+        <button class="btn btn-success" id="generateAllBtn" onclick="generateAllPendingDescriptions()">
+            🚀 Generate All Descriptions
+        </button>
+        <span id="generationStatus" class="ms-3 text-muted" style="display: none;"></span>
+    </div>
+</div>
+
+<div id="pendingContent" class="row">
+    <div class="col-12" id="pendingInner">
+        <div class="text-center">
+            <div class="spinner-border text-light" role="status">
+                <span class="visually-hidden">Loading...</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Preview Modal -->
+<div class="modal fade" id="previewModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="previewTitle">Preview</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body text-center" style="padding: 15px;">
+                <img id="previewImage" src="" style="width: 100%; max-height: 400px; object-fit: contain; display: none;" alt="Preview">
+                <video id="previewVideo" style="width: 100%; max-height: 400px; object-fit: contain; display: none;" controls autoplay>
+                    <source id="previewVideoSource" src="" type="">
+                    Your browser does not support the video tag.
+                </video>
+            </div>
+            <div class="modal-body border-top" style="padding: 12px 15px;">
+                <div id="previewDetails" style="font-size: 0.85rem; color: #333;"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-primary" id="generateSingleBtn" onclick="generateSinglePendingDescription()">
+                    🔄 Generate Description
+                </button>
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="/static/app.js?v=3"></script>
+<script>
+    let allPendingMemes = [];
+    let currentPreviewMeme = null;
+
+    document.addEventListener('DOMContentLoaded', function() {
+        loadPendingMemes();
+    });
+
+    async function loadPendingMemes() {
+        try {
+            const response = await fetch('/api/pending-memes');
+            if (!response.ok) throw new Error('Failed to load pending memes');
+            
+            const memes = await response.json();
+            allPendingMemes = memes;
+            renderPendingMemes(memes);
+        } catch (error) {
+            console.error('Error loading pending memes:', error);
+            document.getElementById('pendingInner').innerHTML = `
+                <div class="alert alert-danger">Failed to load pending memes</div>
+            `;
+        }
+    }
+
+    function renderPendingMemes(memes) {
+        const container = document.getElementById('pendingInner');
+        
+        if (memes.length === 0) {
+            container.innerHTML = '<div class="alert alert-info">No pending memes found!</div>';
+            return;
+        }
+
+        let html = `
+            <div class="row g-3">
+        `;
+
+        for (const meme of memes) {
+            const mimeType = meme.filename.toLowerCase().endsWith('.mp4') ? 'video/mp4' : 'image/jpeg';
+            const isVideo = mimeType.startsWith('video');
+            
+            html += `
+                <div class="col-lg-3 col-md-4 col-sm-6">
+                    <div class="meme-card" onclick="previewPendingMeme('${encodeURIComponent(meme.filename)}')">
+                        ${isVideo ? 
+                            `<video style="width: 100%; height: 250px; object-fit: cover; background: #f0f0f0;" controls>
+                                <source src="/memes/${encodeURIComponent(meme.filename)}/download" type="${mimeType}">
+                            </video>` :
+                            `<img src="/memes/${encodeURIComponent(meme.filename)}/preview" style="width: 100%; height: 250px; object-fit: cover;" alt="Meme preview">`
+                        }
+                        <div class="card-body">
+                            <p class="card-text small text-truncate" title="${meme.filename}">${meme.filename}</p>
+                            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                                <span class="badge bg-warning">Pending</span>
+                                <span class="badge bg-info">${meme.attempts || 0} attempts</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        html += '</div>';
+        container.innerHTML = html;
+    }
+
+    async function previewPendingMeme(filename) {
+        const meme = allPendingMemes.find(m => m.filename === decodeURIComponent(filename));
+        if (!meme) return;
+
+        currentPreviewMeme = meme;
+        const mimeType = meme.filename.toLowerCase().endsWith('.mp4') ? 'video/mp4' : 'image/jpeg';
+        const isVideo = mimeType.startsWith('video');
+
+        document.getElementById('previewTitle').textContent = meme.filename;
+        
+        if (isVideo) {
+            document.getElementById('previewImage').style.display = 'none';
+            document.getElementById('previewVideo').style.display = 'block';
+            document.getElementById('previewVideoSource').src = `/memes/${filename}/download`;
+            document.getElementById('previewVideoSource').type = mimeType;
+        } else {
+            document.getElementById('previewImage').style.display = 'block';
+            document.getElementById('previewVideo').style.display = 'none';
+            document.getElementById('previewImage').src = `/memes/${filename}/preview`;
+        }
+
+        document.getElementById('previewDetails').innerHTML = `
+            <p class="mb-2"><span class="text-dark fw-bold">Attempts:</span> <span class="text-body">${meme.attempts || 0}</span></p>
+            <p class="mb-2"><span class="text-dark fw-bold">Last Error:</span> ${meme.last_error ? `<code class="text-danger">${meme.last_error}</code>` : '<span class="text-muted">None</span>'}</p>
+        `;
+
+        const modal = new bootstrap.Modal(document.getElementById('previewModal'));
+        modal.show();
+    }
+
+    async function generateSinglePendingDescription() {
+        if (!currentPreviewMeme) return;
+        
+        const filename = encodeURIComponent(currentPreviewMeme.filename);
+        const btn = document.getElementById('generateSingleBtn');
+        btn.disabled = true;
+        btn.innerHTML = '⏳ Generating...';
+
+        try {
+            const response = await fetch(`/memes/${filename}/force-description`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'}
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                alert(`Error: ${errorData.detail || 'Failed to generate'}`);
+                btn.disabled = false;
+                btn.innerHTML = '🔄 Generate Description';
+                return;
+            }
+
+            const result = await response.json();
+            if (result.status === 'filled') {
+                alert('Description generated successfully!');
+                bootstrap.Modal.getInstance(document.getElementById('previewModal')).hide();
+                loadPendingMemes();
+            } else {
+                alert('Generation submitted but status is unclear. Refresh to check.');
+            }
+        } catch (error) {
+            console.error('Error:', error);
+            alert(`Error: ${error.message}`);
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = '🔄 Generate Description';
+        }
+    }
+
+    async function generateAllPendingDescriptions() {
+        if (allPendingMemes.length === 0) {
+            alert('No pending memes to generate');
+            return;
+        }
+
+        if (!confirm(`Generate descriptions for ${allPendingMemes.length} memes? This may take a while.`)) {
+            return;
+        }
+
+        const btn = document.getElementById('generateAllBtn');
+        const status = document.getElementById('generationStatus');
+        btn.disabled = true;
+        status.style.display = 'inline';
+
+        let completed = 0;
+        let failed = 0;
+
+        for (const meme of allPendingMemes) {
+            status.textContent = `${completed}/${allPendingMemes.length} completed...`;
+            
+            try {
+                const filename = encodeURIComponent(meme.filename);
+                const response = await fetch(`/memes/${filename}/force-description`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'}
+                });
+
+                if (response.ok) {
+                    completed++;
+                } else {
+                    failed++;
+                }
+            } catch (error) {
+                console.error(`Error generating for ${meme.filename}:`, error);
+                failed++;
+            }
+
+            // Small delay to avoid overwhelming the server
+            await new Promise(resolve => setTimeout(resolve, 500));
+        }
+
+        btn.disabled = false;
+        status.style.display = 'none';
+        alert(`Batch generation complete!\nSuccessful: ${completed}\nFailed: ${failed}`);
+        loadPendingMemes();
+    }
+</script>
+{% endblock %}

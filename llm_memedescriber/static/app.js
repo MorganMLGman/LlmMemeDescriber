@@ -552,37 +552,55 @@ async function retryDescriptionGeneration() {
     if (!confirm('Force retry description generation for this meme?')) return;
     
     try {
+        // Show loading spinner, hide preview
+        const previewDiv = document.getElementById('memePreview');
+        const spinnerDiv = document.getElementById('generationLoadingSpinner');
+        const imageEl = document.getElementById('memeImage');
+        const videoEl = document.getElementById('memeVideo');
+        
+        previewDiv.style.display = 'none';
+        spinnerDiv.style.display = 'block';
+        imageEl.style.display = 'none';
+        videoEl.style.display = 'none';
+        
         const response = await fetch(`/memes/${encodeURIComponent(currentMemeId)}/force-description`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'}
         });
         
+        // Hide spinner
+        spinnerDiv.style.display = 'none';
+        
         if (response.status === 429) {
+            previewDiv.style.display = 'block';
             showError('Rate limit reached. Processing will retry automatically on the next sync cycle.');
             return;
         }
         
         if (!response.ok) {
+            previewDiv.style.display = 'block';
             const errorData = await response.json();
-            throw new Error(errorData.detail || 'Failed to retry');
+            showError(`Error (${response.status}): ${errorData.detail || 'Failed to generate description'}`);
+            return;
         }
         
         const updatedMeme = await response.json();
         
-        // If description was generated, show success
-        if (updatedMeme.description) {
-            showSuccess('Description generated successfully!');
-            // Reload meme details to show updates
-            await new Promise(resolve => setTimeout(resolve, 500));
-            viewMeme(currentMemeId);
+        // If description was generated successfully, reload page
+        if (updatedMeme.description && updatedMeme.status === 'filled') {
+            showSuccess('Description generated successfully! Reloading...');
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            location.reload();
         } else {
-            showSuccess('Retry submitted. Check status on next update.');
-            await new Promise(resolve => setTimeout(resolve, 500));
-            viewMeme(currentMemeId);
+            previewDiv.style.display = 'block';
+            showError('Description generation did not produce results. Please check the sync logs.');
         }
     } catch (error) {
         console.error('Error retrying description generation:', error);
-        showError(`Failed to retry: ${error.message}`);
+        // Show preview again on error
+        document.getElementById('generationLoadingSpinner').style.display = 'none';
+        document.getElementById('memePreview').style.display = 'block';
+        showError(`Error: ${error.message}`);
     }
 }
 
@@ -1024,6 +1042,23 @@ async function checkDuplicatesButton() {
         }
     } catch (e) {
         console.debug('checkDuplicatesButton failed', e);
+    }
+    
+    // Also check for pending memes
+    try {
+        const pendingBtn = document.getElementById('viewPendingBtn');
+        if (!pendingBtn) return;
+        const resp = await fetch('/api/pending-memes');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (data && data.length > 0) {
+            pendingBtn.style.display = 'inline-block';
+            pendingBtn.textContent = `⏳ Pending Memes (${data.length})`;
+        } else {
+            pendingBtn.style.display = 'none';
+        }
+    } catch (e) {
+        console.debug('checkPendingButton failed', e);
     }
 }
 

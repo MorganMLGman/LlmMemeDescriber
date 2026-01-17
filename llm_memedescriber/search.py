@@ -32,9 +32,11 @@ def init_index() -> None:
     schema = get_schema()
     storage = FileStorage(INDEX_DIR)
     
-    if storage.has_index():
+    # Check if index already exists by trying to open it
+    try:
+        storage.open_index()
         logger.info("Opening existing Whoosh index at %s", INDEX_DIR)
-    else:
+    except:
         logger.info("Creating new Whoosh index at %s", INDEX_DIR)
         storage.create_index(schema)
 
@@ -88,9 +90,11 @@ def add_meme_to_index(meme: Meme) -> None:
         os.makedirs(INDEX_DIR, exist_ok=True)
         schema = get_schema()
         storage = FileStorage(INDEX_DIR)
-        if storage.has_index():
+        
+        # Try to open existing index, create if doesn't exist
+        try:
             ix = storage.open_index()
-        else:
+        except:
             ix = storage.create_index(schema)
         
         writer = ix.writer()
@@ -116,12 +120,15 @@ def remove_meme_from_index(meme_id: int) -> None:
     """Remove a meme from the search index."""
     try:
         storage = FileStorage(INDEX_DIR)
-        if storage.has_index():
+        # Try to open index, if it fails the index doesn't exist yet
+        try:
             ix = storage.open_index()
             writer = ix.writer()
             writer.delete_by_term('id', str(meme_id))
             writer.commit()
             logger.debug("Removed meme %d from search index", meme_id)
+        except:
+            logger.debug("Search index not found, nothing to remove")
     except Exception as e:
         logger.warning("Failed to remove meme from index: %s", e)
 
@@ -148,7 +155,10 @@ def search_memes(query_text: str, limit: int = 50, offset: int = 0) -> List[dict
     
     try:
         storage = FileStorage(INDEX_DIR)
-        if not storage.has_index():
+        # Try to open index, if it fails return empty results
+        try:
+            ix = storage.open_index()
+        except:
             logger.warning("Search index not found")
             return []
         

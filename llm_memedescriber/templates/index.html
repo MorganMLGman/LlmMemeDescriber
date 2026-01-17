@@ -25,6 +25,9 @@
                         <span id="statsText">Loading...</span>
                     </h6>
                     <div class="d-flex gap-2">
+                        <button class="btn btn-sm btn-warning" id="viewPendingBtn" onclick="window.location.href='/pending'" style="display: none;">
+                            ⏳ Pending Memes
+                        </button>
                         <button class="btn btn-sm btn-info" id="viewDuplicatesBtn" onclick="window.location.href='/duplicates'" style="display: none;">
                             📋 View Duplicates
                         </button>
@@ -78,6 +81,14 @@
                         <source id="memeVideoSource" src="" type="video/mp4">
                         Your browser does not support the video tag.
                     </video>
+                </div>
+                
+                <!-- Loading Spinner for Force Generation -->
+                <div id="generationLoadingSpinner" style="display: none; text-align: center; padding: 60px 0; background: #f8f9fa; border-radius: 8px;">
+                    <div class="spinner-border text-danger" role="status" style="width: 80px; height: 80px; border-width: 8px;">
+                        <span class="visually-hidden">Generating description...</span>
+                    </div>
+                    <p class="text-dark fw-bold mx-4" style="font-size: 18px;">Generating description...</p>
                 </div>
 
                 <!-- Meme Details Info -->
