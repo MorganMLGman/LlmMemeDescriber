@@ -12,6 +12,7 @@ let searchQuery = '';
 let apiOffset = 0;
 let totalFetched = 0;
 let lastRateLimitWarningTime = 0;
+let maxGenerationAttempts = null;
 
 async function loadMemes() {
     try {
@@ -26,6 +27,21 @@ async function loadMemes() {
         }
         
         console.log('API is responsive, initializing memes list...');
+        
+        // Load max generation attempts from backend config
+        try {
+            const statsResponse = await fetch('/api/stats');
+            if (statsResponse.ok) {
+                const statsData = await statsResponse.json();
+                maxGenerationAttempts = statsData.max_generation_attempts || 3;
+                console.log('Loaded max_generation_attempts from backend:', maxGenerationAttempts);
+            } else {
+                maxGenerationAttempts = 3;  // Fallback
+            }
+        } catch (e) {
+            console.debug('Failed to load max_generation_attempts from backend, using default:', e);
+            maxGenerationAttempts = 3;  // Fallback
+        }
         
         allMemes = [];
         filteredMemes = [];
@@ -71,7 +87,7 @@ async function startSyncJob() {
         
         if (response.status === 429) {
             showRateLimitWarning();
-            showError('Rate limit reached - processing will resume automatically');
+            showError('Rate limit reached. Processing will retry automatically on the next sync cycle.');
             return;
         }
         
@@ -85,7 +101,7 @@ async function startSyncJob() {
         // Check if we got rate limited during sync
         if (result.rate_limited) {
             showRateLimitWarning();
-            showSuccess(`Sync partially completed: ${result.saved} saved (rate limit reached)`);
+            showSuccess(`Sync partially completed: ${result.saved} saved. Rate limit reached - will retry automatically on next cycle.`);
         } else {
             showSuccess(`Sync completed: ${result.added} added, ${result.removed} removed, ${result.saved} saved`);
         }
@@ -436,13 +452,15 @@ async function viewMeme(memeFilename) {
         const details = [
             `ID: ${meme.id}`,
             `Status: ${meme.processed === true ? 'Processed' : 'Pending'}`,
-            meme.size ? `Size: ${(meme.size / 1024 / 1024).toFixed(2)} MB` : ''
+            meme.size ? `Size: ${(meme.size / 1024 / 1024).toFixed(2)} MB` : '',
+            meme.attempts ? `Attempts: ${meme.attempts}` : ''
         ].filter(x => x).join(' | ');
         
         document.getElementById('memeDetails').textContent = details;
         
         const dedupeBtn = document.getElementById('dedupeBtn');
         const recalcBtn = document.getElementById('recalcPhashBtn');
+        const retryBtn = document.getElementById('retryDescriptionBtn');
         
         if (!meme.phash) {
             recalcBtn.style.display = 'inline-block';
@@ -453,6 +471,13 @@ async function viewMeme(memeFilename) {
         } else {
             dedupeBtn.style.display = 'none';
             recalcBtn.style.display = 'none';
+        }
+        
+        // Show retry button if attempts >= max_generation_attempts and status is not filled
+        if ((meme.attempts || 0) >= maxGenerationAttempts && meme.status !== 'filled' && meme.status !== 'unsupported') {
+            retryBtn.style.display = 'inline-block';
+        } else {
+            retryBtn.style.display = 'none';
         }
         
         const modal = new bootstrap.Modal(document.getElementById('memeModal'));
@@ -520,6 +545,64 @@ function removeKeyword(idx) {
             showError('Failed to open meme details');
         }
     }
+
+async function retryDescriptionGeneration() {
+    if (!currentMemeId) return;
+    
+    if (!confirm('Force retry description generation for this meme?')) return;
+    
+    try {
+        // Show loading spinner, hide preview
+        const previewDiv = document.getElementById('memePreview');
+        const spinnerDiv = document.getElementById('generationLoadingSpinner');
+        const imageEl = document.getElementById('memeImage');
+        const videoEl = document.getElementById('memeVideo');
+        
+        previewDiv.style.display = 'none';
+        spinnerDiv.style.display = 'block';
+        imageEl.style.display = 'none';
+        videoEl.style.display = 'none';
+        
+        const response = await fetch(`/memes/${encodeURIComponent(currentMemeId)}/force-description`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'}
+        });
+        
+        // Hide spinner
+        spinnerDiv.style.display = 'none';
+        
+        if (response.status === 429) {
+            previewDiv.style.display = 'block';
+            showError('Rate limit reached. Processing will retry automatically on the next sync cycle.');
+            return;
+        }
+        
+        if (!response.ok) {
+            previewDiv.style.display = 'block';
+            const errorData = await response.json();
+            showError(`Error (${response.status}): ${errorData.detail || 'Failed to generate description'}`);
+            return;
+        }
+        
+        const updatedMeme = await response.json();
+        
+        // If description was generated successfully, reload page
+        if (updatedMeme.description && updatedMeme.status === 'filled') {
+            showSuccess('Description generated successfully! Reloading...');
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            location.reload();
+        } else {
+            previewDiv.style.display = 'block';
+            showError('Description generation did not produce results. Please check the sync logs.');
+        }
+    } catch (error) {
+        console.error('Error retrying description generation:', error);
+        // Show preview again on error
+        document.getElementById('generationLoadingSpinner').style.display = 'none';
+        document.getElementById('memePreview').style.display = 'block';
+        showError(`Error: ${error.message}`);
+    }
+}
 
 async function saveMeme() {
     if (!currentMemeId) return;
@@ -959,6 +1042,23 @@ async function checkDuplicatesButton() {
         }
     } catch (e) {
         console.debug('checkDuplicatesButton failed', e);
+    }
+    
+    // Also check for pending memes
+    try {
+        const pendingBtn = document.getElementById('viewPendingBtn');
+        if (!pendingBtn) return;
+        const resp = await fetch('/api/pending-memes');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (data && data.length > 0) {
+            pendingBtn.style.display = 'inline-block';
+            pendingBtn.textContent = `⏳ Pending Memes (${data.length})`;
+        } else {
+            pendingBtn.style.display = 'none';
+        }
+    } catch (e) {
+        console.debug('checkPendingButton failed', e);
     }
 }
 

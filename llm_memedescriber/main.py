@@ -503,10 +503,10 @@ class App:
                 try:
                     result = future.result()
                     if result.get('rate_limited'):
-                        logger.error("Rate limit exceeded; stopping batch processing")
+                        logger.warning("Rate limit exceeded; pausing batch processing. Will retry on next sync cycle.")
                         rate_limited = True
-                        self.stop_event.set()
                         failed_count += 1
+                        break
                     elif result.get('saved'):
                         saved_count += 1
                         if result.get('desc') and result.get('name'):
@@ -521,8 +521,6 @@ class App:
 
         if to_add:
             logger.info("Scheduling phash calculation for %d newly added memes", len(to_add))
-            # Note: Phashes will be calculated on-demand via /memes/deduplication/analyze API endpoint
-            # Cannot use asyncio.run() here as we're already in a running event loop during shutdown
 
         try:
             with session_scope(self.engine) as session:
@@ -553,7 +551,6 @@ class App:
         except Exception:
             logger.exception("Failed to run deduplication analysis after sync_and_process")
 
-        # Clean up orphaned cache entries
         try:
             with session_scope(self.engine) as session:
                 valid_filenames = set(session.exec(select(Meme.filename)).all())

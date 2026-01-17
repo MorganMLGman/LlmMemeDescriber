@@ -367,6 +367,12 @@ def duplicates_page(request: Request):
     return templates.TemplateResponse("duplicates.html", {"request": request})
 
 
+@app.get("/pending", response_class=HTMLResponse, tags=["ui"])
+def pending_page(request: Request):
+    """Serve the pending memes UI page."""
+    return templates.TemplateResponse("pending.html", {"request": request})
+
+
 @app.get("/memes/{filename}/download", tags=["memes"])
 async def download_meme(filename: str):
     """Download raw meme bytes from WebDAV proxy (no API token required for convenience)."""
@@ -732,6 +738,96 @@ def get_meme_detail(filename: str):
         return meme_dict
 
 
+@app.post("/memes/{filename}/force-description", tags=["memes"])
+def force_description_generation(filename: str):
+    """Force generation of description for a meme, bypassing attempt limits.
+    
+    Resets attempts counter and triggers immediate generation.
+    """
+    try:
+        filename = sanitize_filename(filename)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    if not hasattr(app.state, 'app_instance') or app.state.app_instance is None:
+        raise HTTPException(status_code=503, detail="Application not fully initialized")
+    
+    try:
+        with session_scope(app.state.engine) as session:
+            m = get_meme_by_filename(session, filename)
+            if not m:
+                raise HTTPException(status_code=404, detail="Meme not found")
+            
+            m.attempts = 0
+            m.last_error = None
+            m.status = 'pending'
+            m.updated_at = datetime.datetime.now(datetime.timezone.utc)
+            session.add(m)
+            session.commit()
+            logger.info("Reset attempts for %s; forcing description generation", filename)
+        
+        result = app.state.app_instance.generate_description(filename)
+        
+        if result.get('rate_limited'):
+            with session_scope(app.state.engine) as session:
+                m = get_meme_by_filename(session, filename)
+                if m:
+                    m.attempts = (m.attempts or 0) + 1
+                    m.last_error = "rate_limited"
+                    m.updated_at = datetime.datetime.now(datetime.timezone.utc)
+                    session.add(m)
+                    session.commit()
+            
+            raise HTTPException(status_code=429, detail="Rate limit exceeded; will retry on next sync cycle")
+        
+        if result and not result.get('rate_limited'):
+            try:
+                with session_scope(app.state.engine) as session:
+                    m = get_meme_by_filename(session, filename)
+                    if m:
+                        m.category = result.get('kategoria') or m.category
+                        m.description = result.get('opis') or m.description
+                        kw = result.get('keywordy')
+                        if isinstance(kw, list):
+                            m.keywords = ','.join(kw)
+                        elif isinstance(kw, str):
+                            m.keywords = kw
+                        m.text_in_image = result.get('tekst') or m.text_in_image
+                        m.status = 'filled'
+                        m.updated_at = datetime.datetime.now(datetime.timezone.utc)
+                        session.add(m)
+                        session.commit()
+                        session.refresh(m)
+                        logger.info("Saved forced description for %s", filename)
+                        
+                        try:
+                            add_meme_to_index(m)
+                        except Exception:
+                            logger.exception("Failed to update search index for %s", filename)
+                        
+                        meme_dict = m.model_dump()
+                        meme_dict['processed'] = m.status == 'filled'
+                        return meme_dict
+            except Exception as e:
+                logger.exception("Failed to save forced description for %s: %s", filename, e)
+                raise HTTPException(status_code=500, detail=f"Failed to save description: {str(e)}")
+        
+        with session_scope(app.state.engine) as session:
+            m = get_meme_by_filename(session, filename)
+            if m:
+                meme_dict = m.model_dump()
+                meme_dict['processed'] = m.status == 'filled'
+                meme_dict['force_generation_attempted'] = True
+                return meme_dict
+        
+        raise HTTPException(status_code=500, detail="Failed to generate description")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error during forced description generation for %s: %s", filename, e)
+        raise HTTPException(status_code=500, detail=f"Force generation failed: {str(e)}")
+
+
 @app.patch("/memes/{filename}", tags=["memes"])
 def update_meme(filename: str, request: UpdateMemeRequest):
     """Update meme metadata (category, keywords, description). Only provided fields are updated."""
@@ -839,10 +935,25 @@ def get_stats_endpoint():
     try:
         with session_scope(app.state.engine) as session:
             stats = get_stats(session)
+            # Add max generation attempts from settings
+            settings = load_settings()
+            stats['max_generation_attempts'] = getattr(settings, 'max_generation_attempts', 3)
             return stats
     except Exception:
         logger.exception("Failed to get stats")
         raise HTTPException(status_code=500, detail="Stats failed")
+
+
+@app.get("/api/pending-memes", tags=["api"])
+def get_pending_memes():
+    """Get all memes with 'pending' status waiting for description generation."""
+    try:
+        with session_scope(app.state.engine) as session:
+            memes = session.exec(select(Meme).where(Meme.status == 'pending')).all()
+            return [m.model_dump() for m in memes]
+    except Exception as e:
+        logger.exception("Failed to get pending memes")
+        raise HTTPException(status_code=500, detail=f"Failed to get pending memes: {str(e)}")
 
 @app.get("/memes/{filename}/duplicates", tags=["deduplication"])
 def get_meme_duplicates(filename: str):
