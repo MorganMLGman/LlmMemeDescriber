@@ -7,7 +7,7 @@ Try to capture the essence of the meme in a few words.
 Try to categorize the meme, like (e.g., 'Sąsiedzi', 'Polityka', 'Kapitan Bomba' etc.).
 Use of profanity is allowed if it fits the meme style.
 Provide relevant keywords separated by commas.
-Max 5 keywords. Don't include 'meme' or 'mem'.
+Max 8 keywords. Could be less if keyword is not fitting. Don't include 'meme' or 'mem'.
 Return format plain json:{"kategoria":"<kategoria>", "opis":"<opis>", "keywordy":"<keywordy>", "tekst":"<tekst>"}.
 Use Polish language.
 Use of explicit language is allowed.

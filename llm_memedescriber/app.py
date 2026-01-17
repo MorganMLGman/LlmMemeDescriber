@@ -69,6 +69,13 @@ async def lifespan(app_instance: FastAPI):
     """Manage application lifecycle (startup and shutdown events)."""
     settings = load_settings()
     configure_logging(settings)
+    
+    # Log authentication mode only at startup
+    if settings.public_mode:
+        logger.info("PUBLIC_MODE enabled - all authentication disabled")
+    elif settings.oidc_enabled:
+        logger.info("OIDC authentication enabled")
+    
     logger.info("Starting llm_memedescriber FastAPI app (preview cache: %s)", CACHE_DIR)
     
     try:

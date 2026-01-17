@@ -189,14 +189,8 @@ class Settings(BaseSettings):
 def load_settings() -> Settings:
     try:
         settings = Settings()
-        # Log authentication mode only once at startup
-        if settings.public_mode:
-            logger.info("PUBLIC_MODE enabled - all authentication disabled")
-        elif settings.oidc_enabled:
-            logger.info("OIDC authentication enabled")
         return settings
     except ValidationError as e:
-        logger = logging.getLogger(__name__)
         logger.error("Configuration error:")
         for err in e.errors():
             logger.error(" - %s: %s", err.get('loc'), err.get('msg'))
