@@ -55,16 +55,8 @@ def test_parse_interval_negative_numbers_rejected(invalid):
 
 
 def test_settings_accepts_valid_intervals():
-    s = Settings(run_interval="2m", export_listing_interval="24h")
+    s = Settings(run_interval="2m")
     assert s.run_interval == "2m"
-    assert s.export_listing_interval == "24h"
-
-
-def test_settings_rejects_empty_or_none_export_listing_interval():
-    with pytest.raises(ValidationError):
-        Settings(export_listing_interval="")
-    with pytest.raises(ValidationError):
-        Settings(export_listing_interval=None)
 
 
 def test_settings_rejects_invalid_interval():

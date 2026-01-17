@@ -192,10 +192,6 @@ body {
     background-color: #10b981 !important;
 }
 
-.text-muted {
-    color: rgba(255, 255, 255, 0.7) !important;
-}
-
 /* Modal */
 .modal-content {
     border: none;

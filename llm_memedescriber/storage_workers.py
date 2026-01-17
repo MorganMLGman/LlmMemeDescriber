@@ -73,18 +73,6 @@ class StorageWorkerPool:
     async def async_list_files(self, *args, **kwargs):
         return await self.async_run(self._storage.list_files, *args, **kwargs)
 
-    def load_listing(self, *args, **kwargs):
-        return self.run(self._storage.load_listing, *args, **kwargs)
-
-    async def async_load_listing(self, *args, **kwargs):
-        return await self.async_run(self._storage.load_listing, *args, **kwargs)
-
-    def write_listing(self, *args, **kwargs):
-        return self.run(self._storage.write_listing, *args, **kwargs)
-
-    async def async_write_listing(self, *args, **kwargs):
-        return await self.async_run(self._storage.write_listing, *args, **kwargs)
-
     def download_file(self, *args, timeout: Optional[float] = None, **kwargs):
         return self.run(self._storage.download_file, *args, timeout=timeout, **kwargs)
 

@@ -90,21 +90,6 @@ class App:
         self._sync_lock = threading.Lock()
         self._sync_in_progress: bool = False
 
-        try:
-            self.export_on_shutdown: bool = bool(getattr(settings, 'export_listing_on_shutdown', True))
-            ei = getattr(settings, 'export_listing_interval', None)
-            self.export_interval_seconds: Optional[int] = None
-            if ei:
-                try:
-                    self.export_interval_seconds = parse_interval(str(ei))
-                except Exception:
-                    self.export_interval_seconds = None
-            self._last_export_at: float = 0.0
-        except Exception:
-            self.export_on_shutdown = True
-            self.export_interval_seconds = None
-            self._last_export_at = 0.0
-
     def start(self):
         """Start the worker thread (non-blocking)."""
         if self.worker_thread and self.worker_thread.is_alive():
@@ -134,12 +119,6 @@ class App:
             self.worker_thread.join(timeout=10)
             if self.worker_thread.is_alive():
                 logger.warning("Worker thread did not exit within timeout; it may still be processing ongoing operations")
-        try:
-            if self.storage:
-                logger.info("Exporting listing.json on graceful shutdown")
-                self.export_listing_to_webdav()
-        except Exception:
-            logger.exception("Failed to export listing during shutdown")
 
     def _worker(self):
         logger.info("Worker started")
@@ -149,65 +128,11 @@ class App:
                 logger.debug("Sync: added=%d, removed=%d, unfilled=%d", summary['added'], summary['removed'], summary['unfilled'])
                 if summary.get('saved') or summary.get('failed'):
                     logger.info("Generated: saved=%d, failed=%d, unsupported=%d", summary.get('saved'), summary.get('failed'), summary.get('unsupported'))
-                
-                if self.export_interval_seconds:
-                    now = time.time()
-                    if (now - self._last_export_at) >= self.export_interval_seconds:
-                        self.export_listing_to_webdav()
-                        self._last_export_at = now
             except Exception:
                 logger.exception("Worker error")
             if self.stop_event.wait(self.interval_seconds):
                 break
 
-    def export_listing_to_webdav(self) -> bool:
-        """Export current DB contents into a listing.json on WebDAV.
-
-        Returns True on success, False otherwise.
-        """
-        try:
-            mapping: Dict[str, Dict] = {}
-            with session_scope(self.engine) as session:
-                
-                rows = session.exec(select(Meme).where(Meme.status != 'removed')).all()
-                for m in rows:
-                    key = m.filename
-                    if m.description or m.category or m.keywords or m.text_in_image:
-                        obj: Dict[str, Any] = {}
-                        if m.category:
-                            obj['kategoria'] = m.category
-                        if m.description:
-                            obj['opis'] = m.description
-                        if m.keywords:
-                            obj['keywordy'] = m.keywords
-                        if m.text_in_image:
-                            obj['tekst'] = m.text_in_image
-                        try:
-                            if getattr(m, 'phash', None):
-                                obj['phash'] = m.phash
-                        except Exception:
-                            pass
-                        try:
-                            if getattr(m, 'created_at', None):
-                                obj['created_at'] = m.created_at.isoformat()
-                        except Exception:
-                            pass
-                        mapping[key] = obj
-                    else:
-                        entry: Dict[str, Any] = {}
-                        try:
-                            if getattr(m, 'phash', None):
-                                entry['phash'] = m.phash
-                        except Exception:
-                            pass
-                        mapping[key] = entry
-            
-            self.storage.write_listing('.', mapping, json_filename='listing.json')
-            logger.info("Exported listing.json with %s entries", len(mapping))
-            return True
-        except Exception:
-            logger.exception("Failed to export listing to WebDAV")
-            return False
 
     def _db_operation_with_retry(self, operation, max_retries: int = MAX_DB_RETRY_ATTEMPTS, initial_backoff: float = INITIAL_DB_BACKOFF) -> bool:
         """Execute a DB operation with exponential backoff retry for SQLite locked errors.
@@ -241,13 +166,20 @@ class App:
         return False
 
     def _process_single_meme(self, name: str) -> Dict[str, Any]:
-        """Process a single meme: generate description and save to DB only (not WebDAV listing).
-        
-        WebDAV listing is written once at end of sync_and_process_impl to avoid concurrent writes.
-        Returns dict with 'saved', 'unsupported', or 'failed' keys, and 'desc' with description.
+        """Process a single meme: generate description and save to DB only.
+        Returns dict with 'saved', 'unsupported', 'rate_limited', or 'failed' keys, and 'desc' with description.
         """
+        if not is_supported(name):
+            logger.debug("Skipping %s: file type not supported", name)
+            return {'unsupported': True}
+        
         try:
             desc = self.generate_description(name)
+            
+            if desc.get('rate_limited'):
+                logger.warning("Rate limited while processing %s", name)
+                return {'rate_limited': True}
+            
             if desc:
                 
                 def save_to_db():
@@ -345,6 +277,7 @@ class App:
             logger.error("GenAI request failed for %s: %s", filename, exc)
             
             is_unsupported = 'Unsupported MIME type' in error_info
+            is_rate_limited = '429' in error_info or 'rate limit' in error_info.lower()
             
             try:
                 with session_scope(self.engine) as session:
@@ -360,6 +293,9 @@ class App:
                         session.commit()
             except Exception:
                 pass
+            
+            if is_rate_limited:
+                return {'rate_limited': True, 'error': 'Rate limit exceeded'}
             return {}
 
         
@@ -418,11 +354,10 @@ class App:
     def _sync_and_process_impl(self) -> Dict[str, int]:
         """Implementation of sync and process (called with lock held)."""
         
-        existing = self.storage.load_listing('/', json_filename='listing.json')
-        existing.pop('listing.json', None)
+        existing = {}  # Start with empty dict, only use DB from now on
 
         entries = self.storage.list_files('/', recursive=False)
-        server_names = {e['name'] for e in entries if not e['is_dir'] and e['name'] != 'listing.json'}
+        server_names = {e['name'] for e in entries if not e['is_dir'] and is_supported(e['name'])}
         server_names_to_process = server_names
 
         existing_basename_map = {k: str(k).rstrip('/').split('/')[-1] for k in existing.keys()}
@@ -441,7 +376,7 @@ class App:
 
         updated_path = None
         if changed:
-            updated_path = self.storage.write_listing('/', existing, json_filename='listing.json')
+            updated_path = None
 
         logger.debug("Sync summary: server_count=%d, listing_count=%d, to_add=%d, to_remove=%d, changed=%s, max_sync_records=%s",
                      len(server_names), len(existing), len(to_add), len(to_remove), changed, getattr(self.settings, 'sync_max_records', None))
@@ -460,8 +395,8 @@ class App:
                 else:
                     unfilled = []
         except Exception:
-            logger.exception("Failed to check DB status for unfilled detection; using listing.json only")
-            unfilled = [k for k, v in existing.items() if not v]
+            logger.exception("Failed to check DB status for unfilled detection")
+            unfilled = []
 
         with self._needs_description_lock:
             self.needs_description = unfilled
@@ -528,6 +463,7 @@ class App:
         saved_count = 0
         failed_count = 0
         unsupported_count = 0
+        rate_limited = False
         processed_descriptions = {}
 
         batch_size = BATCH_PROCESS_WORKERS
@@ -564,7 +500,12 @@ class App:
                 name = futures[future]
                 try:
                     result = future.result()
-                    if result.get('saved'):
+                    if result.get('rate_limited'):
+                        logger.warning("Rate limit exceeded; pausing batch processing. Will retry on next sync cycle.")
+                        rate_limited = True
+                        failed_count += 1
+                        break
+                    elif result.get('saved'):
                         saved_count += 1
                         if result.get('desc') and result.get('name'):
                             processed_descriptions[result['name']] = result['desc']
@@ -575,20 +516,9 @@ class App:
                 except Exception as exc:
                     logger.exception("Exception in batch processing for %s: %s", name, exc)
                     failed_count += 1
-        
-        if processed_descriptions:
-            try:
-                mapping = self.storage.load_listing('/', json_filename='listing.json')
-                mapping.update(processed_descriptions)
-                self.storage.write_listing('/', mapping, json_filename='listing.json')
-                logger.debug("Wrote %d descriptions to listing.json", len(processed_descriptions))
-            except Exception as exc:
-                logger.exception("Failed to write descriptions to listing.json: %s", exc)
 
         if to_add:
             logger.info("Scheduling phash calculation for %d newly added memes", len(to_add))
-            # Note: Phashes will be calculated on-demand via /memes/deduplication/analyze API endpoint
-            # Cannot use asyncio.run() here as we're already in a running event loop during shutdown
 
         try:
             with session_scope(self.engine) as session:
@@ -636,130 +566,13 @@ class App:
             'unsupported': unsupported_count,
             'unfilled': len(unfilled),
             'updated': bool(updated_path),
+            'rate_limited': rate_limited,
         }
         
         if result['added'] > 0:
             logger.info("Sync job completed: %d memes added", result['added'])
         
         return result
-
-    def import_listing_into_db(self) -> Dict[str, int]:
-        """Import listing.json from WebDAV into DB."""
-        try:
-            mapping = self.storage.load_listing('/', json_filename='listing.json')
-            mapping.pop('listing.json', None)
-        except Exception as exc:
-            logger.warning("Failed to load listing.json: %s", exc)
-            return {"created": 0, "updated": 0, "skipped": 0}
-
-        created = 0
-        updated = 0
-        try:
-            try:
-                entries = self.storage.list_files('/', recursive=False)
-                entry_map = {e['name']: e for e in entries if not e.get('is_dir')}
-            except Exception:
-                entry_map = {}
-
-            with session_scope(self.engine) as session:
-                names = list(mapping.keys())
-                existing_mems = {}
-                if names:
-                    rows = session.exec(select(Meme).where(Meme.filename.in_(names))).all()
-                    existing_mems = {r.filename: r for r in rows}
-
-                for name, value in mapping.items():
-                    m = existing_mems.get(name)
-                    if m:
-                        if value and not m.description:
-                            m.category = value.get('kategoria')
-                            m.description = value.get('opis')
-                            kw = value.get('keywordy')
-                            if isinstance(kw, list):
-                                m.keywords = ','.join(kw)
-                            elif isinstance(kw, str):
-                                m.keywords = kw
-                            m.text_in_image = value.get('tekst')
-                            m.status = 'filled'
-                            updated += 1
-                    else:
-                        source_url = self.settings.webdav_url.rstrip('/') + '/' + self.settings.webdav_path.lstrip('/') + '/' + name
-                        m = Meme(filename=name, source_url=source_url, status='filled' if value else 'pending')
-
-                        created_dt = None
-                        try:
-                            if value:
-                                created_str = value.get('created_at')
-                                if created_str:
-                                    try:
-                                        created_dt = datetime.datetime.fromisoformat(created_str)
-                                    except Exception:
-                                        try:
-                                            created_dt = email.utils.parsedate_to_datetime(created_str)
-                                        except Exception:
-                                            created_dt = None
-
-                            if not created_dt:
-                                entry = entry_map.get(name)
-                                if entry:
-                                        date_str = entry.get('getlastmodified') or entry.get('modified') or entry.get('creationdate') or entry.get('getcreationdate')
-                                        if date_str:
-                                            if isinstance(date_str, datetime.datetime):
-                                                created_dt = date_str
-                                            else:
-                                                try:
-                                                    created_dt = email.utils.parsedate_to_datetime(date_str)
-                                                except Exception:
-                                                    try:
-                                                        created_dt = datetime.datetime.fromisoformat(date_str)
-                                                    except Exception:
-                                                        created_dt = None
-                        except Exception:
-                            created_dt = None
-
-                        if created_dt:
-                            m.created_at = created_dt
-                        else:
-                            m.created_at = datetime.datetime.now(datetime.timezone.utc)
-
-                        if value:
-                            m.category = value.get('kategoria')
-                            m.description = value.get('opis')
-                            kw = value.get('keywordy')
-                            if isinstance(kw, list):
-                                m.keywords = ','.join(kw)
-                            elif isinstance(kw, str):
-                                m.keywords = kw
-                            m.text_in_image = value.get('tekst')
-                        
-                        try:
-                            ph = None
-                            if value:
-                                ph = value.get('phash')
-                            if ph:
-                                m.phash = ph
-                            else:
-                                try:
-                                    file_bytes = None
-                                    try:
-                                        file_bytes = self.storage.download_file(name)
-                                    except Exception as e:
-                                        logger.debug("Could not download %s to compute phash: %s", name, e)
-                                        file_bytes = None
-                                    if file_bytes:
-                                        computed = calculate_phash(file_bytes)
-                                        if computed:
-                                            m.phash = computed
-                                except Exception as e:
-                                    logger.debug("Failed to compute phash for %s during import: %s", name, e)
-                        except Exception:
-                            pass
-                        session.add(m)
-                        created += 1
-                session.commit()
-        except Exception:
-            logger.exception("Failed to import listing into DB")
-        return {"created": created, "updated": updated, "skipped": 0}
 
     @staticmethod
     def _detect_media(filename: str) -> Tuple[str, types.MediaResolution]:

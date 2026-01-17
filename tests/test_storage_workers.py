@@ -114,31 +114,6 @@ def test_async_run_timeout():
     pool.shutdown()
 
 
-def test_list_and_listing_forwarding():
-    class L:
-        def list_files(self, *a, **k):
-            return ['a', 'b']
-
-        def load_listing(self, *a, **k):
-            return {'x': 1}
-
-        def write_listing(self, *a, **k):
-            return True
-
-    storage = L()
-    pool = StorageWorkerPool(storage_adapter=storage)
-
-    assert pool.list_files() == ['a', 'b']
-    assert pool.load_listing() == {'x': 1}
-    assert pool.write_listing({}) is True
-
-    assert asyncio.run(pool.async_list_files()) == ['a', 'b']
-    assert asyncio.run(pool.async_load_listing()) == {'x': 1}
-    assert asyncio.run(pool.async_write_listing({})) is True
-
-    pool.shutdown()
-
-
 def test_upload_delete_extract_forwarding():
     class U:
         def __init__(self):

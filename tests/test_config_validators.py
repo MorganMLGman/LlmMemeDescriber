@@ -25,18 +25,6 @@ def test_max_generation_attempts_string_is_int():
     assert s.max_generation_attempts == 5
 
 
-def test_export_listing_interval_invalid_rejected():
-    with pytest.raises(ValidationError):
-        Settings(export_listing_interval="5d")
-
-
-def test_export_listing_interval_rejects_empty_and_none():
-    with pytest.raises(ValidationError):
-        Settings(export_listing_interval="")
-    with pytest.raises(ValidationError):
-        Settings(export_listing_interval=None)
-
-
 def test_webdav_secrets_prefer_secret_over_env(monkeypatch):
     secret_path = "/run/secrets/webdav_password"
     monkeypatch.setattr(os.path, "isfile", lambda p: os.path.normpath(p) == os.path.normpath(secret_path))
@@ -89,12 +77,6 @@ def test_run_interval_rejects_none():
 def test_run_interval_parses_valid_string():
     s = Settings(run_interval="10m")
     assert s.run_interval == "10m"
-
-
-def test_export_listing_interval_rejects_whitespace():
-    with pytest.raises(ValidationError):
-        Settings(export_listing_interval="   ")
-
 
 
 def test_secret_read_unicode_error_fallback(monkeypatch):

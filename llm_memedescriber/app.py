@@ -100,8 +100,17 @@ async def lifespan(app_instance: FastAPI):
                 session.commit()
                 logger.info(f"Cleaned up {len(removed_memes)} removed memes from database")
                 cleanup_orphaned_cache(set(session.exec(select(Meme.filename)).all()) if session.exec(select(Meme)).first() else set())
+            
+            # Remove unsupported file types from database (e.g., listing.json from previous versions)
+            all_memes = session.exec(select(Meme)).all()
+            unsupported_memes = [m for m in all_memes if not is_supported(m.filename)]
+            if unsupported_memes:
+                for meme in unsupported_memes:
+                    session.delete(meme)
+                session.commit()
+                logger.info(f"Cleaned up {len(unsupported_memes)} unsupported files from database: {[m.filename for m in unsupported_memes]}")
     except Exception:
-        logger.exception("Failed to clean up removed memes from database")
+        logger.exception("Failed to clean up removed/unsupported memes from database")
     storage = None
     if getattr(settings, 'webdav_url', None):
         base_url = settings.webdav_url.rstrip('/') + '/' + settings.webdav_path.lstrip('/')
@@ -131,36 +140,7 @@ async def lifespan(app_instance: FastAPI):
     app_instance.state.app_instance = App(settings=settings, storage=storage, genai_client=genai_client, engine=app_instance.state.engine, interval_seconds=interval)
     app_instance.state._started = True
 
-    try:
-        if getattr(settings, 'backfill_from_listing_on_empty_db', True) and storage is not None:
-            with session_scope(app_instance.state.engine) as session:
-                exists = session.exec(select(Meme)).first() is not None
-            if not exists:
-                logger.info("DB appears empty; checking for listing.json on WebDAV to optionally backfill")
-                try:
-                    entries = await getattr(storage, 'async_list_files', storage.list_files)('/', recursive=False)
-                    has_listing = any(
-                        (not (e.get('is_dir') or False)) and (e.get('name') == 'listing.json' or str(e.get('path', '')).rstrip('/').endswith('/listing.json'))
-                        for e in entries
-                    )
-                except Exception:
-                    has_listing = False
-                if not has_listing:
-                    logger.info("No listing.json found on WebDAV; starting with empty database")
-                else:
-                    try:
-                        result = app_instance.state.app_instance.import_listing_into_db()
-                        created = result.get('created', 0)
-                        updated = result.get('updated', 0)
-                        skipped = result.get('skipped', 0)
-                        if created == 0 and updated == 0:
-                            logger.info("listing.json found but contained no entries; starting with empty database")
-                        else:
-                            logger.info("Backfill completed: created=%s, updated=%s, skipped=%s", created, updated, skipped)
-                    except Exception:
-                        logger.exception("Backfill from listing.json failed")
-    except Exception:
-        logger.exception("Error checking DB emptiness or performing backfill")
+    # No longer using listing.json for backfill; relying entirely on database
 
     if getattr(settings, 'auto_start_worker', False):
         logger.info("auto_start_worker enabled")
@@ -188,7 +168,8 @@ async def lifespan(app_instance: FastAPI):
                 filenames = []
             with session_scope(app_instance.state.engine) as session:
                 rows = session.exec(select(Meme).where(Meme.phash == None)).all()
-                filenames = [r.filename for r in rows]
+                # Only process supported file types; skip unsupported files like listing.json
+                filenames = [r.filename for r in rows if is_supported(r.filename)]
 
             if filenames:
                 successful = 0
@@ -230,6 +211,9 @@ async def lifespan(app_instance: FastAPI):
                 with session_scope(app_instance.state.engine) as session:
                     rows = session.exec(select(Meme)).all()
                     for r in rows:
+                        # Skip unsupported file types like listing.json
+                        if not is_supported(r.filename):
+                            continue
                         cache_path = _get_cache_path(r.filename)
                         if not os.path.isfile(cache_path):
                             to_generate.append((r.filename, r.filename.lower().rsplit('.', 1)[-1] if '.' in r.filename else ''))
@@ -294,13 +278,6 @@ async def lifespan(app_instance: FastAPI):
     try:
         if getattr(app_instance.state, 'app_instance', None):
             app_inst = app_instance.state.app_instance
-            if app_inst.storage:
-                try:
-                    logger.info("Exporting listing.json on shutdown")
-                    app_inst.export_listing_to_webdav()
-                    logger.info("Listing export completed on shutdown")
-                except Exception:
-                    logger.exception("Failed to export listing on shutdown")
             try:
                 logger.info("Stopping app worker")
                 app_inst.stop()
@@ -585,6 +562,12 @@ def duplicates_page(request: Request, settings: Settings = Depends(get_settings)
     if not settings.public_mode and not user_info:
         return RedirectResponse(url="/login", status_code=302)
     return templates.TemplateResponse("duplicates.html", {"request": request})
+
+
+@app.get("/pending", response_class=HTMLResponse, tags=["ui"])
+def pending_page(request: Request):
+    """Serve the pending memes UI page."""
+    return templates.TemplateResponse("pending.html", {"request": request})
 
 
 @app.get("/memes/{filename}/download", tags=["memes"])
@@ -916,6 +899,96 @@ def get_meme_detail(filename: str, user_info: Dict = Depends(require_auth)):
         return meme_dict
 
 
+@app.post("/memes/{filename}/force-description", tags=["memes"])
+def force_description_generation(filename: str):
+    """Force generation of description for a meme, bypassing attempt limits.
+    
+    Resets attempts counter and triggers immediate generation.
+    """
+    try:
+        filename = sanitize_filename(filename)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    if not hasattr(app.state, 'app_instance') or app.state.app_instance is None:
+        raise HTTPException(status_code=503, detail="Application not fully initialized")
+    
+    try:
+        with session_scope(app.state.engine) as session:
+            m = get_meme_by_filename(session, filename)
+            if not m:
+                raise HTTPException(status_code=404, detail="Meme not found")
+            
+            m.attempts = 0
+            m.last_error = None
+            m.status = 'pending'
+            m.updated_at = datetime.datetime.now(datetime.timezone.utc)
+            session.add(m)
+            session.commit()
+            logger.info("Reset attempts for %s; forcing description generation", filename)
+        
+        result = app.state.app_instance.generate_description(filename)
+        
+        if result.get('rate_limited'):
+            with session_scope(app.state.engine) as session:
+                m = get_meme_by_filename(session, filename)
+                if m:
+                    m.attempts = (m.attempts or 0) + 1
+                    m.last_error = "rate_limited"
+                    m.updated_at = datetime.datetime.now(datetime.timezone.utc)
+                    session.add(m)
+                    session.commit()
+            
+            raise HTTPException(status_code=429, detail="Rate limit exceeded; will retry on next sync cycle")
+        
+        if result and not result.get('rate_limited'):
+            try:
+                with session_scope(app.state.engine) as session:
+                    m = get_meme_by_filename(session, filename)
+                    if m:
+                        m.category = result.get('kategoria') or m.category
+                        m.description = result.get('opis') or m.description
+                        kw = result.get('keywordy')
+                        if isinstance(kw, list):
+                            m.keywords = ','.join(kw)
+                        elif isinstance(kw, str):
+                            m.keywords = kw
+                        m.text_in_image = result.get('tekst') or m.text_in_image
+                        m.status = 'filled'
+                        m.updated_at = datetime.datetime.now(datetime.timezone.utc)
+                        session.add(m)
+                        session.commit()
+                        session.refresh(m)
+                        logger.info("Saved forced description for %s", filename)
+                        
+                        try:
+                            add_meme_to_index(m)
+                        except Exception:
+                            logger.exception("Failed to update search index for %s", filename)
+                        
+                        meme_dict = m.model_dump()
+                        meme_dict['processed'] = m.status == 'filled'
+                        return meme_dict
+            except Exception as e:
+                logger.exception("Failed to save forced description for %s: %s", filename, e)
+                raise HTTPException(status_code=500, detail=f"Failed to save description: {str(e)}")
+        
+        with session_scope(app.state.engine) as session:
+            m = get_meme_by_filename(session, filename)
+            if m:
+                meme_dict = m.model_dump()
+                meme_dict['processed'] = m.status == 'filled'
+                meme_dict['force_generation_attempted'] = True
+                return meme_dict
+        
+        raise HTTPException(status_code=500, detail="Failed to generate description")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error during forced description generation for %s: %s", filename, e)
+        raise HTTPException(status_code=500, detail=f"Force generation failed: {str(e)}")
+
+
 @app.patch("/memes/{filename}", tags=["memes"])
 def update_meme(filename: str, request: UpdateMemeRequest, user_info: Dict = Depends(require_auth)):
     """Update meme metadata (category, keywords, description). REQUIRES AUTHENTICATION and CSRF token. Only provided fields are updated."""
@@ -1045,6 +1118,9 @@ def get_stats_endpoint(user_info: Dict = Depends(require_auth)):
     try:
         with session_scope(app.state.engine) as session:
             stats = get_stats(session)
+            # Add max generation attempts from settings
+            settings = load_settings()
+            stats['max_generation_attempts'] = getattr(settings, 'max_generation_attempts', 3)
             return stats
     except Exception:
         logger.exception("Failed to get stats")
@@ -1069,6 +1145,7 @@ def get_prompt(user_info: Dict = Depends(require_auth)):
         raise HTTPException(status_code=500, detail="Failed to load prompt")
 
 @app.post("/api/prompt", tags=["config"])
+@limiter.limit("10/minute")
 def save_prompt(request_body: dict, user_info: Dict = Depends(require_auth)):
     """Save custom prompt to /data/prompt.txt. REQUIRES AUTHENTICATION and CSRF token."""
     if not request_body.get("prompt"):
@@ -1083,6 +1160,17 @@ def save_prompt(request_body: dict, user_info: Dict = Depends(require_auth)):
     except Exception as exc:
         logger.exception("Failed to save prompt: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to save prompt")
+
+@app.get("/api/pending-memes", tags=["api"])
+def get_pending_memes(user_info: Dict = Depends(require_auth)):
+    """Get all memes with 'pending' status waiting for description generation."""
+    try:
+        with session_scope(app.state.engine) as session:
+            memes = session.exec(select(Meme).where(Meme.status == 'pending')).all()
+            return [m.model_dump() for m in memes]
+    except Exception as e:
+        logger.exception("Failed to get pending memes")
+        raise HTTPException(status_code=500, detail=f"Failed to get pending memes: {str(e)}")
 
 @app.get("/memes/{filename}/duplicates", tags=["deduplication"])
 def get_meme_duplicates(filename: str, user_info: Dict = Depends(require_auth)):
