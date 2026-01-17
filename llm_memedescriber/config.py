@@ -14,20 +14,17 @@ logger = logging.getLogger(__name__)
 class Settings(BaseSettings):
     logging_level: str = "INFO"
     google_genai_api_key: str | None = None
-    google_genai_model: str = "gemini-2.5-flash"
+    google_genai_model: str = "gemini-3-flash-preview"
     webdav_url: str | None = None
     webdav_username: str | None = None
     webdav_password: str | None = None
     webdav_path: str | None = None
     run_interval: str = "15min"
     timezone: str = "UTC"
-    export_listing_on_shutdown: bool = True
-    export_listing_interval: str = "24h"
     max_generation_attempts: int = 3
     auto_start_worker: bool = True
-    backfill_from_listing_on_empty_db: bool = True
 
-    @field_validator("run_interval", "export_listing_interval")
+    @field_validator("run_interval")
     @classmethod
     def validate_intervals(cls, v, info):
         if v is None or (isinstance(v, str) and v.strip() == ""):

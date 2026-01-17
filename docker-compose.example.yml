@@ -42,28 +42,20 @@ services:
       
       # === Google Generative AI Configuration ===
       # Model to use for analysis
-      # Default: gemini-2.5-flash
-      GOOGLE_GENAI_MODEL: "gemini-2.5-flash"
+      # Default: gemini-3-flash-preview
+      GOOGLE_GENAI_MODEL: "gemini-3-flash-preview"
       
       # === Processing Configuration ===
       # Interval between sync/processing runs (e.g., 15min, 1h, 30s)
+      # The service scans WebDAV for new/removed files and generates descriptions at this interval
       # Default: 15min
       RUN_INTERVAL: "15min"
-      # Interval for exporting listing (e.g., 24h, 12h)
-      # Default: 24h
-      EXPORT_LISTING_INTERVAL: "24h"
       # Maximum attempts to generate description for a meme
       # Default: 3
       MAX_GENERATION_ATTEMPTS: "3"
-      # Enable automatic background worker
+      # Enable automatic background worker (recommended: true)
       # Default: true
       AUTO_START_WORKER: "true"
-      # Backfill database from listing file on startup if DB is empty
-      # Default: true
-      BACKFILL_FROM_LISTING_ON_EMPTY_DB: "true"
-      # Export listing on shutdown
-      # Default: true
-      EXPORT_LISTING_ON_SHUTDOWN: "true"
       
       # === Advanced Configuration ===
       # Number of concurrent storage workers

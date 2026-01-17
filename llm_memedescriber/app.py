@@ -69,8 +69,17 @@ async def lifespan(app_instance: FastAPI):
                 logger.info(f"Cleaned up {len(removed_memes)} removed memes from database")
                 # Clean up cache entries for removed memes
                 cleanup_orphaned_cache(set(session.exec(select(Meme.filename)).all()) if session.exec(select(Meme)).first() else set())
+            
+            # Remove unsupported file types from database (e.g., listing.json from previous versions)
+            all_memes = session.exec(select(Meme)).all()
+            unsupported_memes = [m for m in all_memes if not is_supported(m.filename)]
+            if unsupported_memes:
+                for meme in unsupported_memes:
+                    session.delete(meme)
+                session.commit()
+                logger.info(f"Cleaned up {len(unsupported_memes)} unsupported files from database: {[m.filename for m in unsupported_memes]}")
     except Exception:
-        logger.exception("Failed to clean up removed memes from database")
+        logger.exception("Failed to clean up removed/unsupported memes from database")
     storage = None
     if getattr(settings, 'webdav_url', None):
         base_url = settings.webdav_url.rstrip('/') + '/' + settings.webdav_path.lstrip('/')
@@ -100,36 +109,7 @@ async def lifespan(app_instance: FastAPI):
     app_instance.state.app_instance = App(settings=settings, storage=storage, genai_client=genai_client, engine=app_instance.state.engine, interval_seconds=interval)
     app_instance.state._started = True
 
-    try:
-        if getattr(settings, 'backfill_from_listing_on_empty_db', True) and storage is not None:
-            with session_scope(app_instance.state.engine) as session:
-                exists = session.exec(select(Meme)).first() is not None
-            if not exists:
-                logger.info("DB appears empty; checking for listing.json on WebDAV to optionally backfill")
-                try:
-                    entries = await getattr(storage, 'async_list_files', storage.list_files)('/', recursive=False)
-                    has_listing = any(
-                        (not (e.get('is_dir') or False)) and (e.get('name') == 'listing.json' or str(e.get('path', '')).rstrip('/').endswith('/listing.json'))
-                        for e in entries
-                    )
-                except Exception:
-                    has_listing = False
-                if not has_listing:
-                    logger.info("No listing.json found on WebDAV; starting with empty database")
-                else:
-                    try:
-                        result = app_instance.state.app_instance.import_listing_into_db()
-                        created = result.get('created', 0)
-                        updated = result.get('updated', 0)
-                        skipped = result.get('skipped', 0)
-                        if created == 0 and updated == 0:
-                            logger.info("listing.json found but contained no entries; starting with empty database")
-                        else:
-                            logger.info("Backfill completed: created=%s, updated=%s, skipped=%s", created, updated, skipped)
-                    except Exception:
-                        logger.exception("Backfill from listing.json failed")
-    except Exception:
-        logger.exception("Error checking DB emptiness or performing backfill")
+    # No longer using listing.json for backfill; relying entirely on database
 
     if getattr(settings, 'auto_start_worker', False):
         logger.info("auto_start_worker enabled")
@@ -157,7 +137,8 @@ async def lifespan(app_instance: FastAPI):
                 filenames = []
             with session_scope(app_instance.state.engine) as session:
                 rows = session.exec(select(Meme).where(Meme.phash == None)).all()
-                filenames = [r.filename for r in rows]
+                # Only process supported file types; skip unsupported files like listing.json
+                filenames = [r.filename for r in rows if is_supported(r.filename)]
 
             if filenames:
                 successful = 0
@@ -199,6 +180,9 @@ async def lifespan(app_instance: FastAPI):
                 with session_scope(app_instance.state.engine) as session:
                     rows = session.exec(select(Meme)).all()
                     for r in rows:
+                        # Skip unsupported file types like listing.json
+                        if not is_supported(r.filename):
+                            continue
                         cache_path = _get_cache_path(r.filename)
                         if not os.path.isfile(cache_path):
                             to_generate.append((r.filename, r.filename.lower().rsplit('.', 1)[-1] if '.' in r.filename else ''))
@@ -258,13 +242,6 @@ async def lifespan(app_instance: FastAPI):
     try:
         if getattr(app_instance.state, 'app_instance', None):
             app_inst = app_instance.state.app_instance
-            if app_inst.storage:
-                try:
-                    logger.info("Exporting listing.json on shutdown")
-                    app_inst.export_listing_to_webdav()
-                    logger.info("Listing export completed on shutdown")
-                except Exception:
-                    logger.exception("Failed to export listing on shutdown")
             try:
                 logger.info("Stopping app worker")
                 app_inst.stop()
