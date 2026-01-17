@@ -125,13 +125,21 @@ function showLogoutButton() {
     fetch('/api/csrf-token')
         .then(response => {
             const logoutBtn = document.getElementById('logoutBtn');
+            const tokensBtn = document.getElementById('tokensBtn');
+            const isAuthenticated = response.status !== 401;
+            
             if (logoutBtn) {
-                logoutBtn.style.display = response.status === 401 ? 'none' : 'inline-block';
+                logoutBtn.style.display = isAuthenticated ? 'inline-block' : 'none';
+            }
+            if (tokensBtn) {
+                tokensBtn.style.display = isAuthenticated ? 'inline-block' : 'none';
             }
         })
         .catch(() => {
             const logoutBtn = document.getElementById('logoutBtn');
+            const tokensBtn = document.getElementById('tokensBtn');
             if (logoutBtn) logoutBtn.style.display = 'none';
+            if (tokensBtn) tokensBtn.style.display = 'none';
         });
 }
 

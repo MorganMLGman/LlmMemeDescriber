@@ -3,8 +3,9 @@ import logging
 import sys
 import os
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from typing import Optional
 
-from pydantic import field_validator, ValidationError, ConfigDict
+from pydantic import field_validator, model_validator, ValidationError, ConfigDict
 from pydantic_settings import BaseSettings
 import logging
 
@@ -48,7 +49,6 @@ class Settings(BaseSettings):
     oidc_verify_ssl: bool = True  # Verify OIDC provider SSL certificate (default: True)
     oidc_ca_bundle_path: str | None = None  # Path to CA bundle for OIDC provider verification (optional)
     
-    # JWT settings for API tokens
     jwt_secret: str | None = None
     jwt_expiry_days: int = 30
     session_expiry_seconds: int = 86400
@@ -82,15 +82,13 @@ class Settings(BaseSettings):
             raise ValueError("jwt_expiry_days must be <= 365")
         return int(v)
 
-    @field_validator("public_mode", mode="before")
-    @classmethod
-    def validate_auth_modes(cls, v, info):
+    @model_validator(mode="after")
+    def validate_auth_modes(self):
         """Ensure exactly one authentication mode is enabled."""
-        data = info.data
         modes_enabled = sum([
-            v if isinstance(v, bool) else v.lower() == 'true' if isinstance(v, str) else False,  # public_mode
-            data.get('oidc_enabled', False),
-            data.get('basic_auth', False)
+            self.public_mode,
+            self.oidc_enabled,
+            self.basic_auth
         ])
         
         if modes_enabled == 0:
@@ -99,7 +97,7 @@ class Settings(BaseSettings):
         if modes_enabled > 1:
             raise ValueError("Only one authentication mode can be enabled: public_mode, oidc_enabled, or basic_auth")
         
-        return v
+        return self
 
     @field_validator("oidc_enabled", mode="before")
     @classmethod
@@ -186,9 +184,18 @@ class Settings(BaseSettings):
         return v
 
 
+_settings_cache: Optional[Settings] = None
+
 def load_settings() -> Settings:
+    """Load settings from environment. Settings are cached after first load to avoid repeated initialization logging."""
+    global _settings_cache
+    
+    if _settings_cache is not None:
+        return _settings_cache
+    
     try:
         settings = Settings()
+        _settings_cache = settings
         return settings
     except ValidationError as e:
         logger.error("Configuration error:")

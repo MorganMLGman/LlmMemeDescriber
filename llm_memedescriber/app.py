@@ -577,6 +577,14 @@ def pending_page(request: Request):
     return templates.TemplateResponse("pending.html", {"request": request})
 
 
+@app.get("/tokens", response_class=HTMLResponse, tags=["ui"])
+def tokens_page(request: Request, user_info: Optional[Dict] = Depends(optional_auth)):
+    """Serve the API tokens management page. Requires authentication."""
+    if not user_info:
+        return RedirectResponse(url="/login", status_code=302)
+    return templates.TemplateResponse("tokens.html", {"request": request})
+
+
 @app.get("/memes/{filename}/download", tags=["memes"])
 async def download_meme(filename: str, user_info: Dict = Depends(require_auth)):
     """Download raw meme bytes from WebDAV proxy. REQUIRES AUTHENTICATION."""
@@ -1548,7 +1556,7 @@ def get_auth_context() -> OIDCAuthContext:
 def get_user_from_request(request: Request) -> Optional[Dict[str, Any]]:
     """Extract user info from session cookie or bearer token.
     
-    For bearer tokens, also verifies the token has not been revoked.
+    For bearer tokens, also verifies the token has not been revoked and has not expired.
     """
     from fastapi import Depends as FastAPIDependsClass
     
@@ -1569,10 +1577,10 @@ def get_user_from_request(request: Request) -> Optional[Dict[str, Any]]:
             # First verify JWT signature/expiration
             payload = auth_context.jwt_manager.verify_token(token)
             if payload:
-                # Then verify token is not revoked in database
-                # For now, return user info if JWT is valid
-                # Revocation check is done in the require_auth dependency
-                return {'sub': payload.get('sub')}
+                # Then verify token is not revoked and not expired in database
+                user_info = verify_api_token_not_revoked(token, request.app.state.engine)
+                if user_info:
+                    return user_info
     
     return None
 
@@ -1717,6 +1725,7 @@ def get_csrf_token(request: Request) -> Dict[str, str]:
 class TokenGenerateRequest(BaseModel):
     """Request to generate a new API token."""
     name: str  # User-friendly name for the token
+    expires_at: Optional[str] = None  # ISO format datetime string (optional)
 
 
 @app.post("/api/tokens", tags=["auth"], response_model=TokenResponse)
@@ -1739,13 +1748,23 @@ def generate_api_token(request_body: TokenGenerateRequest, request: Request):
     token = auth_context.jwt_manager.create_token(user_id, token_jti)
     token_hash = hash_token(token)
     
+    # Parse expiration date if provided
+    expires_at = None
+    if request_body.expires_at:
+        try:
+            expires_at = datetime.datetime.fromisoformat(request_body.expires_at.replace('Z', '+00:00'))
+        except (ValueError, AttributeError) as e:
+            logger.warning(f"Invalid expiration date format: {request_body.expires_at}")
+            raise HTTPException(status_code=400, detail=f"Invalid expiration date format: {str(e)}")
+    
     try:
         with session_scope(app.state.engine) as session:
             user_token = UserToken(
                 user_id=user_id,
                 name=request_body.name,
                 token_hash=token_hash,
-                created_at=datetime.datetime.now(datetime.timezone.utc)
+                created_at=datetime.datetime.now(datetime.timezone.utc),
+                expires_at=expires_at
             )
             session.add(user_token)
             session.commit()

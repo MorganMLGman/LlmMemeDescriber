@@ -1,0 +1,410 @@
+{% extends "base.html" %}
+
+{% block title %}API Tokens - Meme Describer{% endblock %}
+
+{% block extra_css %}
+<style>
+    .token-card {
+        transition: all 0.3s ease;
+    }
+
+    .token-card:hover {
+        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+
+    .token-display {
+        background: #212529;
+        color: #28a745;
+        font-family: 'Courier New', monospace;
+        padding: 15px;
+        border-radius: 6px;
+        word-break: break-all;
+        font-size: 0.85rem;
+        position: relative;
+    }
+
+    .token-copy-btn {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        background: #495057;
+        border: none;
+        color: white;
+        padding: 6px 12px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 0.85rem;
+    }
+
+    .token-copy-btn:hover {
+        background: #6c757d;
+    }
+</style>
+{% endblock %}
+
+{% block navbar_controls %}
+<button class="btn btn-sm btn-outline-light" onclick="window.location.href='/'">← Back</button>
+{% endblock %}
+
+{% block content %}
+<div style="max-width: 900px; margin: 0 auto;">
+    <!-- Header -->
+    <div class="mb-5">
+        <h1 class="mb-2">🔑 API Tokens</h1>
+        <p class="text-muted">Manage API tokens for programmatic access to the Meme Describer API.</p>
+    </div>
+
+    <!-- Generate New Token Button -->
+    <div class="mb-4">
+        <button class="btn btn-primary btn-lg" onclick="showGenerateTokenModal()">
+            ✨ Generate New Token
+        </button>
+    </div>
+
+    <!-- Tokens List -->
+    <div>
+        <h5 class="mb-3">Your Tokens</h5>
+        <div id="tokensListContainer">
+            <div class="text-center text-muted py-5">
+                <div class="spinner-border" role="status">
+                    <span class="visually-hidden">Loading tokens...</span>
+                </div>
+                <p class="mt-2">Loading tokens...</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Generate Token Modal -->
+<div class="modal fade" id="generateTokenModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Generate New API Token</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="generateTokenForm">
+                    <div class="mb-3">
+                        <label for="tokenName" class="form-label">Token Name</label>
+                        <input type="text" class="form-control" id="tokenName" 
+                               placeholder="e.g., My App, CI/CD Pipeline" required>
+                        <small class="text-muted">A friendly name to identify this token</small>
+                    </div>
+                    <div class="mb-3">
+                        <label for="tokenExpires" class="form-label">Expiration Date (Optional)</label>
+                        <input type="datetime-local" class="form-control" id="tokenExpires">
+                        <small class="text-muted">Leave empty for token that never expires</small>
+                    </div>
+                    <div class="alert alert-info mb-0">
+                        <strong>💡 Tip:</strong> You'll only see the token once. Store it safely!
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="generateToken()">Generate</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Token Display Modal (after generation) -->
+<div class="modal fade" id="tokenDisplayModal" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header bg-success text-white">
+                <h5 class="modal-title">✅ Token Generated Successfully!</h5>
+            </div>
+            <div class="modal-body">
+                <div class="alert alert-warning mb-3">
+                    <strong>⚠️ Important:</strong> This is your only chance to see this token. Copy it now and store it safely. You won't be able to view it again!
+                </div>
+                
+                <label class="form-label fw-bold">Your API Token:</label>
+                <div class="token-display mb-3" id="displayedToken">
+                    <button class="token-copy-btn" onclick="copyTokenToClipboard()">📋 Copy</button>
+                    <div id="tokenContent" style="padding-right: 60px;"></div>
+                </div>
+
+                <label class="form-label fw-bold">Usage Example:</label>
+                <pre class="bg-light p-3 border rounded" style="overflow-x: auto;"><code>curl -H "Authorization: Bearer YOUR_TOKEN" \
+  https://your-domain/api/memes</code></pre>
+
+                <label class="form-label fw-bold">Token Details:</label>
+                <dl class="row mb-0">
+                    <dt class="col-sm-3">Name:</dt>
+                    <dd class="col-sm-9" id="newTokenName"></dd>
+                    <dt class="col-sm-3">Created:</dt>
+                    <dd class="col-sm-9" id="newTokenCreated"></dd>
+                    <dt class="col-sm-3">ID:</dt>
+                    <dd class="col-sm-9" id="newTokenId"></dd>
+                </dl>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-primary" data-bs-dismiss="modal">Done</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Revoke Confirmation Modal -->
+<div class="modal fade" id="revokeConfirmModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header bg-warning">
+                <h5 class="modal-title">Revoke Token?</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p>Are you sure you want to revoke the token <strong id="revokeTokenName"></strong>?</p>
+                <p class="text-muted mb-0">This action cannot be undone. Any applications using this token will lose access.</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-danger" onclick="confirmRevoke()">Revoke</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+let generateTokenModal = null;
+let tokenDisplayModal = null;
+let revokeConfirmModal = null;
+let revokeTokenId = null;
+let newTokenContent = null;
+
+document.addEventListener('DOMContentLoaded', function() {
+    generateTokenModal = new bootstrap.Modal(document.getElementById('generateTokenModal'));
+    tokenDisplayModal = new bootstrap.Modal(document.getElementById('tokenDisplayModal'));
+    revokeConfirmModal = new bootstrap.Modal(document.getElementById('revokeConfirmModal'));
+    
+    loadTokensList();
+});
+
+async function loadTokensList() {
+    try {
+        const response = await fetch('/api/tokens');
+        if (!response.ok) {
+            if (response.status === 401) {
+                window.location.href = '/login';
+                return;
+            }
+            throw new Error('Failed to load tokens');
+        }
+
+        const tokens = await response.json();
+        displayTokens(tokens);
+    } catch (error) {
+        console.error('Error loading tokens:', error);
+        document.getElementById('tokensListContainer').innerHTML = `
+            <div class="alert alert-danger">
+                Failed to load tokens: ${error.message}
+            </div>
+        `;
+    }
+}
+
+function displayTokens(tokens) {
+    const container = document.getElementById('tokensListContainer');
+    
+    if (tokens.length === 0) {
+        container.innerHTML = `
+            <div class="text-center text-muted py-5">
+                <h5>🔐 No Tokens Yet</h5>
+                <p>Create your first API token to get started with programmatic access.</p>
+            </div>
+        `;
+        return;
+    }
+
+    container.innerHTML = tokens.map(token => {
+        let statusBadge = '';
+        let isExpired = false;
+        
+        if (token.revoked) {
+            statusBadge = '<span class="badge bg-danger">❌ Revoked</span>';
+        } else if (token.expires_at) {
+            const expiresAt = new Date(token.expires_at);
+            const now = new Date();
+            isExpired = now > expiresAt;
+            if (isExpired) {
+                statusBadge = `<span class="badge bg-danger">⏰ Expired (${formatDate(token.expires_at)})</span>`;
+            } else {
+                statusBadge = `<span class="badge bg-warning text-dark">⏳ Expires ${formatDate(token.expires_at)}</span>`;
+            }
+        } else {
+            statusBadge = '<span class="badge bg-success">✅ Active</span>';
+        }
+        
+        return `
+        <div class="card token-card mb-3">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-start">
+                    <div class="flex-grow-1">
+                        <h6 class="card-title">${escapeHtml(token.name)}</h6>
+                        <dl class="row mb-3">
+                            <dt class="col-sm-3">Created:</dt>
+                            <dd class="col-sm-9 mb-2">${formatDate(token.created_at)}</dd>
+                            <dt class="col-sm-3">Last Used:</dt>
+                            <dd class="col-sm-9 mb-2">${token.last_used_at ? formatDate(token.last_used_at) : 'Never'}</dd>
+                            <dt class="col-sm-3">Status:</dt>
+                            <dd class="col-sm-9 mb-0">
+                                ${statusBadge}
+                            </dd>
+                        </dl>
+                    </div>
+                </div>
+                ${!token.revoked && !isExpired ? `
+                    <button class="btn btn-sm btn-danger" onclick="showRevokeConfirm(${token.id}, '${escapeHtml(token.name)}')">
+                        🗑️ Revoke
+                    </button>
+                ` : ''}
+            </div>
+        </div>
+    `;
+    }).join('');
+}
+
+function showGenerateTokenModal() {
+    document.getElementById('generateTokenForm').reset();
+    generateTokenModal.show();
+}
+
+async function generateToken() {
+    const name = document.getElementById('tokenName').value.trim();
+    const expiresInput = document.getElementById('tokenExpires').value;
+    
+    if (!name) {
+        alert('Please enter a token name');
+        return;
+    }
+
+    // Convert datetime-local to ISO format if provided
+    let expires_at = null;
+    if (expiresInput) {
+        const date = new Date(expiresInput);
+        expires_at = date.toISOString();
+    }
+
+    try {
+        const response = await fetch('/api/tokens', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ name, expires_at })
+        });
+
+        if (!response.ok) {
+            const data = await response.json();
+            throw new Error(data.detail || 'Failed to generate token');
+        }
+
+        const tokenData = await response.json();
+        newTokenContent = tokenData.token;
+        
+        // Display token
+        document.getElementById('tokenContent').textContent = tokenData.token;
+        document.getElementById('newTokenName').textContent = tokenData.name;
+        document.getElementById('newTokenCreated').textContent = formatDate(tokenData.created_at);
+        document.getElementById('newTokenId').textContent = tokenData.id;
+        
+        // Hide generate modal, show display modal
+        generateTokenModal.hide();
+        tokenDisplayModal.show();
+        
+        // Reload list after modal is hidden
+        setTimeout(() => {
+            loadTokensList();
+        }, 300);
+
+    } catch (error) {
+        console.error('Error generating token:', error);
+        alert('Failed to generate token: ' + error.message);
+    }
+}
+
+function copyTokenToClipboard() {
+    if (!newTokenContent) {
+        alert('Token not found');
+        return;
+    }
+
+    navigator.clipboard.writeText(newTokenContent).then(() => {
+        // Show success message
+        const btn = document.querySelector('.token-copy-btn');
+        const originalText = btn.textContent;
+        btn.textContent = '✅ Copied!';
+        setTimeout(() => {
+            btn.textContent = originalText;
+        }, 2000);
+    }).catch(err => {
+        console.error('Failed to copy token:', err);
+        alert('Failed to copy token to clipboard');
+    });
+}
+
+function showRevokeConfirm(tokenId, tokenName) {
+    revokeTokenId = tokenId;
+    document.getElementById('revokeTokenName').textContent = tokenName;
+    revokeConfirmModal.show();
+}
+
+async function confirmRevoke() {
+    if (!revokeTokenId) return;
+
+    try {
+        const response = await fetch(`/api/tokens/${revokeTokenId}`, {
+            method: 'DELETE'
+        });
+
+        if (!response.ok) {
+            const data = await response.json();
+            throw new Error(data.detail || 'Failed to revoke token');
+        }
+
+        revokeConfirmModal.hide();
+        
+        // Show success message
+        showSuccessMessage('Token revoked successfully');
+        
+        // Reload list
+        setTimeout(() => {
+            loadTokensList();
+        }, 500);
+
+    } catch (error) {
+        console.error('Error revoking token:', error);
+        alert('Failed to revoke token: ' + error.message);
+    }
+}
+
+function showSuccessMessage(message) {
+    const msg = document.createElement('div');
+    msg.className = 'position-fixed top-0 end-0 m-3 alert alert-success';
+    msg.style.zIndex = '1050';
+    msg.textContent = '✅ ' + message;
+    document.body.appendChild(msg);
+    setTimeout(() => {
+        msg.remove();
+    }, 3000);
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function formatDate(dateString) {
+    const date = new Date(dateString);
+    return date.toLocaleString();
+}
+</script>
+{% endblock %}
+

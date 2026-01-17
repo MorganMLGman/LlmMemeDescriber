@@ -259,7 +259,7 @@ def generate_state_token() -> str:
 
 def verify_api_token_not_revoked(token: str, engine) -> Optional[Dict[str, Any]]:
     """
-    Verify token exists in DB and is not revoked.
+    Verify token exists in DB, is not revoked, and has not expired.
     
     Args:
         token: Plain text API token from bearer header
@@ -286,6 +286,20 @@ def verify_api_token_not_revoked(token: str, engine) -> Optional[Dict[str, Any]]
                 logger.debug(f"Token not found or revoked: {token_hash[:8]}...")
                 return None
             
+            # Check if token has expired
+            if user_token.expires_at:
+                now = datetime.now(timezone.utc)
+                expires_at = user_token.expires_at
+                
+                # Make both datetimes timezone-aware for comparison
+                if expires_at.tzinfo is None:
+                    # expires_at is naive, assume UTC
+                    expires_at = expires_at.replace(tzinfo=timezone.utc)
+                
+                if now > expires_at:
+                    logger.info(f"Token expired: {token_hash[:8]}... (expired at {user_token.expires_at}, current time: {now})")
+                    return None
+            
             # Token is valid - update last_used_at
             user_token.last_used_at = datetime.now(timezone.utc)
             session.add(user_token)
@@ -294,5 +308,6 @@ def verify_api_token_not_revoked(token: str, engine) -> Optional[Dict[str, Any]]
             logger.debug(f"API token validated for user: {user_token.user_id}")
             return {'sub': user_token.user_id, 'token_id': str(user_token.id)}
     except Exception as e:
-        logger.error(f"Error verifying API token: {e}")
+        logger.exception(f"Error verifying API token: {e}")
         return None
+
