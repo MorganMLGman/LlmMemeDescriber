@@ -39,9 +39,12 @@ By default the web preview is available at http://localhost:8000/
 - App stats: GET /api/stats
 
 ## Behavior & notes 💡
-- Previews are cached for fast access; images and videos are supported (first video frame used).
-- Search uses full-text indexing (filename, description, keywords, OCR text).
-- Metadata updates are supported via the REST API (category, keywords, description).
+- **Database-first approach**: All meme metadata (descriptions, OCR, perceptual hashes) is stored in a local SQLite database.
+- **Automatic sync**: On startup and at regular intervals, the service scans WebDAV for new/removed images and updates the database.
+- **Previews cached**: Image and video thumbnails are cached locally for fast access; first video frame is extracted for videos.
+- **Full-text search**: Uses Whoosh indexing for fast searches across filename, description, keywords, and OCR text.
+- **Deduplication**: Automatically detects visually similar images using perceptual hashing.
+- **REST API**: Full REST API for programmatic access to metadata and metadata updates (category, keywords, description).
 
 ## Configuration ⚙️
 Main runtime options are provided as environment variables:

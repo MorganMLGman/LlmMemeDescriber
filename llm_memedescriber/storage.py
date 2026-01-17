@@ -71,53 +71,6 @@ class WebDavStorage:
 
         return results
 
-    def load_listing(self, dir_path: str, json_filename: str = "listing.json") -> Dict[str, Any]:
-        target_path = dir_path.rstrip('/') + '/' + json_filename
-        try:
-            with self.client.open(target_path, mode='r') as f:
-                data = json.load(f)
-        except Exception:
-            return {}
-
-        if isinstance(data, list):
-            return {str(k): {} for k in data}
-        if isinstance(data, dict):
-            return {str(k): v for k, v in data.items()}
-        return {}
-
-    def write_listing(self, dir_path: str, mapping: Dict[str, Any], json_filename: str = "listing.json") -> str:
-        ordered = {k: mapping[k] for k in sorted(mapping.keys())}
-        text = json.dumps(ordered, indent=4, ensure_ascii=False) + "\n"
-        
-        if dir_path == '.' or dir_path == '' or dir_path == '/':
-            target_path = json_filename
-        else:
-            target_path = dir_path.rstrip('/') + '/' + json_filename
-        
-        max_retries = MAX_WEBDAV_RETRY_ATTEMPTS
-        initial_backoff = INITIAL_WEBDAV_BACKOFF
-        last_exc = None
-        
-        for attempt in range(max_retries):
-            try:
-                self.client.upload_fileobj(io.BytesIO(text.encode('utf-8')), target_path, overwrite=True)
-                return target_path
-            except FileNotFoundError:
-                raise
-            except Exception as exc:
-                last_exc = exc
-                exc_str = str(exc).lower()
-                if ('423' in str(exc) or 'locked' in exc_str) and attempt < max_retries - 1:
-                    backoff = initial_backoff * (2 ** attempt)
-                    logger.debug(
-                        "WebDAV locked on attempt %d; retrying after %.2fs", attempt + 1, backoff
-                    )
-                    time.sleep(backoff)
-                    continue
-                raise IOError(f"Failed to upload listing to {dir_path}/{json_filename}: {exc}") from exc
-        
-        raise IOError(f"Failed to upload listing to {dir_path}/{json_filename} after {max_retries} attempts: {last_exc}") from last_exc
-
     def download_file(self, path: str) -> bytes:
         remote = path if str(path).startswith('/') else '/' + str(path).lstrip('/')
         try:

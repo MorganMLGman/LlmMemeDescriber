@@ -1,0 +1,23 @@
+services:
+  llm-meme-describer:
+    image: morganmlg/llm-meme-describer:latest
+    container_name: llm-meme-describer
+    user: "uid:gid"
+    ports:
+      - "8000:8000"
+    
+    volumes:
+      - ./data:/data
+    
+    environment:
+      GOOGLE_GENAI_MODEL: "gemini-3-flash-preview"
+      GOOGLE_GENAI_API_KEY: "YOUR_GOOGLE_GENAI_API_KEY_HERE"
+      
+      WEBDAV_URL: "https://example.com/remote.php/dav/files/user"
+      WEBDAV_USERNAME: "your_username"
+      WEBDAV_PASSWORD: "your_password"
+      WEBDAV_PATH: "/Path/To/Images"
+      RUN_INTERVAL: "15min"
+      TIMEZONE: "UTC"
+    
+    restart: unless-stopped

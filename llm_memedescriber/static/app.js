@@ -11,6 +11,7 @@ let totalMemeCount = 0;
 let searchQuery = '';
 let apiOffset = 0;
 let totalFetched = 0;
+let lastRateLimitWarningTime = 0;
 
 async function loadMemes() {
     try {
@@ -68,6 +69,12 @@ async function startSyncJob() {
             }
         });
         
+        if (response.status === 429) {
+            showRateLimitWarning();
+            showError('Rate limit reached - processing will resume automatically');
+            return;
+        }
+        
         if (!response.ok) {
             throw new Error(`Sync failed: ${response.status} ${response.statusText}`);
         }
@@ -75,7 +82,13 @@ async function startSyncJob() {
         const result = await response.json();
         console.log('Sync completed:', result);
         
-        showSuccess(`Sync completed: ${result.added} added, ${result.removed} removed, ${result.saved} saved`);
+        // Check if we got rate limited during sync
+        if (result.rate_limited) {
+            showRateLimitWarning();
+            showSuccess(`Sync partially completed: ${result.saved} saved (rate limit reached)`);
+        } else {
+            showSuccess(`Sync completed: ${result.added} added, ${result.removed} removed, ${result.saved} saved`);
+        }
         
         // Reload memes after sync
         await loadMemes();
@@ -104,6 +117,12 @@ async function fetchMoreFromAPI() {
         });
         
         clearTimeout(timeoutId);
+        
+        if (response.status === 429) {
+            showRateLimitWarning();
+            hasMoreMemes = false;
+            throw new Error('Rate limit exceeded');
+        }
         
         if (!response.ok) {
             throw new Error(`API error: ${response.status} ${response.statusText}`);
@@ -581,6 +600,26 @@ function showSuccess(message) {
     `;
     document.body.appendChild(alert);
     setTimeout(() => alert.remove(), 3000);
+}
+
+function showRateLimitWarning() {
+    const now = Date.now();
+    const cooldownMs = 60000;  // 1 minute cooldown between warnings
+    
+    // Only show if enough time has passed since last warning
+    if (now - lastRateLimitWarningTime >= cooldownMs) {
+        lastRateLimitWarningTime = now;
+        
+        const alert = document.createElement('div');
+        alert.className = 'alert alert-warning alert-dismissible fade show position-fixed top-0 start-50 translate-middle-x mt-3';
+        alert.style.zIndex = '9999';
+        alert.innerHTML = `
+            <strong>⚠️ Rate Limit Reached:</strong> The AI service has paused requests. Processing will resume automatically.
+            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        `;
+        document.body.appendChild(alert);
+        setTimeout(() => alert.remove(), 6000);  // Auto-dismiss after 6 seconds
+    }
 }
 
 function escapeHtml(text) {
