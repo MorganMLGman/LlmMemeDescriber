@@ -246,10 +246,15 @@ class App:
         """Process a single meme: generate description and save to DB only (not WebDAV listing).
         
         WebDAV listing is written once at end of sync_and_process_impl to avoid concurrent writes.
-        Returns dict with 'saved', 'unsupported', or 'failed' keys, and 'desc' with description.
+        Returns dict with 'saved', 'unsupported', 'rate_limited', or 'failed' keys, and 'desc' with description.
         """
         try:
             desc = self.generate_description(name)
+            
+            if desc.get('rate_limited'):
+                logger.warning("Rate limited while processing %s", name)
+                return {'rate_limited': True}
+            
             if desc:
                 
                 def save_to_db():
@@ -347,6 +352,7 @@ class App:
             logger.error("GenAI request failed for %s: %s", filename, exc)
             
             is_unsupported = 'Unsupported MIME type' in error_info
+            is_rate_limited = '429' in error_info or 'rate limit' in error_info.lower()
             
             try:
                 with session_scope(self.engine) as session:
@@ -362,6 +368,9 @@ class App:
                         session.commit()
             except Exception:
                 pass
+            
+            if is_rate_limited:
+                return {'rate_limited': True, 'error': 'Rate limit exceeded'}
             return {}
 
         
@@ -531,6 +540,7 @@ class App:
         saved_count = 0
         failed_count = 0
         unsupported_count = 0
+        rate_limited = False
         processed_descriptions = {}
 
         batch_size = BATCH_PROCESS_WORKERS
@@ -567,7 +577,12 @@ class App:
                 name = futures[future]
                 try:
                     result = future.result()
-                    if result.get('saved'):
+                    if result.get('rate_limited'):
+                        logger.error("Rate limit exceeded; stopping batch processing")
+                        rate_limited = True
+                        self.stop_event.set()
+                        failed_count += 1
+                    elif result.get('saved'):
                         saved_count += 1
                         if result.get('desc') and result.get('name'):
                             processed_descriptions[result['name']] = result['desc']
@@ -640,6 +655,7 @@ class App:
             'unsupported': unsupported_count,
             'unfilled': len(unfilled),
             'updated': bool(updated_path),
+            'rate_limited': rate_limited,
         }
         
         if result['added'] > 0:

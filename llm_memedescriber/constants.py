@@ -31,7 +31,6 @@ MAX_WEBDAV_RETRY_ATTEMPTS = 3
 INITIAL_WEBDAV_BACKOFF = 0.5
 
 BATCH_PROCESS_WORKERS = 3
-
 DUPLICATE_THRESHOLD = 15
 
 DEFAULT_SYNC_MAX_RECORDS = None
@@ -49,9 +48,7 @@ def _get_extension(filename: str) -> str:
     as having no extension.
     """
     name = str(filename).strip().lower()
-    # find last dot position
     idx = name.rfind('.')
-    # no dot or dot is the first character (hidden file without extension) => no ext
     if idx <= 0:
         return ''
     return name[idx+1:]
