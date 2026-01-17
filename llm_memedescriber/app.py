@@ -1146,7 +1146,7 @@ def get_prompt(user_info: Dict = Depends(require_auth)):
 
 @app.post("/api/prompt", tags=["config"])
 @limiter.limit("10/minute")
-def save_prompt(request_body: dict, user_info: Dict = Depends(require_auth)):
+def save_prompt(request: Request, request_body: dict, user_info: Dict = Depends(require_auth)):
     """Save custom prompt to /data/prompt.txt. REQUIRES AUTHENTICATION and CSRF token."""
     if not request_body.get("prompt"):
         raise HTTPException(status_code=400, detail="Prompt cannot be empty")

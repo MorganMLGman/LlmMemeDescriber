@@ -19,5 +19,7 @@ services:
       WEBDAV_PATH: "/Path/To/Images"
       RUN_INTERVAL: "15min"
       TIMEZONE: "UTC"
+
+      PUBLIC_MODE: "true"
     
     restart: unless-stopped

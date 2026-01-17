@@ -354,7 +354,15 @@ class App:
     def _sync_and_process_impl(self) -> Dict[str, int]:
         """Implementation of sync and process (called with lock held)."""
         
-        existing = {}  # Start with empty dict, only use DB from now on
+        # Load existing memes from database
+        existing = {}
+        try:
+            with session_scope(self.engine) as session:
+                memes = session.exec(select(Meme).where(Meme.status != 'removed')).all()
+                for meme in memes:
+                    existing[meme.filename] = {}
+        except Exception as e:
+            logger.warning("Failed to load existing memes from database: %s", e)
 
         entries = self.storage.list_files('/', recursive=False)
         server_names = {e['name'] for e in entries if not e['is_dir'] and is_supported(e['name'])}
@@ -419,6 +427,8 @@ class App:
 
         try:
             entry_map = {e['name']: e for e in entries if not e.get('is_dir')}
+            newly_added_memes = []  # Track newly added memes for phash calculation
+            
             with session_scope(self.engine) as session:
                 names_to_check = list(server_names.union(set(to_remove)))
                 existing_map = {}
@@ -450,6 +460,7 @@ class App:
                         except Exception:
                             pass
                         session.add(m)
+                        newly_added_memes.append(name)
                 
                 for name in to_remove:
                     existing_m = existing_map.get(name)
@@ -457,6 +468,19 @@ class App:
                         existing_m.status = 'removed'
                         session.add(existing_m)
                 session.commit()
+            
+            # Calculate phash for newly added memes
+            if newly_added_memes:
+                logger.info("Calculating phash for %d newly added memes", len(newly_added_memes))
+                for name in newly_added_memes:
+                    try:
+                        phash_result = asyncio.run(compute_and_persist_phash(name, self.storage, self.engine, timestamp=1.0))
+                        if phash_result:
+                            logger.debug("Calculated phash for %s: %s", name, phash_result)
+                        else:
+                            logger.debug("Failed to calculate phash for %s (likely unsupported format)", name)
+                    except Exception as e:
+                        logger.debug("Error calculating phash for %s: %s", name, e)
         except Exception:
             logger.exception("Failed to persist listing changes to DB")
 
