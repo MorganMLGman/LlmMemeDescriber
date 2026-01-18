@@ -128,6 +128,8 @@ class App:
                 logger.debug("Sync: added=%d, removed=%d, unfilled=%d", summary['added'], summary['removed'], summary['unfilled'])
                 if summary.get('saved') or summary.get('failed'):
                     logger.info("Generated: saved=%d, failed=%d, unsupported=%d", summary.get('saved'), summary.get('failed'), summary.get('unsupported'))
+            except (TimeoutError, ConnectionError) as e:
+                logger.warning("Storage connection timeout/error (will retry on next cycle): %s", str(e))
             except Exception:
                 logger.exception("Worker error")
             if self.stop_event.wait(self.interval_seconds):
@@ -479,6 +481,8 @@ class App:
                             logger.debug("Calculated phash for %s: %s", name, phash_result)
                         else:
                             logger.debug("Failed to calculate phash for %s (likely unsupported format)", name)
+                    except (TimeoutError, ConnectionError) as e:
+                        logger.debug("Storage timeout/connection error calculating phash for %s: %s", name, str(e))
                     except Exception as e:
                         logger.debug("Error calculating phash for %s: %s", name, e)
         except Exception:

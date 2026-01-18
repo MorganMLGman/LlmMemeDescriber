@@ -2,61 +2,23 @@
 
 {% block title %}API Tokens - Meme Describer{% endblock %}
 
-{% block extra_css %}
-<style>
-    .token-card {
-        transition: all 0.3s ease;
-    }
 
-    .token-card:hover {
-        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-    }
-
-    .token-display {
-        background: #212529;
-        color: #28a745;
-        font-family: 'Courier New', monospace;
-        padding: 15px;
-        border-radius: 6px;
-        word-break: break-all;
-        font-size: 0.85rem;
-        position: relative;
-    }
-
-    .token-copy-btn {
-        position: absolute;
-        top: 10px;
-        right: 10px;
-        background: #495057;
-        border: none;
-        color: white;
-        padding: 6px 12px;
-        border-radius: 4px;
-        cursor: pointer;
-        font-size: 0.85rem;
-    }
-
-    .token-copy-btn:hover {
-        background: #6c757d;
-    }
-</style>
-{% endblock %}
 
 {% block navbar_controls %}
 <button class="btn btn-sm btn-outline-light" onclick="window.location.href='/'">← Back</button>
 {% endblock %}
 
 {% block content %}
-<div style="max-width: 900px; margin: 0 auto;">
+<div style="max-width: 1000px; margin: 0 auto;">
     <!-- Header -->
-    <div class="mb-5">
-        <h1 class="mb-2">🔑 API Tokens</h1>
-        <p class="text-muted">Manage API tokens for programmatic access to the Meme Describer API.</p>
+    <div class="tokens-page-header">
+        <h1>🔑 API Tokens</h1>
+        <p>Manage API tokens for programmatic access to the Meme Describer API.</p>
     </div>
 
     <!-- Generate New Token Button -->
-    <div class="mb-4">
-        <button class="btn btn-primary btn-lg" onclick="showGenerateTokenModal()">
+    <div class="mb-5">
+        <button class="btn btn-primary generate-btn" onclick="showGenerateTokenModal()">
             ✨ Generate New Token
         </button>
     </div>
@@ -168,6 +130,25 @@
     </div>
 </div>
 
+<div class="modal fade" id="deleteConfirmModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header bg-danger">
+                <h5 class="modal-title">Delete Token?</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p>Are you sure you want to permanently delete the token <strong id="deleteTokenName"></strong>?</p>
+                <p class="text-muted mb-0">This action cannot be undone. The token will be removed from your account.</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-danger" onclick="confirmDelete()">Delete</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 {% endblock %}
 
 {% block extra_scripts %}
@@ -175,13 +156,16 @@
 let generateTokenModal = null;
 let tokenDisplayModal = null;
 let revokeConfirmModal = null;
+let deleteConfirmModal = null;
 let revokeTokenId = null;
+let deleteTokenId = null;
 let newTokenContent = null;
 
 document.addEventListener('DOMContentLoaded', function() {
     generateTokenModal = new bootstrap.Modal(document.getElementById('generateTokenModal'));
     tokenDisplayModal = new bootstrap.Modal(document.getElementById('tokenDisplayModal'));
     revokeConfirmModal = new bootstrap.Modal(document.getElementById('revokeConfirmModal'));
+    deleteConfirmModal = new bootstrap.Modal(document.getElementById('deleteConfirmModal'));
     
     loadTokensList();
 });
@@ -214,7 +198,7 @@ function displayTokens(tokens) {
     
     if (tokens.length === 0) {
         container.innerHTML = `
-            <div class="text-center text-muted py-5">
+            <div class="empty-state">
                 <h5>🔐 No Tokens Yet</h5>
                 <p>Create your first API token to get started with programmatic access.</p>
             </div>
@@ -224,46 +208,54 @@ function displayTokens(tokens) {
 
     container.innerHTML = tokens.map(token => {
         let statusBadge = '';
-        let isExpired = false;
+        let cardClass = 'token-card active';
+        let isExpired = token.expired;
         
         if (token.revoked) {
             statusBadge = '<span class="badge bg-danger">❌ Revoked</span>';
+            cardClass = 'token-card revoked';
         } else if (token.expires_at) {
-            const expiresAt = new Date(token.expires_at);
-            const now = new Date();
-            isExpired = now > expiresAt;
             if (isExpired) {
                 statusBadge = `<span class="badge bg-danger">⏰ Expired (${formatDate(token.expires_at)})</span>`;
+                cardClass = 'token-card expired';
             } else {
-                statusBadge = `<span class="badge bg-warning text-dark">⏳ Expires ${formatDate(token.expires_at)}</span>`;
+                statusBadge = `<span class="badge bg-warning">⏳ Expires ${formatDate(token.expires_at)}</span>`;
             }
         } else {
             statusBadge = '<span class="badge bg-success">✅ Active</span>';
         }
         
         return `
-        <div class="card token-card mb-3">
+        <div class="card ${cardClass}">
             <div class="card-body">
-                <div class="d-flex justify-content-between align-items-start">
-                    <div class="flex-grow-1">
-                        <h6 class="card-title">${escapeHtml(token.name)}</h6>
-                        <dl class="row mb-3">
-                            <dt class="col-sm-3">Created:</dt>
-                            <dd class="col-sm-9 mb-2">${formatDate(token.created_at)}</dd>
-                            <dt class="col-sm-3">Last Used:</dt>
-                            <dd class="col-sm-9 mb-2">${token.last_used_at ? formatDate(token.last_used_at) : 'Never'}</dd>
-                            <dt class="col-sm-3">Status:</dt>
-                            <dd class="col-sm-9 mb-0">
-                                ${statusBadge}
-                            </dd>
-                        </dl>
+                <div class="token-card-header">
+                    <h6 class="token-name">${escapeHtml(token.name)}</h6>
+                    <div>${statusBadge}</div>
+                </div>
+                
+                <div class="token-meta">
+                    <div class="token-meta-item">
+                        <div class="token-meta-label">📅 Created</div>
+                        <div class="token-meta-value">${formatDate(token.created_at)}</div>
+                    </div>
+                    <div class="token-meta-item">
+                        <div class="token-meta-label">⚡ Last Used</div>
+                        <div class="token-meta-value">${token.last_used_at ? formatDate(token.last_used_at) : 'Never'}</div>
                     </div>
                 </div>
-                ${!token.revoked && !isExpired ? `
-                    <button class="btn btn-sm btn-danger" onclick="showRevokeConfirm(${token.id}, '${escapeHtml(token.name)}')">
-                        🗑️ Revoke
-                    </button>
-                ` : ''}
+                
+                <div class="token-actions">
+                    ${!token.revoked && !isExpired ? `
+                        <button class="btn btn-sm btn-warning" onclick="showRevokeConfirm(${token.id}, '${escapeHtml(token.name)}')">
+                            ⛔ Revoke
+                        </button>
+                    ` : ''}
+                    ${token.revoked || isExpired ? `
+                        <button class="btn btn-sm btn-danger" onclick="showDeleteConfirm(${token.id}, '${escapeHtml(token.name)}')">
+                            🗑️ Delete
+                        </button>
+                    ` : ''}
+                </div>
             </div>
         </div>
     `;
@@ -284,11 +276,15 @@ async function generateToken() {
         return;
     }
 
-    // Convert datetime-local to ISO format if provided
     let expires_at = null;
     if (expiresInput) {
-        const date = new Date(expiresInput);
-        expires_at = date.toISOString();
+        const parts = expiresInput.split('T');
+        const [year, month, day] = parts[0].split('-');
+        const [hours, minutes] = parts[1].split(':');
+        
+        const localDate = new Date(year, parseInt(month) - 1, day, hours, minutes, 0);
+        expires_at = localDate.toISOString();
+        console.log(`Token expiry: input_local='${expiresInput}' -> utc='${expires_at}'`);
     }
 
     try {
@@ -359,8 +355,8 @@ async function confirmRevoke() {
     if (!revokeTokenId) return;
 
     try {
-        const response = await fetch(`/api/tokens/${revokeTokenId}`, {
-            method: 'DELETE'
+        const response = await fetch(`/api/tokens/${revokeTokenId}/revoke`, {
+            method: 'POST'
         });
 
         if (!response.ok) {
@@ -384,6 +380,41 @@ async function confirmRevoke() {
     }
 }
 
+function showDeleteConfirm(tokenId, tokenName) {
+    deleteTokenId = tokenId;
+    document.getElementById('deleteTokenName').textContent = tokenName;
+    deleteConfirmModal.show();
+}
+
+async function confirmDelete() {
+    if (!deleteTokenId) return;
+
+    try {
+        const response = await fetch(`/api/tokens/${deleteTokenId}`, {
+            method: 'DELETE'
+        });
+
+        if (!response.ok) {
+            const data = await response.json();
+            throw new Error(data.detail || 'Failed to delete token');
+        }
+
+        deleteConfirmModal.hide();
+        
+        // Show success message
+        showSuccessMessage('Token deleted successfully');
+        
+        // Reload list
+        setTimeout(() => {
+            loadTokensList();
+        }, 500);
+
+    } catch (error) {
+        console.error('Error deleting token:', error);
+        alert('Failed to delete token: ' + error.message);
+    }
+}
+
 function showSuccessMessage(message) {
     const msg = document.createElement('div');
     msg.className = 'position-fixed top-0 end-0 m-3 alert alert-success';
@@ -402,8 +433,23 @@ function escapeHtml(text) {
 }
 
 function formatDate(dateString) {
-    const date = new Date(dateString);
-    return date.toLocaleString();
+    // Parse UTC ISO string (backend always stores UTC)
+    const utcDate = new Date(dateString);
+    
+    // Convert UTC to local timezone
+    // getTimezoneOffset() returns negative for UTC+ zones (e.g., -60 for UTC+1)
+    // To convert UTC to local: subtract the offset
+    const offsetMs = new Date().getTimezoneOffset() * 60 * 1000;
+    const localDate = new Date(utcDate.getTime() - offsetMs);
+    
+    const day = String(localDate.getDate()).padStart(2, '0');
+    const month = String(localDate.getMonth() + 1).padStart(2, '0');
+    const year = localDate.getFullYear();
+    const hours = String(localDate.getHours()).padStart(2, '0');
+    const minutes = String(localDate.getMinutes()).padStart(2, '0');
+    const seconds = String(localDate.getSeconds()).padStart(2, '0');
+    
+    return `${day}.${month}.${year}, ${hours}:${minutes}:${seconds}`;
 }
 </script>
 {% endblock %}

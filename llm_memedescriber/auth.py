@@ -275,7 +275,6 @@ def verify_api_token_not_revoked(token: str, engine) -> Optional[Dict[str, Any]]
     token_hash = hash_token(token)
     try:
         with session_scope(engine) as session:
-            # Query using SQLModel
             stmt = select(UserToken).where(
                 UserToken.token_hash == token_hash,
                 UserToken.revoked == False
@@ -286,28 +285,23 @@ def verify_api_token_not_revoked(token: str, engine) -> Optional[Dict[str, Any]]
                 logger.debug(f"Token not found or revoked: {token_hash[:8]}...")
                 return None
             
-            # Check if token has expired
             if user_token.expires_at:
                 now = datetime.now(timezone.utc)
                 expires_at = user_token.expires_at
                 
-                # Make both datetimes timezone-aware for comparison
                 if expires_at.tzinfo is None:
-                    # expires_at is naive, assume UTC
                     expires_at = expires_at.replace(tzinfo=timezone.utc)
                 
                 if now > expires_at:
-                    logger.info(f"Token expired: {token_hash[:8]}... (expired at {user_token.expires_at}, current time: {now})")
+                    logger.warning(f"Token rejected - EXPIRED: {token_hash[:8]}... (expired at {user_token.expires_at}, current time: {now}, user: {user_token.user_id})")
                     return None
-            
-            # Token is valid - update last_used_at
             user_token.last_used_at = datetime.now(timezone.utc)
             session.add(user_token)
             session.commit()
             
-            logger.debug(f"API token validated for user: {user_token.user_id}")
+            logger.debug(f"API token validated on use: {token_hash[:8]}... (user: {user_token.user_id}, name: {user_token.name})")
             return {'sub': user_token.user_id, 'token_id': str(user_token.id)}
     except Exception as e:
-        logger.exception(f"Error verifying API token: {e}")
+        logger.exception(f"Error verifying API token on use: {e}")
         return None
 

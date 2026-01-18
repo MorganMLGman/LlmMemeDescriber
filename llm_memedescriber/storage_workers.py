@@ -9,6 +9,13 @@ from .constants import DEFAULT_STORAGE_WORKERS
 
 logger = logging.getLogger(__name__)
 
+# Import timeout exceptions for better error handling
+try:
+    import httpx
+    HAS_HTTPX = True
+except ImportError:
+    HAS_HTTPX = False
+
 
 class StorageWorkerPool:
     """Wrap a blocking storage adapter (like WebDavStorage) and run its blocking
@@ -31,6 +38,13 @@ class StorageWorkerPool:
         self._semaphore.acquire()
         try:
             return fn(*args, **kwargs)
+        except (TimeoutError, ConnectionError) as e:
+            logger.warning("Storage operation timeout/connection error: %s", str(e))
+            raise
+        except Exception as e:
+            if HAS_HTTPX and isinstance(e, (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.TimeoutException)):
+                logger.warning("HTTP timeout during storage operation: %s", str(e))
+            raise
         finally:
             try:
                 self._semaphore.release()

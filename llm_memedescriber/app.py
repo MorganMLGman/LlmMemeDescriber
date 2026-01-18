@@ -417,8 +417,6 @@ async def cleanup_sessions_periodically():
 # Authorization dependency for FastAPI
 def require_auth(request: Request, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
     """Dependency to require authentication (session cookie or bearer token).
-    
-    For API bearer tokens, also verifies the token has not been revoked.
     If public_mode is enabled, returns a public user without authentication.
     """
     # Public mode bypasses all authentication
@@ -434,22 +432,19 @@ def require_auth(request: Request, settings: Settings = Depends(get_settings)) -
         if session:
             return session.get('user_info', {})
     
-    # Check bearer token
     auth_header = request.headers.get('Authorization')
     if auth_header and auth_header.startswith('Bearer '):
         token = auth_header[7:]
         if auth_context.jwt_manager:
-            # First verify JWT signature/expiration
             payload = auth_context.jwt_manager.verify_token(token)
             if payload:
-                # Then verify token is not revoked in database
                 user_info = verify_api_token_not_revoked(token, request.app.state.engine)
                 if user_info:
                     logger.debug(f"API request authenticated for user: {user_info.get('sub')}")
                     return user_info
                 else:
-                    logger.warning(f"API token validation failed: token may be revoked")
-                    raise HTTPException(status_code=401, detail="Token revoked or invalid")
+                    logger.warning(f"API token rejected: token revoked, expired, or invalid")
+                    raise HTTPException(status_code=401, detail="Token revoked, expired, or invalid")
     
     raise HTTPException(status_code=401, detail="Not authenticated")
 
@@ -1556,7 +1551,12 @@ def get_auth_context() -> OIDCAuthContext:
 def get_user_from_request(request: Request) -> Optional[Dict[str, Any]]:
     """Extract user info from session cookie or bearer token.
     
-    For bearer tokens, also verifies the token has not been revoked and has not expired.
+    For bearer tokens, validates on EVERY call:
+    - JWT signature/expiration check
+    - Token not revoked check
+    - Token not expired check (in database)
+    
+    This ensures token validity is checked at every request.
     """
     from fastapi import Depends as FastAPIDependsClass
     
@@ -1569,7 +1569,7 @@ def get_user_from_request(request: Request) -> Optional[Dict[str, Any]]:
         if session:
             return session.get('user_info')
     
-    # Check bearer token
+    # Check bearer token (validates on every call)
     auth_header = request.headers.get('Authorization')
     if auth_header and auth_header.startswith('Bearer '):
         token = auth_header[7:]
@@ -1577,7 +1577,8 @@ def get_user_from_request(request: Request) -> Optional[Dict[str, Any]]:
             # First verify JWT signature/expiration
             payload = auth_context.jwt_manager.verify_token(token)
             if payload:
-                # Then verify token is not revoked and not expired in database
+                # Then verify token is not revoked AND not expired in database
+                # This check runs on EVERY token use to enforce real-time expiration
                 user_info = verify_api_token_not_revoked(token, request.app.state.engine)
                 if user_info:
                     return user_info
@@ -1748,11 +1749,12 @@ def generate_api_token(request_body: TokenGenerateRequest, request: Request):
     token = auth_context.jwt_manager.create_token(user_id, token_jti)
     token_hash = hash_token(token)
     
-    # Parse expiration date if provided
+    # Parse expiration date if provided (expected as UTC ISO string from frontend)
     expires_at = None
     if request_body.expires_at:
         try:
             expires_at = datetime.datetime.fromisoformat(request_body.expires_at.replace('Z', '+00:00'))
+            logger.debug(f"Token expiration set to UTC: {expires_at.isoformat()}")
         except (ValueError, AttributeError) as e:
             logger.warning(f"Invalid expiration date format: {request_body.expires_at}")
             raise HTTPException(status_code=400, detail=f"Invalid expiration date format: {str(e)}")
@@ -1796,7 +1798,7 @@ def generate_api_token(request_body: TokenGenerateRequest, request: Request):
 
 @app.get("/api/tokens", tags=["auth"], response_model=List[TokenInfo])
 def list_api_tokens(request: Request):
-    """List all API tokens for authenticated user."""
+    """List all API tokens for authenticated user (both active and revoked)."""
     user_info = get_user_from_request(request)
     
     if not user_info:
@@ -1809,8 +1811,9 @@ def list_api_tokens(request: Request):
             tokens = session.exec(
                 select(UserToken)
                 .where(UserToken.user_id == user_id)
-                .where(UserToken.revoked == False)
             ).all()
+            
+            now = datetime.datetime.now(datetime.timezone.utc)
             
             return [
                 TokenInfo(
@@ -1819,7 +1822,11 @@ def list_api_tokens(request: Request):
                     created_at=t.created_at,
                     last_used_at=t.last_used_at,
                     expires_at=t.expires_at,
-                    revoked=t.revoked
+                    revoked=t.revoked,
+                    expired=(
+                        t.expires_at is not None and
+                        (t.expires_at if t.expires_at.tzinfo else t.expires_at.replace(tzinfo=datetime.timezone.utc)) < now
+                    )
                 )
                 for t in tokens
             ]
@@ -1828,9 +1835,9 @@ def list_api_tokens(request: Request):
         raise HTTPException(status_code=500, detail="Failed to list tokens")
 
 
-@app.delete("/api/tokens/{token_id}", tags=["auth"])
+@app.post("/api/tokens/{token_id}/revoke", tags=["auth"])
 def revoke_api_token(token_id: int, request: Request):
-    """Revoke an API token."""
+    """Revoke an API token (mark as unusable)."""
     user_info = get_user_from_request(request)
     
     if not user_info:
@@ -1872,3 +1879,49 @@ def revoke_api_token(token_id: int, request: Request):
     except Exception as e:
         logger.error(f"Failed to revoke token: {e}")
         raise HTTPException(status_code=500, detail="Failed to revoke token")
+
+
+@app.delete("/api/tokens/{token_id}", tags=["auth"])
+def delete_api_token(token_id: int, request: Request):
+    """Permanently delete an API token from database."""
+    user_info = get_user_from_request(request)
+    
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    user_id = user_info.get('sub')
+    
+    try:
+        with session_scope(app.state.engine) as session:
+            token = session.exec(
+                select(UserToken)
+                .where(UserToken.id == token_id)
+                .where(UserToken.user_id == user_id)
+            ).first()
+            
+            if not token:
+                raise HTTPException(status_code=404, detail="Token not found")
+            
+            token_name = token.name
+            session.delete(token)
+            session.commit()
+            
+            logger.info(f"API token deleted for user {user_id}: {token_name}")
+            
+            # Audit log
+            log_audit_action(
+                app.state.engine,
+                user_id=user_id,
+                action="DELETE_API_TOKEN",
+                resource=str(token_id),
+                resource_type="token",
+                details=f"Token name: {token_name}",
+                ip_address=None
+            )
+            
+            return {"status": "deleted", "token_id": token_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete token: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete token")

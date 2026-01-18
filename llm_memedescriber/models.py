@@ -82,6 +82,7 @@ class TokenInfo(SQLModel):
     last_used_at: Optional[datetime.datetime]
     expires_at: Optional[datetime.datetime]
     revoked: bool
+    expired: bool
 
 
 class UserInfo(SQLModel):
