@@ -54,6 +54,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
+      - name: Determine app version and replace placeholder
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            VERSION="sha-${GITHUB_SHA:0:7}"
+          else
+            VERSION=${GITHUB_REF#refs/tags/v}
+          fi
+          echo "APP_VERSION=$VERSION" >> $GITHUB_ENV
+          sed -i "s/APP_VERSION_PLACEHOLDER/$VERSION/g" llm_memedescriber/templates/base.html
+          echo "✅ Replaced APP_VERSION_PLACEHOLDER with $VERSION"
+      
       - name: Set up QEMU
         if: matrix.arch == 'arm64'
         uses: docker/setup-qemu-action@v2
