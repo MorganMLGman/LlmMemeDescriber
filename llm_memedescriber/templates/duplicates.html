@@ -3,12 +3,16 @@
 {% block title %}Duplicate Groups — Meme Describer{% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="/static/style.css?v=4">
+<link rel="stylesheet" href="/static/style.css?v=5">
 {% endblock %}
 
 {% block navbar_controls %}
 <a class="btn btn-sm btn-outline-light" href="/">← Back</a>
 <button type="button" class="btn btn-sm btn-outline-danger" onclick="logout()">Logout</button>
+{% endblock %}
+
+{% block navbar_controls_mobile %}
+<button class="btn btn-outline-primary w-100" onclick="window.location.href='/'">← Back</button>
 {% endblock %}
 
 {% block content %}

@@ -2,10 +2,16 @@
 
 {% block title %}API Tokens - Meme Describer{% endblock %}
 
-
+{% block extra_css %}
+<link rel="stylesheet" href="/static/style.css?v=5">
+{% endblock %}
 
 {% block navbar_controls %}
 <button class="btn btn-sm btn-outline-light" onclick="window.location.href='/'">← Back</button>
+{% endblock %}
+
+{% block navbar_controls_mobile %}
+<button class="btn btn-outline-primary w-100" onclick="window.location.href='/'">← Back</button>
 {% endblock %}
 
 {% block content %}

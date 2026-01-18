@@ -68,6 +68,7 @@ body {
     backdrop-filter: blur(10px);
     box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
     border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    z-index: 1030;
 }
 
 .navbar-brand {
@@ -499,4 +500,199 @@ p {
 .token-copy-btn:hover {
     background: #6c757d;
     transform: scale(1.05);
+}
+
+/* Mobile Responsive Improvements */
+@media (max-width: 991px) {
+    .navbar-brand {
+        font-size: 1.1rem;
+    }
+    
+    .navbar-brand img {
+        height: 36px !important;
+        width: 36px !important;
+        margin-right: 8px !important;
+    }
+}
+
+@media (max-width: 768px) {
+    .container-fluid.py-4 {
+        padding-top: 1rem !important;
+        padding-bottom: 3rem !important;
+    }
+}
+
+@media (max-width: 480px) {
+    .navbar-brand {
+        font-size: 0.95rem;
+    }
+    
+    .navbar-brand img {
+        height: 32px !important;
+        width: 32px !important;
+        margin-right: 6px !important;
+    }
+    
+    .row.g-3 {
+        --bs-gutter-x: 0.75rem;
+        --bs-gutter-y: 0.75rem;
+    }
+    
+    .meme-card img,
+    .meme-card video {
+        height: 180px;
+    }
+    
+    .meme-card .card-body {
+        padding: 10px;
+    }
+    
+    .card-body {
+        padding: 12px;
+    }
+}
+
+/* Search Input Styling */
+#searchInput,
+#searchInputMobile {
+    background-color: #ffffff;
+    color: #333;
+    border: 1px solid #dee2e6;
+    font-size: 0.95rem;
+    width: 100%;
+}
+
+#searchInput::placeholder,
+#searchInputMobile::placeholder {
+    color: #999;
+    opacity: 1;
+}
+
+#searchInput:focus,
+#searchInputMobile:focus {
+    background-color: #ffffff;
+    color: #333;
+    border-color: #667eea;
+    box-shadow: 0 0 0 0.2rem rgba(102, 126, 234, 0.25);
+    outline: none;
+}
+
+/* Clear Button - Fixed styling without !important conflicts */
+#clearSearchBtn {
+    background-color: #ffffff;
+    border: 1px solid #dee2e6;
+    color: #999;
+    padding: 0;
+    font-size: 1.1rem;
+    line-height: 1;
+    flex-shrink: 0;
+    transition: all 0.2s ease;
+    width: 0;
+    height: 0;
+    overflow: hidden;
+    opacity: 0;
+}
+
+#clearSearchBtn:not([style*="display: none"]) {
+    width: auto;
+    height: auto;
+    padding: 0.375rem 0.5rem;
+    opacity: 1;
+}
+
+#clearSearchBtn:hover {
+    background-color: #f0f0f0;
+    color: #333;
+    border-color: #bbb;
+}
+
+.offcanvas {
+    background-color: #f8f9fa !important;
+    z-index: 1050;
+}
+
+.modal {
+    z-index: 1040;
+}
+
+.offcanvas-header {
+    background-color: #f8f9fa !important;
+    border-bottom: 1px solid #dee2e6;
+}
+
+.offcanvas-title {
+    color: #333 !important;
+    font-weight: 600;
+}
+
+/* Error State Styling */
+.form-control.is-invalid,
+.form-control:invalid {
+    border-color: #dc3545;
+    padding-right: calc(1.5em + 0.75rem);
+    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' width='12' height='12' fill='none' stroke='%23dc3545'%3e%3ccircle cx='6' cy='6' r='4.5'/%3e%3cpath fill='%23dc3545' d='M5.8 3.6h.4v3.6h-.4z'/%3e%3ccircle cx='6' cy='10.2' r='.6' fill='%23dc3545'/%3e%3c/svg%3e");
+    background-repeat: no-repeat;
+    background-position: right calc(0.375em + 0.1875rem) center;
+    background-size: calc(0.75em + 0.375rem) calc(0.75em + 0.375rem);
+}
+
+.form-control.is-invalid:focus,
+.form-control:invalid:focus {
+    border-color: #dc3545;
+    box-shadow: 0 0 0 0.25rem rgba(220, 53, 69, 0.25);
+}
+
+.invalid-feedback {
+    display: block;
+    color: #dc3545;
+    font-size: 0.875rem;
+    margin-top: 0.25rem;
+}
+
+.btn:disabled {
+    opacity: 0.65;
+    cursor: not-allowed;
+}
+
+/* Scroll-to-Top Button */
+#scrollToTopBtn {
+    position: fixed;
+    bottom: 2.5rem;
+    right: 2rem;
+    z-index: 999;
+    padding: 0.75rem 0.75rem;
+    background-color: rgba(102, 126, 234, 0.8);
+    border: none;
+    border-radius: 50%;
+    color: white;
+    font-size: 1.5rem;
+    cursor: pointer;
+    opacity: 0;
+    visibility: hidden;
+    transition: all 0.3s ease;
+    width: 50px;
+    height: 50px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+#scrollToTopBtn:hover {
+    background-color: rgba(102, 126, 234, 1);
+    transform: translateY(-3px);
+}
+
+#scrollToTopBtn.show {
+    opacity: 1;
+    visibility: visible;
+}
+
+@media (max-width: 768px) {
+    #scrollToTopBtn {
+        bottom: 3rem;
+        right: 1rem;
+        width: 40px;
+        height: 40px;
+        font-size: 1.2rem;
+    }
 }

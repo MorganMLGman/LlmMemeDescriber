@@ -126,6 +126,10 @@ function showLogoutButton() {
         .then(response => {
             const logoutBtn = document.getElementById('logoutBtn');
             const tokensBtn = document.getElementById('tokensBtn');
+            const logoutBtnMobile = document.getElementById('logoutBtnMobile');
+            const tokensBtnMobile = document.getElementById('tokensBtnMobile');
+            const logoutBtnDefault = document.getElementById('logoutBtnMobileDefault');
+            const tokensBtnDefault = document.getElementById('tokensBtnMobileDefault');
             const isAuthenticated = response.status !== 401;
             
             if (logoutBtn) {
@@ -134,12 +138,32 @@ function showLogoutButton() {
             if (tokensBtn) {
                 tokensBtn.style.display = isAuthenticated ? 'inline-block' : 'none';
             }
+            if (logoutBtnMobile) {
+                logoutBtnMobile.style.display = isAuthenticated ? 'block' : 'none';
+            }
+            if (tokensBtnMobile) {
+                tokensBtnMobile.style.display = isAuthenticated ? 'block' : 'none';
+            }
+            if (logoutBtnDefault) {
+                logoutBtnDefault.style.display = isAuthenticated ? 'block' : 'none';
+            }
+            if (tokensBtnDefault) {
+                tokensBtnDefault.style.display = isAuthenticated ? 'block' : 'none';
+            }
         })
         .catch(() => {
             const logoutBtn = document.getElementById('logoutBtn');
             const tokensBtn = document.getElementById('tokensBtn');
+            const logoutBtnMobile = document.getElementById('logoutBtnMobile');
+            const tokensBtnMobile = document.getElementById('tokensBtnMobile');
+            const logoutBtnDefault = document.getElementById('logoutBtnMobileDefault');
+            const tokensBtnDefault = document.getElementById('tokensBtnMobileDefault');
             if (logoutBtn) logoutBtn.style.display = 'none';
             if (tokensBtn) tokensBtn.style.display = 'none';
+            if (logoutBtnMobile) logoutBtnMobile.style.display = 'none';
+            if (tokensBtnMobile) tokensBtnMobile.style.display = 'none';
+            if (logoutBtnDefault) logoutBtnDefault.style.display = 'none';
+            if (tokensBtnDefault) tokensBtnDefault.style.display = 'none';
         });
 }
 
@@ -395,13 +419,16 @@ function updateStats(stats) {
 }
 
 function handleSearch() {
-    const query = document.getElementById('searchInput').value.toLowerCase().trim();
+    const desktopInput = document.getElementById('searchInput');
+    
+    let query = desktopInput?.value?.toLowerCase().trim() || '';
+    
     const clearBtn = document.getElementById('clearSearchBtn');
     
     if (query.length > 0) {
-        clearBtn.style.display = 'block';
+        if (clearBtn) clearBtn.style.display = 'block';
     } else {
-        clearBtn.style.display = 'none';
+        if (clearBtn) clearBtn.style.display = 'none';
     }
     
     searchQuery = query;
@@ -432,7 +459,8 @@ function handleSearch() {
 
 function clearSearch() {
     document.getElementById('searchInput').value = '';
-    document.getElementById('clearSearchBtn').style.display = 'none';
+    const clearBtn = document.getElementById('clearSearchBtn');
+    if (clearBtn) clearBtn.style.display = 'none';
     filteredMemes = allMemes;
     searchQuery = '';
     
@@ -1270,4 +1298,21 @@ async function logout() {
         }
     }
 }
+
+// ======================== Scroll-to-Top Button ========================
+
+function scrollToTop() {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+window.addEventListener('scroll', () => {
+    const btn = document.getElementById('scrollToTopBtn');
+    if (btn) {
+        if (window.scrollY > 300) {
+            btn.classList.add('show');
+        } else {
+            btn.classList.remove('show');
+        }
+    }
+});
 

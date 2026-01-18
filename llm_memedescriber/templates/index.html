@@ -3,18 +3,26 @@
 {% block title %}Meme Describer{% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="/static/style.css?v=4">
+<link rel="stylesheet" href="/static/style.css?v=5">
+{% endblock %}
+
+{% block search_bar %}
+<input type="text" id="searchInput" class="form-control form-control-sm" 
+       placeholder="Search memes..." onkeyup="handleSearch()">
 {% endblock %}
 
 {% block navbar_controls %}
-<input type="text" id="searchInput" class="form-control form-control-sm" 
-       style="width: 250px;" placeholder="Search memes..." onkeyup="handleSearch()">
-<button type="button" id="clearSearchBtn" class="btn btn-sm btn-secondary" onclick="clearSearch()" 
-        style="display: none;">Clear</button>
 <button class="btn btn-sm btn-outline-light" onclick="startSyncJob()">Refresh</button>
 <button type="button" class="btn btn-sm btn-outline-light" onclick="showPromptModal()">⚙️ Prompt</button>
 <button type="button" id="tokensBtn" class="btn btn-sm btn-outline-info" onclick="window.location.href='/tokens'" style="display: none;">🔑 Tokens</button>
 <button type="button" id="logoutBtn" class="btn btn-sm btn-outline-danger" onclick="logout()" style="display: none;">Logout</button>
+{% endblock %}
+
+{% block navbar_controls_mobile %}
+<button class="btn btn-outline-primary w-100" onclick="startSyncJob()">🔄 Refresh</button>
+<button type="button" class="btn btn-outline-primary w-100" onclick="showPromptModal()">⚙️ Prompt</button>
+<button type="button" id="tokensBtnMobile" class="btn btn-outline-info w-100" onclick="window.location.href='/tokens'" style="display: none;">🔑 Tokens</button>
+<button type="button" id="logoutBtnMobile" class="btn btn-outline-danger w-100" onclick="logout()" style="display: none;">Logout</button>
 {% endblock %}
 
 {% block content %}
