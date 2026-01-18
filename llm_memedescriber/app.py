@@ -365,9 +365,8 @@ async def track_api_token_usage(request: Request, call_next):
             if payload:
                 # Update last_used_at asynchronously (don't block response)
                 try:
-                    token_hash = hash_token(token)
                     # Schedule update in background
-                    asyncio.create_task(_update_token_usage(token_hash))
+                    asyncio.create_task(_update_token_usage(token))
                 except Exception as e:
                     logger.debug(f"Failed to track token usage: {e}")
     
@@ -375,17 +374,25 @@ async def track_api_token_usage(request: Request, call_next):
     return response
 
 
-async def _update_token_usage(token_hash: str):
+async def _update_token_usage(token: str):
     """Update last_used_at for a token (background task)."""
     try:
+        from argon2 import PasswordHasher
+        from argon2.exceptions import VerifyMismatchError
+        
+        ph = PasswordHasher()
         with session_scope(app.state.engine) as session:
-            token = session.exec(
-                select(UserToken).where(UserToken.token_hash == token_hash)
-            ).first()
-            if token:
-                token.last_used_at = datetime.datetime.now(datetime.timezone.utc)
-                session.add(token)
-                session.commit()
+            # Fetch all tokens and verify against the provided token
+            tokens = session.exec(select(UserToken)).all()
+            for candidate in tokens:
+                try:
+                    ph.verify(candidate.token_hash, token)
+                    candidate.last_used_at = datetime.datetime.now(datetime.timezone.utc)
+                    session.add(candidate)
+                    session.commit()
+                    break
+                except VerifyMismatchError:
+                    continue
     except Exception as e:
         logger.debug(f"Failed to update token usage: {e}")
 

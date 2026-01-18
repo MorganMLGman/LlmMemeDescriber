@@ -16,6 +16,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
 from urllib.parse import urlencode
 
+from argon2 import PasswordHasher
+from argon2.exceptions import InvalidHashError, VerifyMismatchError
 from authlib.integrations.httpx_client import AsyncOAuth2Client
 from jose import JWTError, jwt
 from pydantic import BaseModel
@@ -248,8 +250,15 @@ class OIDCAuthContext:
 
 
 def hash_token(token: str) -> str:
-    """Hash a token for storage in database."""
-    return hashlib.sha256(token.encode()).hexdigest()
+    """Hash a token for storage in database using Argon2 with strong parameters."""
+    ph = PasswordHasher(
+        time_cost=4,            # 4 iterations (higher = slower/more secure)
+        memory_cost=262144,     # 256 MB (4x default)
+        parallelism=8,          # 8 threads (2x default)
+        hash_len=32,            # 32 bytes (2x default)
+        salt_len=16             # 16 bytes (2x default)
+    )
+    return ph.hash(token)
 
 
 def generate_state_token() -> str:
@@ -272,17 +281,24 @@ def verify_api_token_not_revoked(token: str, engine) -> Optional[Dict[str, Any]]
     from .models import UserToken
     from .db_helpers import session_scope
     
-    token_hash = hash_token(token)
+    ph = PasswordHasher()
     try:
         with session_scope(engine) as session:
-            stmt = select(UserToken).where(
-                UserToken.token_hash == token_hash,
-                UserToken.revoked == False
-            )
-            user_token = session.exec(stmt).first()
+            # Fetch all non-revoked tokens for this user to verify against
+            stmt = select(UserToken).where(UserToken.revoked == False)
+            tokens = session.exec(stmt).all()
+            
+            user_token = None
+            for candidate in tokens:
+                try:
+                    ph.verify(candidate.token_hash, token)
+                    user_token = candidate
+                    break
+                except VerifyMismatchError:
+                    continue
             
             if not user_token:
-                logger.debug(f"Token not found or revoked: {token_hash[:8]}...")
+                logger.debug("Token not found or revoked")
                 return None
             
             if user_token.expires_at:
@@ -293,13 +309,13 @@ def verify_api_token_not_revoked(token: str, engine) -> Optional[Dict[str, Any]]
                     expires_at = expires_at.replace(tzinfo=timezone.utc)
                 
                 if now > expires_at:
-                    logger.warning(f"Token rejected - EXPIRED: {token_hash[:8]}... (expired at {user_token.expires_at}, current time: {now}, user: {user_token.user_id})")
+                    logger.warning(f"Token rejected - EXPIRED: (expired at {user_token.expires_at}, current time: {now}, user: {user_token.user_id})")
                     return None
             user_token.last_used_at = datetime.now(timezone.utc)
             session.add(user_token)
             session.commit()
             
-            logger.debug(f"API token validated on use: {token_hash[:8]}... (user: {user_token.user_id}, name: {user_token.name})")
+            logger.debug(f"API token validated on use: (user: {user_token.user_id}, name: {user_token.name})")
             return {'sub': user_token.user_id, 'token_id': str(user_token.id)}
     except Exception as e:
         logger.exception(f"Error verifying API token on use: {e}")
