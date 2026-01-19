@@ -608,12 +608,9 @@ p {
 
 .offcanvas {
     background-color: #f8f9fa !important;
-    z-index: 1050;
 }
 
-.modal {
-    z-index: 1040;
-}
+
 
 .offcanvas-header {
     background-color: #f8f9fa !important;

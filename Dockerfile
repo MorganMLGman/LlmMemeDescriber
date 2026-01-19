@@ -38,7 +38,7 @@ VOLUME ["/data"]
 
 ENV PYTHONUNBUFFERED=1
 ENV LOGGING_LEVEL=INFO
-ENV GOOGLE_GENAI_MODEL=gemini-2.5-flash
+ENV GOOGLE_GENAI_MODEL=gemini-3-flash-preview
 ENV PATH=/app/.venv/bin:$PATH
 
 COPY llm_memedescriber /app/llm_memedescriber

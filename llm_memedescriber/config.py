@@ -1,21 +1,19 @@
 import datetime
-import logging
 import sys
+import logging
 import os
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import Optional
 
-from pydantic import field_validator, model_validator, ValidationError, ConfigDict
 from pydantic_settings import BaseSettings
-import logging
+from pydantic import field_validator, model_validator, ValidationError, ConfigDict
 
 logger = logging.getLogger(__name__)
-
 
 class Settings(BaseSettings):
     model_config = ConfigDict(
         env_ignore_empty=False,
-        case_sensitive=False  # Make env vars case-insensitive
+        case_sensitive=False
     )
     
     logging_level: str = "INFO"

@@ -476,11 +476,17 @@ class App:
                 logger.info("Calculating phash for %d newly added memes", len(newly_added_memes))
                 for name in newly_added_memes:
                     try:
-                        phash_result = asyncio.run(compute_and_persist_phash(name, self.storage, self.engine, timestamp=1.0))
-                        if phash_result:
-                            logger.debug("Calculated phash for %s: %s", name, phash_result)
-                        else:
-                            logger.debug("Failed to calculate phash for %s (likely unsupported format)", name)
+                        try:
+                            loop = asyncio.get_running_loop()
+                            # If there's a running loop, schedule as task (shouldn't happen here but defensive)
+                            logger.debug("Running loop detected, skipping phash calculation for %s", name)
+                        except RuntimeError:
+                            # No running loop, safe to use asyncio.run()
+                            phash_result = asyncio.run(compute_and_persist_phash(name, self.storage, self.engine, timestamp=1.0))
+                            if phash_result:
+                                logger.debug("Calculated phash for %s: %s", name, phash_result)
+                            else:
+                                logger.debug("Failed to calculate phash for %s (likely unsupported format)", name)
                     except (TimeoutError, ConnectionError) as e:
                         logger.debug("Storage timeout/connection error calculating phash for %s: %s", name, str(e))
                     except Exception as e:

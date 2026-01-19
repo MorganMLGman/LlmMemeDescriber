@@ -167,6 +167,11 @@ function showLogoutButton() {
         });
 }
 
+function initializeAuthState() {
+    // Initialize authentication state and toggle button visibility
+    showLogoutButton();
+}
+
 function setSyncButtonState(enabled) {
     const refreshBtn = document.querySelector('button[onclick="startSyncJob()"]');
     refreshBtn.disabled = !enabled;
@@ -359,9 +364,9 @@ function renderDisplayedMemes() {
                          class="card-img-top cursor-pointer" 
                          style="height: 300px; object-fit: contain; background: #f8f9fa; cursor: pointer;"
                          alt="${meme.filename}"
-                         onclick="viewMeme('${meme.filename}')"
+                         data-bs-toggle="modal" data-bs-target="#memeModal" data-meme-filename="${meme.filename}"
                          onerror="this.src='/static/placeholder.png'">
-                    <div class="card-body d-flex flex-column cursor-pointer" onclick="viewMeme('${meme.filename}')">
+                    <div class="card-body d-flex flex-column cursor-pointer" data-bs-toggle="modal" data-bs-target="#memeModal" data-meme-filename="${meme.filename}">
                         <h6 class="card-title text-truncate">${escapeHtml(meme.filename)}</h6>
                         <p class="card-text mb-2 small flex-grow-1">
                             ${escapeHtml((meme.description || '').substring(0, 100))}...
@@ -479,11 +484,30 @@ function clearSearch() {
 async function viewMeme(memeFilename) {
     currentMemeId = memeFilename;
     
+    // Show loading state
+    const memePreview = document.getElementById('memePreview');
+    const generationSpinner = document.getElementById('generationLoadingSpinner');
+    
+    if (memePreview) memePreview.style.display = 'none';
+    if (generationSpinner) generationSpinner.style.display = 'block';
+    
     try {
-        const response = await fetch(`/memes/${encodeURIComponent(memeFilename)}`);
+        // Add timeout to fetch (10 seconds)
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 10000);
+        
+        const response = await fetch(`/memes/${encodeURIComponent(memeFilename)}`, { signal: controller.signal });
+        clearTimeout(timeout);
+        
         if (!response.ok) throw new Error('Meme not found');
         
         const meme = await response.json();
+        
+        // Race condition check: if user closed modal or opened another meme, abort
+        if (currentMemeId !== memeFilename) {
+            console.log('viewMeme: aborted due to meme change');
+            return;
+        }
         
         const titleEl = document.getElementById('memeTitle');
         titleEl.textContent = escapeHtml(meme.filename);
@@ -510,11 +534,21 @@ async function viewMeme(memeFilename) {
             };
             videoSource.type = mimeTypes[ext] || 'video/mp4';
             videoElement.load();
+            // Auto-play the video
+            try {
+                await videoElement.play();
+            } catch (err) {
+                console.log('Autoplay prevented by browser:', err);
+            }
         } else {
             videoElement.style.display = 'none';
             imageElement.style.display = 'block';
             imageElement.src = `/memes/${encodeURIComponent(memeFilename)}/preview?size=600`;
         }
+        
+        // Show memePreview, hide loading spinner
+        if (memePreview) memePreview.style.display = 'block';
+        if (generationSpinner) generationSpinner.style.display = 'none';
         
         document.getElementById('memeCategory').value = meme.category || '';
         
@@ -522,8 +556,11 @@ async function viewMeme(memeFilename) {
         window.currentKeywords = keywordsList;
         renderKeywordBadges();
         
-        document.getElementById('memeKeywordsInput').value = '';
-        document.getElementById('memeKeywordsInput').onkeydown = function(e) {
+        const keywordInput = document.getElementById('memeKeywordsInput');
+        keywordInput.value = '';
+        
+        // Remove old handler and add new one to prevent accumulation
+        const newKeydownHandler = function(e) {
             if (e.key === 'Enter') {
                 e.preventDefault();
                 const newKeyword = this.value.trim();
@@ -534,6 +571,11 @@ async function viewMeme(memeFilename) {
                 }
             }
         };
+        
+        // Clone and replace to remove old listeners
+        const newKeywordInput = keywordInput.cloneNode(true);
+        keywordInput.parentNode.replaceChild(newKeywordInput, keywordInput);
+        newKeywordInput.addEventListener('keydown', newKeydownHandler);
         
         document.getElementById('memeTextInImage').value = meme.text_in_image || '';
         document.getElementById('memeDescription').value = meme.description || '';
@@ -568,12 +610,12 @@ async function viewMeme(memeFilename) {
         } else {
             retryBtn.style.display = 'none';
         }
-        
-        const modal = new bootstrap.Modal(document.getElementById('memeModal'));
-        modal.show();
     } catch (error) {
         console.error('Error loading meme:', error);
-        showError('Failed to load meme');
+        // Hide spinner and show preview (which now shows error state)
+        if (generationSpinner) generationSpinner.style.display = 'none';
+        if (memePreview) memePreview.style.display = 'block';
+        showError('Failed to load meme: ' + (error.name === 'AbortError' ? 'Request timeout' : error.message));
     }
 }
 
@@ -628,6 +670,10 @@ function removeKeyword(idx) {
 
     function openMemeDetail(filename) {
         try {
+            // Open modal and load meme data
+            const modalElement = document.getElementById('memeModal');
+            const modal = bootstrap.Modal.getOrCreateInstance(modalElement);
+            modal.show();
             viewMeme(filename);
         } catch (e) {
             console.error('Unable to open meme detail for', filename, e);
@@ -730,23 +776,34 @@ function downloadMeme() {
     document.body.removeChild(link);
 }
 
-async function deleteMeme() {
-    if (!currentMemeId || !confirm('Delete this meme?')) return;
-    
+async function copyMemeToClipboard() {
+    if (!currentMemeId) return;
+
     try {
-        const response = await fetch(`/memes/${encodeURIComponent(currentMemeId)}`, {
-            method: 'DELETE'
-        });
+        const downloadUrl = `/memes/${encodeURIComponent(currentMemeId)}/download`;
+        const response = await fetch(downloadUrl);
         
-        if (!response.ok) throw new Error('Failed to delete');
+        if (!response.ok) {
+            showToast('Failed to fetch meme', 'danger');
+            return;
+        }
         
-        showAlert('Meme deleted!', 'success');
-        bootstrap.Modal.getInstance(document.getElementById('memeModal')).hide();
-        loadMemes();
-        checkDuplicatesButton();
+        const blob = await response.blob();
+        const item = new ClipboardItem({ [blob.type]: blob });
+        
+        await navigator.clipboard.write([item]);
+        showToast('Meme copied to clipboard!', 'success');
     } catch (error) {
-        console.error('Error deleting meme:', error);
-        showAlert('Failed to delete meme', 'error');
+        console.error('Copy to clipboard error:', error);
+        
+        // Fallback for browsers without full Clipboard API support
+        if (error.name === 'NotAllowedError') {
+            showToast('Clipboard access denied', 'warning');
+        } else if (error.name === 'NotSupportedError') {
+            showToast('Clipboard API not supported in this browser', 'warning');
+        } else {
+            showToast('Error copying to clipboard', 'danger');
+        }
     }
 }
 
@@ -937,7 +994,18 @@ async function openDeduplicationPanel(filename) {
         html += '</div>';
 
         modalContent.innerHTML = html;
-        new bootstrap.Modal(document.getElementById('deduplicationModal')).show();
+        
+        // Get or create deduplication modal instance
+        const dedupModalElement = document.getElementById('deduplicationModal');
+        let dedupModal = bootstrap.Modal.getInstance(dedupModalElement);
+        if (!dedupModal) {
+            dedupModal = new bootstrap.Modal(dedupModalElement, {
+                backdrop: true,
+                keyboard: true,
+                focus: true
+            });
+        }
+        dedupModal.show();
     } catch (error) {
         console.error('Error loading duplicates:', error);
         showAlert('Failed to load duplicates', 'error');
@@ -1197,27 +1265,35 @@ async function markRemoved() {
 document.addEventListener('DOMContentLoaded', function() {
     console.log('DOM Content Loaded');
     
-    // Set up video autoplay/stop listeners for the modal
+    // Set up video autoplay/stop listeners for the modal (with proper cleanup)
     const memeModalEl = document.getElementById('memeModal');
     if (memeModalEl) {
-        memeModalEl.addEventListener('show.bs.modal', () => {
-            const video = document.getElementById('memeVideo');
-            if (video && video.style.display === 'block') {
-                // Use setTimeout to ensure video is fully ready
-                setTimeout(() => {
-                    video.play().catch(err => console.log('Autoplay failed:', err));
-                }, 50);
+        const onHideHandler = function() {
+            try {
+                const video = document.getElementById('memeVideo');
+                const videoSource = document.getElementById('memeVideoSource');
+                if (video) {
+                    video.pause();
+                    video.currentTime = 0;
+                    if (videoSource) {
+                        videoSource.src = "";
+                        video.load(); // Essential to unload the previous video
+                    }
+                }
+            } catch (e) {
+                console.error('Error in hide handler:', e);
             }
-        });
+        };
         
-        memeModalEl.addEventListener('hide.bs.modal', () => {
-            const video = document.getElementById('memeVideo');
-            if (video) {
-                video.pause();
-                video.currentTime = 0;
-            }
-        });
+        // Use a custom property to track if listeners were already added
+        if (!memeModalEl._listenersAdded) {
+            memeModalEl.addEventListener('hide.bs.modal', onHideHandler);
+            memeModalEl._listenersAdded = true;
+        }
     }
+    
+    // Initialize auth state (show/hide login buttons)
+    initializeAuthState();
     
     if (document.getElementById('memesContainer')) {
         console.log('Calling loadMemes');
@@ -1226,7 +1302,7 @@ document.addEventListener('DOMContentLoaded', function() {
     } else {
         console.log('memesContainer not present — skipping loadMemes');
     }
-});
+}, { once: true });
 
 async function showPromptModal() {
     const promptModal = new bootstrap.Modal(document.getElementById('promptModal'));
@@ -1316,3 +1392,21 @@ window.addEventListener('scroll', () => {
     }
 });
 
+// ======================== Modal Event Listeners ========================
+
+// Listen for modal show event to load meme data
+document.addEventListener('DOMContentLoaded', function() {
+    const memeModal = document.getElementById('memeModal');
+    if (memeModal) {
+        memeModal.addEventListener('show.bs.modal', function(event) {
+            // Get the button/element that triggered the modal
+            const button = event.relatedTarget;
+            if (button) {
+                const filename = button.getAttribute('data-meme-filename');
+                if (filename) {
+                    viewMeme(filename);
+                }
+            }
+        });
+    }
+});
