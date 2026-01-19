@@ -779,32 +779,100 @@ function downloadMeme() {
 async function copyMemeToClipboard() {
     if (!currentMemeId) return;
 
-    try {
-        const downloadUrl = `/memes/${encodeURIComponent(currentMemeId)}/download`;
-        const response = await fetch(downloadUrl);
-        
-        if (!response.ok) {
-            showToast('Failed to fetch meme', 'danger');
-            return;
+    const downloadUrl = `/memes/${encodeURIComponent(currentMemeId)}/download`;
+    const fullUrl = window.location.origin + downloadUrl;
+    const isVideo = /\.(mp4|webm|mov|mkv|avi|flv)$/i.test(currentMemeId);
+
+    // If it's a video, we can only copy the URL in most browsers
+    if (isVideo) {
+        try {
+            await navigator.clipboard.writeText(fullUrl);
+            showAlert('Video URL copied to clipboard!', 'success');
+        } catch (err) {
+            console.error('Failed to copy video URL:', err);
+            showError('Failed to copy video URL');
         }
-        
-        const blob = await response.blob();
-        const item = new ClipboardItem({ [blob.type]: blob });
-        
-        await navigator.clipboard.write([item]);
-        showToast('Meme copied to clipboard!', 'success');
+        return;
+    }
+
+    // Try to copy image data
+    try {
+        // Fetch the image as a blob
+        const response = await fetch(downloadUrl);
+        if (!response.ok) throw new Error('Failed to fetch image data');
+        const originalBlob = await response.blob();
+
+        let blobToCopy = originalBlob;
+
+        // The Clipboard API is strict about MIME types. Most browsers reliably support 'image/png'.
+        // If the image is not PNG (e.g. JPEG, WebP), we must convert it to PNG using a canvas.
+        if (originalBlob.type !== 'image/png') {
+            try {
+                blobToCopy = await convertBlobToPng(originalBlob);
+            } catch (conversionError) {
+                console.warn('PNG conversion failed, trying original blob:', conversionError);
+                // If conversion fails, proceed with original blob (might fail if type unsupported)
+            }
+        }
+
+        try {
+            // Create clipboard item with the (potentially converted) blob
+            const item = new ClipboardItem({ [blobToCopy.type]: blobToCopy });
+            await navigator.clipboard.write([item]);
+            showAlert('Image copied to clipboard!', 'success');
+        } catch (writeError) {
+            console.warn('Clipboard write failed, falling back to URL:', writeError);
+            await navigator.clipboard.writeText(fullUrl);
+            showAlert('Image URL copied (browser rejected image data)', 'success');
+        }
     } catch (error) {
         console.error('Copy to clipboard error:', error);
-        
-        // Fallback for browsers without full Clipboard API support
-        if (error.name === 'NotAllowedError') {
-            showToast('Clipboard access denied', 'warning');
-        } else if (error.name === 'NotSupportedError') {
-            showToast('Clipboard API not supported in this browser', 'warning');
-        } else {
-            showToast('Error copying to clipboard', 'danger');
+        // Final fallback
+        try {
+            await navigator.clipboard.writeText(fullUrl);
+            showAlert('Image URL copied to clipboard', 'success');
+        } catch (e) {
+            showError('Failed to copy to clipboard');
         }
     }
+}
+
+// Helper function to convert any image blob to a PNG blob
+function convertBlobToPng(blob) {
+    return new Promise((resolve, reject) => {
+        const img = new Image();
+        const url = URL.createObjectURL(blob);
+        
+        img.onload = () => {
+            try {
+                const canvas = document.createElement('canvas');
+                canvas.width = img.width;
+                canvas.height = img.height;
+                
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0);
+                
+                canvas.toBlob((pngBlob) => {
+                    if (pngBlob) {
+                        resolve(pngBlob);
+                    } else {
+                        reject(new Error('Canvas toBlob returned null'));
+                    }
+                    URL.revokeObjectURL(url);
+                }, 'image/png');
+            } catch (e) {
+                URL.revokeObjectURL(url);
+                reject(e);
+            }
+        };
+        
+        img.onerror = (e) => {
+            URL.revokeObjectURL(url);
+            reject(new Error('Failed to load image for conversion'));
+        };
+        
+        img.src = url;
+    });
 }
 
 function showAlert(message, type = 'success', duration = 5000) {
