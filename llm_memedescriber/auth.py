@@ -161,6 +161,40 @@ class JWTManager:
             return None
 
 
+def verify_share_token_db(token: str, filename: str, engine) -> bool:
+    """Verify a share token against the database using Argon2."""
+    from sqlmodel import select
+    from .models import FileShareToken
+    from .db_helpers import session_scope
+    
+    ph = PasswordHasher()
+    try:
+        with session_scope(engine) as session:
+            # Find tokens for this filename that are not expired
+            now = datetime.now(timezone.utc)
+            stmt = select(FileShareToken).where(
+                FileShareToken.filename == filename,
+                FileShareToken.expires_at > now
+            )
+            candidates = session.exec(stmt).all()
+            
+            for candidate in candidates:
+                try:
+                    ph.verify(candidate.token_hash, token)
+                    # Valid token found
+                    candidate.used_count += 1
+                    session.add(candidate)
+                    session.commit()
+                    return True
+                except VerifyMismatchError:
+                    continue
+            
+            return False
+    except Exception as e:
+        logger.exception(f"Error verifying share token: {e}")
+        return False
+
+
 class SessionManager:
     """Manages session state (stored in application memory or cache)."""
     

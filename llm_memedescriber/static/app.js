@@ -779,15 +779,27 @@ function downloadMeme() {
 async function copyMemeToClipboard() {
     if (!currentMemeId) return;
 
-    const downloadUrl = `/memes/${encodeURIComponent(currentMemeId)}/download`;
-    const fullUrl = window.location.origin + downloadUrl;
     const isVideo = /\.(mp4|webm|mov|mkv|avi|flv)$/i.test(currentMemeId);
 
-    // If it's a video, we can only copy the URL in most browsers
+    // Helper to get signed share link (now only used for videos)
+    async function getShareLink() {
+        try {
+            const resp = await fetch(`/memes/${encodeURIComponent(currentMemeId)}/share-link`);
+            if (!resp.ok) throw new Error('Failed to generate share link');
+            const data = await resp.json();
+            return data.url;
+        } catch (e) {
+            console.error('Error fetching share link:', e);
+            return window.location.origin + `/memes/${encodeURIComponent(currentMemeId)}/download`;
+        }
+    }
+
+    // If it's a video, we fetch a signed temporary link
     if (isVideo) {
         try {
-            await navigator.clipboard.writeText(fullUrl);
-            showAlert('Video URL copied to clipboard!', 'success');
+            const shareUrl = await getShareLink();
+            await navigator.clipboard.writeText(shareUrl);
+            showAlert('Temporary share link copied! (Valid for 24h)', 'success');
         } catch (err) {
             console.error('Failed to copy video URL:', err);
             showError('Failed to copy video URL');
@@ -797,7 +809,7 @@ async function copyMemeToClipboard() {
 
     // Try to copy image data
     try {
-        // Fetch the image as a blob
+        const downloadUrl = `/memes/${encodeURIComponent(currentMemeId)}/download`;
         const response = await fetch(downloadUrl);
         if (!response.ok) throw new Error('Failed to fetch image data');
         const originalBlob = await response.blob();
@@ -805,35 +817,25 @@ async function copyMemeToClipboard() {
         let blobToCopy = originalBlob;
 
         // The Clipboard API is strict about MIME types. Most browsers reliably support 'image/png'.
-        // If the image is not PNG (e.g. JPEG, WebP), we must convert it to PNG using a canvas.
         if (originalBlob.type !== 'image/png') {
             try {
                 blobToCopy = await convertBlobToPng(originalBlob);
             } catch (conversionError) {
                 console.warn('PNG conversion failed, trying original blob:', conversionError);
-                // If conversion fails, proceed with original blob (might fail if type unsupported)
             }
         }
 
         try {
-            // Create clipboard item with the (potentially converted) blob
             const item = new ClipboardItem({ [blobToCopy.type]: blobToCopy });
             await navigator.clipboard.write([item]);
             showAlert('Image copied to clipboard!', 'success');
         } catch (writeError) {
-            console.warn('Clipboard write failed, falling back to URL:', writeError);
-            await navigator.clipboard.writeText(fullUrl);
-            showAlert('Image URL copied (browser rejected image data)', 'success');
+            console.warn('Clipboard write failed:', writeError);
+            showError('Browser rejected image data copy');
         }
     } catch (error) {
         console.error('Copy to clipboard error:', error);
-        // Final fallback
-        try {
-            await navigator.clipboard.writeText(fullUrl);
-            showAlert('Image URL copied to clipboard', 'success');
-        } catch (e) {
-            showError('Failed to copy to clipboard');
-        }
+        showError('Failed to copy image to clipboard');
     }
 }
 

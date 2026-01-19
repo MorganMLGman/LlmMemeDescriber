@@ -40,7 +40,7 @@ from .deduplication import (
     list_pair_exceptions,
 )
 from .dup_helpers import get_group_members, get_groups_for_filename
-from .models import Meme, DuplicateGroup as DBDuplicateGroup, MemeDuplicateGroup as DBDupeLink, UserToken, TokenResponse, TokenInfo, UserInfo
+from .models import Meme, DuplicateGroup as DBDuplicateGroup, MemeDuplicateGroup as DBDupeLink, UserToken, TokenResponse, TokenInfo, UserInfo, FileShareToken, ShareTokenInfo
 from sqlalchemy import desc
 from .storage_helpers import compute_and_persist_phash
 from .preview_helpers import generate_preview, async_generate_preview, restore_preview_cache, save_preview_cache, cleanup_orphaned_cache
@@ -48,7 +48,7 @@ from sqlmodel import select
 from .db_helpers import session_scope
 import datetime
 from sqlalchemy import text
-from .auth import OIDCAuthContext, hash_token, generate_state_token, verify_api_token_not_revoked, verify_api_token_not_revoked
+from .auth import OIDCAuthContext, hash_token, generate_state_token, verify_api_token_not_revoked, verify_share_token_db
 
 logger = logging.getLogger(__name__)
 
@@ -399,7 +399,7 @@ async def _update_token_usage(token: str):
 
 # Periodic session cleanup (runs every hour)
 async def cleanup_sessions_periodically():
-    """Clean up expired sessions and OAuth states periodically."""
+    """Clean up expired sessions, OAuth states, and share tokens periodically."""
     while True:
         try:
             await asyncio.sleep(3600)  # Every hour
@@ -417,6 +417,39 @@ async def cleanup_sessions_periodically():
                     del app.state.oauth_states[s]
                 if expired:
                     logger.debug(f"Cleaned up {len(expired)} expired OAuth states")
+            
+            try:
+                with session_scope(app.state.engine) as session:
+                    now = datetime.datetime.now(datetime.timezone.utc)
+                    
+                    # Clean up expired share tokens
+                    stmt = select(FileShareToken).where(FileShareToken.expires_at < now)
+                    expired_tokens = session.exec(stmt).all()
+                    
+                    if expired_tokens:
+                        count = len(expired_tokens)
+                        for t in expired_tokens:
+                            session.delete(t)
+                        logger.info(f"Cleaned up {count} expired share tokens")
+                    
+                    # Clean up revoked API tokens older than 3 days
+                    cutoff = now - datetime.timedelta(days=3)
+                    stmt_revoked = select(UserToken).where(
+                        UserToken.revoked == True,
+                        UserToken.created_at < cutoff
+                    )
+                    revoked_tokens = session.exec(stmt_revoked).all()
+                    
+                    if revoked_tokens:
+                        count = len(revoked_tokens)
+                        for t in revoked_tokens:
+                            session.delete(t)
+                        logger.info(f"Cleaned up {count} old revoked API tokens")
+                    
+                    session.commit()
+            except Exception as e:
+                logger.error(f"Failed to cleanup database tokens: {e}")
+                
         except Exception as e:
             logger.debug(f"Failed to cleanup sessions/states: {e}")
 
@@ -620,6 +653,448 @@ async def download_meme(filename: str, user_info: Dict = Depends(require_auth)):
         raise HTTPException(status_code=503, detail='Storage error')
     except Exception as exc:
         logger.exception('Failed to download %s: %s', filename, exc)
+        raise HTTPException(status_code=500, detail='Download failed')
+
+
+@app.get("/memes/{filename}/share-link", tags=["memes"])
+@limiter.limit("10/minute")
+def generate_share_link(request: Request, filename: str, user_info: Dict = Depends(require_auth)):
+    """Generate a temporary, signed share link for a meme (valid for 24h). REQUIRES AUTHENTICATION.
+    
+    Generates a new random token each time (allowing multiple valid links).
+    Token is hashed with Argon2id and stored in DB.
+    """
+    try:
+        filename = sanitize_filename(filename)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    # Generate random token (not stored in DB)
+    import secrets
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = hash_token(raw_token)
+    
+    expires_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=24)
+    
+    try:
+        with session_scope(app.state.engine) as session:
+            # Create new token (allow multiple tokens for same file)
+            share_token = FileShareToken(
+                filename=filename,
+                token_hash=token_hash,
+                created_by=user_info.get('sub', 'unknown'),
+                created_at=datetime.datetime.now(datetime.timezone.utc),
+                expires_at=expires_at
+            )
+            session.add(share_token)
+            session.commit()
+            
+            # Audit log
+            log_audit_action(
+                app.state.engine,
+                user_id=user_info.get('sub', 'unknown'),
+                action="CREATE_SHARE_LINK",
+                resource=filename,
+                resource_type="file",
+                details=None,
+                ip_address=request.client.host if request.client else None
+            )
+    except Exception as e:
+        logger.exception("Failed to create share token")
+        raise HTTPException(status_code=500, detail="Failed to create share link")
+    
+    # Construct full URL
+    base_url = str(request.base_url).rstrip('/')
+    share_url = f"{base_url}/memes/{filename}/shared?token={raw_token}"
+    
+    return {"url": share_url, "expires_in": "24h"}
+
+
+@app.get("/memes/{filename}/shared", tags=["memes"])
+async def access_shared_meme(filename: str, token: str):
+    """Access a shared meme via signed token. PUBLIC (validated by token)."""
+    try:
+        filename = sanitize_filename(filename)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    if not verify_share_token_db(token, filename, app.state.engine):
+        # Add a small delay to prevent timing attacks/brute force
+        await asyncio.sleep(0.1)
+        raise HTTPException(status_code=403, detail="Invalid or expired share token")
+    
+    # Serve file (same logic as download_meme)
+    storage = getattr(app.state, 'app_instance', None) and getattr(app.state.app_instance, 'storage', None)
+    if not storage:
+        raise HTTPException(status_code=503, detail='Storage is not configured')
+    
+    try:
+        data = await getattr(storage, 'async_download_file', storage.download_file)(filename)
+        if data is None:
+            raise HTTPException(status_code=404, detail='File not found in storage')
+        
+        ext = _get_extension(filename)
+        ctype = _get_mime_type(ext)
+        return StreamingResponse(
+            BytesIO(data),
+            media_type=ctype,
+            headers={"Content-Length": str(len(data))}
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception('Failed to download shared file %s: %s', filename, exc)
+        raise HTTPException(status_code=500, detail='Download failed')
+
+
+@app.get("/api/share-tokens", tags=["memes"], response_model=List[ShareTokenInfo])
+def list_share_tokens(request: Request, user_info: Dict = Depends(require_auth)):
+    """List all active share tokens generated by the current user."""
+    user_id = user_info.get('sub')
+    
+    try:
+        with session_scope(app.state.engine) as session:
+            tokens = session.exec(
+                select(FileShareToken)
+                .where(FileShareToken.created_by == user_id)
+                .order_by(desc(FileShareToken.created_at))
+            ).all()
+            
+            return [
+                ShareTokenInfo(
+                    id=t.id,
+                    filename=t.filename,
+                    created_at=t.created_at,
+                    expires_at=t.expires_at,
+                    used_count=t.used_count
+                )
+                for t in tokens
+            ]
+    except Exception as e:
+        logger.error(f"Failed to list share tokens: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list share tokens")
+
+
+@app.delete("/api/share-tokens/{token_id}", tags=["memes"])
+def revoke_share_token(token_id: int, request: Request, user_info: Dict = Depends(require_auth)):
+    """Revoke (delete) a share token."""
+    user_id = user_info.get('sub')
+    
+    try:
+        with session_scope(app.state.engine) as session:
+            token = session.exec(
+                select(FileShareToken)
+                .where(FileShareToken.id == token_id)
+                .where(FileShareToken.created_by == user_id)
+            ).first()
+            
+            if not token:
+                raise HTTPException(status_code=404, detail="Token not found")
+            
+            filename = token.filename
+            session.delete(token)
+            session.commit()
+            
+            logger.info(f"Share token for {filename} revoked by user {user_id}")
+            
+            return {"status": "deleted", "token_id": token_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete share token: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete share token")
+
+
+# Authorization dependency for FastAPI
+def require_auth(request: Request, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
+    """Dependency to require authentication (session cookie or bearer token).
+    If public_mode is enabled, returns a public user without authentication.
+    """
+    # Public mode bypasses all authentication
+    if settings.public_mode:
+        return {"sub": "public-user", "public": True}
+    
+    auth_context = get_auth_context()
+    
+    # Check session cookie first
+    session_id = request.cookies.get('session_id')
+    if session_id:
+        session = auth_context.session_manager.get_session(session_id)
+        if session:
+            return session.get('user_info', {})
+    
+    auth_header = request.headers.get('Authorization')
+    if auth_header and auth_header.startswith('Bearer '):
+        token = auth_header[7:]
+        if auth_context.jwt_manager:
+            payload = auth_context.jwt_manager.verify_token(token)
+            if payload:
+                user_info = verify_api_token_not_revoked(token, request.app.state.engine)
+                if user_info:
+                    logger.debug(f"API request authenticated for user: {user_info.get('sub')}")
+                    return user_info
+                else:
+                    logger.warning(f"API token rejected: token revoked, expired, or invalid")
+                    raise HTTPException(status_code=401, detail="Token revoked, expired, or invalid")
+    
+    raise HTTPException(status_code=401, detail="Not authenticated")
+
+
+def optional_auth(request: Request) -> Optional[Dict[str, Any]]:
+    """Dependency for optional authentication."""
+    return get_user_from_request(request)
+
+
+class UpdateMemeRequest(BaseModel):
+    """Request body for updating meme metadata."""
+    category: Optional[str] = None
+    keywords: Optional[str] = None
+    description: Optional[str] = None
+
+
+class DuplicateInfo(BaseModel):
+    """Information about a single duplicate."""
+    filename: str
+    similarity: int  # hamming distance (0-64)
+    preview_url: Optional[str] = None
+
+
+class DuplicateGroup(BaseModel):
+    """Group of duplicate memes."""
+    primary: DuplicateInfo
+    duplicates: List[DuplicateInfo]
+
+
+class MergeDuplicatesRequest(BaseModel):
+    """Request to merge duplicate memes."""
+    primary_filename: str
+    duplicate_filenames: List[str]
+    merge_metadata: bool = True
+    metadata_sources: Optional[List[str]] = None
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.state._started = False
+
+def _get_cache_path(filename: str) -> str:
+    """Get safe cache file path from filename hash."""
+    name_hash = hashlib.md5(filename.encode()).hexdigest()
+    return os.path.join(CACHE_DIR, f"{name_hash}.jpg")
+
+
+def _get_mime_type(ext: str) -> str:
+    """Get MIME type based on file extension."""
+    ext = ext.lower()
+    mime_types = {
+        'jpg': 'image/jpeg',
+        'jpeg': 'image/jpeg',
+        'png': 'image/png',
+        'webp': 'image/webp',
+        'gif': 'image/gif',
+        'bmp': 'image/bmp',
+        'tiff': 'image/tiff',
+        'mp4': 'video/mp4',
+        'webm': 'video/webm',
+        'mov': 'video/quicktime',
+        'mkv': 'video/x-matroska',
+        'avi': 'video/x-msvideo',
+        'flv': 'video/x-flv',
+    }
+    return mime_types.get(ext, 'application/octet-stream')
+
+
+async def _aget_or_generate_preview(filename: str, is_vid: bool, storage: Any, size: int = 300) -> bytes:
+    """Async wrapper for preview generation that uses storage async methods when available."""
+    cache_path = _get_cache_path(filename)
+
+    try:
+        return await async_generate_preview(filename, is_vid, storage, size=size)
+    except FileNotFoundError:
+        logger.info('File not found: %s', filename)
+        raise HTTPException(status_code=404, detail='File not found in storage')
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception('Storage/FFmpeg error for %s: %s', filename, exc)
+        raise HTTPException(status_code=503, detail='Storage/FFmpeg error')
+
+
+def get_settings() -> Settings:
+    return load_settings()
+
+
+@app.get("/health", tags=["health"])
+def health() -> Dict[str, Any]:
+    return {"status": "ok"}
+
+
+@app.get("/login", response_class=HTMLResponse, tags=["ui"])
+def login_page(request: Request):
+    """Serve the login page. Shows OIDC login button."""
+    return templates.TemplateResponse("login.html", {"request": request})
+
+
+@app.get("/", response_class=HTMLResponse, tags=["ui"])
+def index(request: Request, settings: Settings = Depends(get_settings), user_info: Optional[Dict] = Depends(optional_auth)):
+    """Serve the main meme gallery page. Redirects to login if not authenticated (unless public_mode)."""
+    if not settings.public_mode and not user_info:
+        return RedirectResponse(url="/login", status_code=302)
+    return templates.TemplateResponse("index.html", {"request": request})
+
+
+@app.get("/duplicates", response_class=HTMLResponse, tags=["ui"])
+def duplicates_page(request: Request, settings: Settings = Depends(get_settings), user_info: Optional[Dict] = Depends(optional_auth)):
+    """Serve the duplicates UI page. Requires authentication (unless public_mode)."""
+    if not settings.public_mode and not user_info:
+        return RedirectResponse(url="/login", status_code=302)
+    return templates.TemplateResponse("duplicates.html", {"request": request})
+
+
+@app.get("/pending", response_class=HTMLResponse, tags=["ui"])
+def pending_page(request: Request):
+    """Serve the pending memes UI page."""
+    return templates.TemplateResponse("pending.html", {"request": request})
+
+
+@app.get("/tokens", response_class=HTMLResponse, tags=["ui"])
+def tokens_page(request: Request, user_info: Optional[Dict] = Depends(optional_auth)):
+    """Serve the API tokens management page. Requires authentication."""
+    if not user_info:
+        return RedirectResponse(url="/login", status_code=302)
+    return templates.TemplateResponse("tokens.html", {"request": request})
+
+
+@app.get("/memes/{filename}/download", tags=["memes"])
+async def download_meme(filename: str, user_info: Dict = Depends(require_auth)):
+    """Download raw meme bytes from WebDAV proxy. REQUIRES AUTHENTICATION."""
+    try:
+        filename = sanitize_filename(filename)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    storage = getattr(app.state, 'app_instance', None) and getattr(app.state.app_instance, 'storage', None)
+    if not storage:
+        raise HTTPException(status_code=503, detail='Storage is not configured')
+    try:
+        data = await getattr(storage, 'async_download_file', storage.download_file)(filename)
+        if data is None:
+            raise HTTPException(status_code=404, detail='File not found in storage')
+        
+        ext = _get_extension(filename)
+        ctype = _get_mime_type(ext)
+        return StreamingResponse(
+            BytesIO(data),
+            media_type=ctype,
+            headers={"Content-Length": str(len(data))}
+        )
+    except HTTPException:
+        raise
+    except FileNotFoundError:
+        logger.info('File not found: %s', filename)
+        raise HTTPException(status_code=404, detail='File not found in storage')
+    except IOError as exc:
+        logger.exception('Storage error for %s: %s', filename, exc)
+        raise HTTPException(status_code=503, detail='Storage error')
+    except Exception as exc:
+        logger.exception('Failed to download %s: %s', filename, exc)
+        raise HTTPException(status_code=500, detail='Download failed')
+
+
+@app.get("/memes/{filename}/share-link", tags=["memes"])
+@limiter.limit("10/minute")
+def generate_share_link(request: Request, filename: str, user_info: Dict = Depends(require_auth)):
+    """Generate a temporary, signed share link for a meme (valid for 24h). REQUIRES AUTHENTICATION.
+    
+    Generates a new random token each time (allowing multiple valid links).
+    Token is hashed with Argon2id and stored in DB.
+    """
+    try:
+        filename = sanitize_filename(filename)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    # Generate random token (not stored in DB)
+    import secrets
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = hash_token(raw_token)
+    
+    expires_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=24)
+    
+    try:
+        with session_scope(app.state.engine) as session:
+            # Create new token (allow multiple tokens for same file)
+            share_token = FileShareToken(
+                filename=filename,
+                token_hash=token_hash,
+                created_by=user_info.get('sub', 'unknown'),
+                created_at=datetime.datetime.now(datetime.timezone.utc),
+                expires_at=expires_at
+            )
+            session.add(share_token)
+            session.commit()
+            
+            # Audit log
+            log_audit_action(
+                app.state.engine,
+                user_id=user_info.get('sub', 'unknown'),
+                action="CREATE_SHARE_LINK",
+                resource=filename,
+                resource_type="file",
+                details=None,
+                ip_address=request.client.host if request.client else None
+            )
+    except Exception as e:
+        logger.exception("Failed to create share token")
+        raise HTTPException(status_code=500, detail="Failed to create share link")
+    
+    # Construct full URL
+    base_url = str(request.base_url).rstrip('/')
+    share_url = f"{base_url}/memes/{filename}/shared?token={raw_token}"
+    
+    return {"url": share_url, "expires_in": "24h"}
+
+
+@app.get("/memes/{filename}/shared", tags=["memes"])
+async def access_shared_meme(filename: str, token: str):
+    """Access a shared meme via signed token. PUBLIC (validated by token)."""
+    try:
+        filename = sanitize_filename(filename)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    if not verify_share_token_db(token, filename, app.state.engine):
+        # Add a small delay to prevent timing attacks/brute force
+        await asyncio.sleep(0.1)
+        raise HTTPException(status_code=403, detail="Invalid or expired share token")
+    
+    # Serve file (same logic as download_meme)
+    storage = getattr(app.state, 'app_instance', None) and getattr(app.state.app_instance, 'storage', None)
+    if not storage:
+        raise HTTPException(status_code=503, detail='Storage is not configured')
+    
+    try:
+        data = await getattr(storage, 'async_download_file', storage.download_file)(filename)
+        if data is None:
+            raise HTTPException(status_code=404, detail='File not found in storage')
+        
+        ext = _get_extension(filename)
+        ctype = _get_mime_type(ext)
+        return StreamingResponse(
+            BytesIO(data),
+            media_type=ctype,
+            headers={"Content-Length": str(len(data))}
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception('Failed to download shared file %s: %s', filename, exc)
         raise HTTPException(status_code=500, detail='Download failed')
 
 

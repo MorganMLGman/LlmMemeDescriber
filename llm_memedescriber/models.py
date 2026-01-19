@@ -66,6 +66,17 @@ class UserToken(SQLModel, table=True):
     revoked: bool = Field(default=False, index=True)
 
 
+class FileShareToken(SQLModel, table=True):
+    """Temporary share token for accessing a specific file."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    filename: str = Field(index=True)
+    token_hash: str
+    created_by: str = Field(index=True)
+    created_at: datetime.datetime = Field(default_factory=lambda: datetime.datetime.now(datetime.timezone.utc))
+    expires_at: datetime.datetime = Field(index=True)
+    used_count: int = Field(default=0)
+
+
 class TokenResponse(SQLModel):
     """Response when generating a new token (token shown only once)."""
     id: int
@@ -83,6 +94,15 @@ class TokenInfo(SQLModel):
     expires_at: Optional[datetime.datetime]
     revoked: bool
     expired: bool
+
+
+class ShareTokenInfo(SQLModel):
+    """Info about a shared file token."""
+    id: int
+    filename: str
+    created_at: datetime.datetime
+    expires_at: datetime.datetime
+    used_count: int
 
 
 class UserInfo(SQLModel):

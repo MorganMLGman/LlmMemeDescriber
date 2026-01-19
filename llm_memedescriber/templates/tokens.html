@@ -31,13 +31,26 @@
 
     <!-- Tokens List -->
     <div>
-        <h5 class="mb-3">Your Tokens</h5>
-        <div id="tokensListContainer">
+        <h5 class="mb-3">Your API Tokens</h5>
+        <div id="tokensListContainer" class="mb-5">
             <div class="text-center text-muted py-5">
                 <div class="spinner-border" role="status">
                     <span class="visually-hidden">Loading tokens...</span>
                 </div>
                 <p class="mt-2">Loading tokens...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- File Share Links List -->
+    <div>
+        <h5 class="mb-3">Active File Share Links</h5>
+        <div id="shareTokensListContainer">
+            <div class="text-center text-muted py-5">
+                <div class="spinner-border" role="status">
+                    <span class="visually-hidden">Loading links...</span>
+                </div>
+                <p class="mt-2">Loading links...</p>
             </div>
         </div>
     </div>
@@ -155,6 +168,26 @@
     </div>
 </div>
 
+<!-- Revoke Share Link Confirmation Modal -->
+<div class="modal fade" id="revokeShareConfirmModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header bg-warning">
+                <h5 class="modal-title">Revoke Share Link?</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p>Are you sure you want to revoke the share link for <strong id="revokeShareFilename"></strong>?</p>
+                <p class="text-muted mb-0">Anyone with this link will no longer be able to access the file.</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-danger" onclick="confirmRevokeShare()">Revoke</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 {% endblock %}
 
 {% block extra_scripts %}
@@ -163,8 +196,10 @@ let generateTokenModal = null;
 let tokenDisplayModal = null;
 let revokeConfirmModal = null;
 let deleteConfirmModal = null;
+let revokeShareConfirmModal = null;
 let revokeTokenId = null;
 let deleteTokenId = null;
+let revokeShareId = null;
 let newTokenContent = null;
 
 document.addEventListener('DOMContentLoaded', function() {
@@ -172,8 +207,10 @@ document.addEventListener('DOMContentLoaded', function() {
     tokenDisplayModal = new bootstrap.Modal(document.getElementById('tokenDisplayModal'));
     revokeConfirmModal = new bootstrap.Modal(document.getElementById('revokeConfirmModal'));
     deleteConfirmModal = new bootstrap.Modal(document.getElementById('deleteConfirmModal'));
+    revokeShareConfirmModal = new bootstrap.Modal(document.getElementById('revokeShareConfirmModal'));
     
     loadTokensList();
+    loadShareTokensList();
 });
 
 async function loadTokensList() {
@@ -199,13 +236,33 @@ async function loadTokensList() {
     }
 }
 
+async function loadShareTokensList() {
+    try {
+        const response = await fetch('/api/share-tokens');
+        if (!response.ok) {
+            if (response.status === 401) return; // handled by loadTokensList redirect usually
+            throw new Error('Failed to load share tokens');
+        }
+
+        const tokens = await response.json();
+        displayShareTokens(tokens);
+    } catch (error) {
+        console.error('Error loading share tokens:', error);
+        document.getElementById('shareTokensListContainer').innerHTML = `
+            <div class="alert alert-danger">
+                Failed to load share tokens: ${error.message}
+            </div>
+        `;
+    }
+}
+
 function displayTokens(tokens) {
     const container = document.getElementById('tokensListContainer');
     
     if (tokens.length === 0) {
         container.innerHTML = `
             <div class="empty-state">
-                <h5>🔐 No Tokens Yet</h5>
+                <h5>🔐 No API Tokens Yet</h5>
                 <p>Create your first API token to get started with programmatic access.</p>
             </div>
         `;
@@ -261,6 +318,54 @@ function displayTokens(tokens) {
                             🗑️ Delete
                         </button>
                     ` : ''}
+                </div>
+            </div>
+        </div>
+    `;
+    }).join('');
+}
+
+function displayShareTokens(tokens) {
+    const container = document.getElementById('shareTokensListContainer');
+    
+    if (tokens.length === 0) {
+        container.innerHTML = `
+            <div class="empty-state">
+                <h5>No Active Share Links</h5>
+                <p>Share links generated for files will appear here.</p>
+            </div>
+        `;
+        return;
+    }
+
+    container.innerHTML = tokens.map(token => {
+        return `
+        <div class="card token-card active mb-3">
+            <div class="card-body">
+                <div class="token-card-header">
+                    <h6 class="token-name text-truncate" title="${escapeHtml(token.filename)}">${escapeHtml(token.filename)}</h6>
+                    <span class="badge bg-info">🔗 Share Link</span>
+                </div>
+                
+                <div class="token-meta">
+                    <div class="token-meta-item">
+                        <div class="token-meta-label">📅 Created</div>
+                        <div class="token-meta-value">${formatDate(token.created_at)}</div>
+                    </div>
+                    <div class="token-meta-item">
+                        <div class="token-meta-label">⏳ Expires</div>
+                        <div class="token-meta-value">${formatDate(token.expires_at)}</div>
+                    </div>
+                    <div class="token-meta-item">
+                        <div class="token-meta-label">👀 Used</div>
+                        <div class="token-meta-value">${token.used_count} times</div>
+                    </div>
+                </div>
+                
+                <div class="token-actions">
+                    <button class="btn btn-sm btn-danger" onclick="showRevokeShareConfirm(${token.id}, '${escapeHtml(token.filename)}')">
+                        ⛔ Revoke Link
+                    </button>
                 </div>
             </div>
         </div>
@@ -418,6 +523,34 @@ async function confirmDelete() {
     } catch (error) {
         console.error('Error deleting token:', error);
         alert('Failed to delete token: ' + error.message);
+    }
+}
+
+function showRevokeShareConfirm(shareId, filename) {
+    revokeShareId = shareId;
+    document.getElementById('revokeShareFilename').textContent = filename;
+    revokeShareConfirmModal.show();
+}
+
+async function confirmRevokeShare() {
+    if (!revokeShareId) return;
+
+    try {
+        const response = await fetch(`/api/share-tokens/${revokeShareId}`, {
+            method: 'DELETE'
+        });
+
+        if (!response.ok) {
+            const data = await response.json();
+            throw new Error(data.detail || 'Failed to revoke share link');
+        }
+
+        revokeShareConfirmModal.hide();
+        showSuccessMessage('Share link revoked');
+        setTimeout(() => { loadShareTokensList(); }, 500);
+    } catch (error) {
+        console.error('Error revoking share token:', error);
+        alert('Failed to revoke: ' + error.message);
     }
 }
 
