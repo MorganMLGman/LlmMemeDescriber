@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+
+{% block title %}Error {{ status_code }} - Meme Describer{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center mt-5">
+    <div class="col-md-8 text-center">
+        <div class="card border-danger shadow-sm">
+            <div class="card-header bg-danger text-white">
+                <h4 class="mb-0">⚠️ Error {{ status_code }}</h4>
+            </div>
+            <div class="card-body py-5">
+                <h2 class="card-title text-danger mb-4">Oops! Something went wrong.</h2>
+                <p class="card-text lead text-muted mb-4">{{ detail }}</p>
+                
+                <div class="d-flex justify-content-center gap-3">
+                    <a href="/" class="btn btn-primary">🏠 Go Home</a>
+                    <button onclick="history.back()" class="btn btn-outline-secondary">← Go Back</button>
+                </div>
+            </div>
+            <div class="card-footer text-muted">
+                <small>If this problem persists, please contact the administrator.</small>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

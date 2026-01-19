@@ -298,6 +298,58 @@ async def lifespan(app_instance: FastAPI):
 
 app = FastAPI(title="llm_memedescriber", description="Meme describing service", version="0.0.1", lifespan=lifespan)
 
+# Exception Handlers
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from fastapi.exceptions import RequestValidationError
+
+def is_api_request(request: Request) -> bool:
+    """Determine if the request expects JSON response or is an API call."""
+    return (
+        request.url.path.startswith("/api") or
+        request.url.path.startswith("/memes") or  # API-like endpoints
+        "application/json" in request.headers.get("accept", "")
+    )
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    if is_api_request(request):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+        )
+    return templates.TemplateResponse(
+        "error.html", 
+        {"request": request, "status_code": exc.status_code, "detail": exc.detail},
+        status_code=exc.status_code
+    )
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    if is_api_request(request):
+        return JSONResponse(
+            status_code=422,
+            content={"detail": str(exc)},
+        )
+    return templates.TemplateResponse(
+        "error.html", 
+        {"request": request, "status_code": 422, "detail": "Invalid request data."},
+        status_code=422
+    )
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    logger.exception(f"Unhandled exception: {exc}")
+    if is_api_request(request):
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Internal Server Error"},
+        )
+    return templates.TemplateResponse(
+        "error.html", 
+        {"request": request, "status_code": 500, "detail": "An unexpected error occurred. Please check logs."},
+        status_code=500
+    )
+
 # Initialize rate limiter
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
