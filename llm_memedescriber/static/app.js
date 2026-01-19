@@ -681,6 +681,61 @@ function removeKeyword(idx) {
         }
     }
 
+    async function openMemeSimplePreview(filename) {
+        try {
+            const modalElement = document.getElementById('memeSimplePreviewModal');
+            const modal = bootstrap.Modal.getOrCreateInstance(modalElement);
+            
+            document.getElementById('simpleMemeTitle').textContent = filename;
+            
+            const imgEl = document.getElementById('simpleMemeImage');
+            const vidEl = document.getElementById('simpleMemeVideo');
+            const vidSource = document.getElementById('simpleMemeVideoSource');
+            const loadingEl = document.getElementById('simpleMemeLoading');
+            
+            // Reset state
+            imgEl.style.display = 'none';
+            vidEl.style.display = 'none';
+            loadingEl.style.display = 'flex';
+            
+            modal.show();
+            
+            const isVideo = /\.(mp4|webm|mov|mkv|avi|flv)$/i.test(filename);
+            
+            if (isVideo) {
+                vidSource.src = `/memes/${encodeURIComponent(filename)}/download`;
+                const ext = filename.split('.').pop().toLowerCase();
+                const mimeTypes = {
+                    'mp4': 'video/mp4', 'webm': 'video/webm', 'mkv': 'video/x-matroska',
+                    'avi': 'video/x-msvideo', 'flv': 'video/x-flv'
+                };
+                vidSource.type = mimeTypes[ext] || 'video/mp4';
+                
+                vidEl.oncanplay = () => {
+                    loadingEl.style.display = 'none';
+                    vidEl.style.display = 'block';
+                    vidEl.play().catch(e => console.log('Autoplay blocked', e));
+                };
+                vidEl.load();
+            } else {
+                imgEl.onload = () => {
+                    loadingEl.style.display = 'none';
+                    imgEl.style.display = 'block';
+                };
+                imgEl.onerror = () => {
+                    loadingEl.style.display = 'none';
+                    showError('Failed to load image preview');
+                };
+                // Use large preview
+                imgEl.src = `/memes/${encodeURIComponent(filename)}/preview?size=800`;
+            }
+            
+        } catch (e) {
+            console.error('Unable to open simple preview for', filename, e);
+            showError('Failed to open preview');
+        }
+    }
+
 async function retryDescriptionGeneration() {
     if (!currentMemeId) return;
     
@@ -1359,6 +1414,31 @@ document.addEventListener('DOMContentLoaded', function() {
         if (!memeModalEl._listenersAdded) {
             memeModalEl.addEventListener('hide.bs.modal', onHideHandler);
             memeModalEl._listenersAdded = true;
+        }
+    }
+    
+    // Set up listeners for simple preview modal
+    const simpleModalEl = document.getElementById('memeSimplePreviewModal');
+    if (simpleModalEl) {
+        const onHideSimpleHandler = function() {
+            try {
+                const video = document.getElementById('simpleMemeVideo');
+                const videoSource = document.getElementById('simpleMemeVideoSource');
+                if (video) {
+                    video.pause();
+                    video.currentTime = 0;
+                    if (videoSource) {
+                        videoSource.src = "";
+                        video.load();
+                    }
+                }
+            } catch (e) {
+                console.error('Error in simple hide handler:', e);
+            }
+        };
+        if (!simpleModalEl._listenersAdded) {
+            simpleModalEl.addEventListener('hide.bs.modal', onHideSimpleHandler);
+            simpleModalEl._listenersAdded = true;
         }
     }
     

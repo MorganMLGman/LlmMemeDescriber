@@ -191,6 +191,7 @@
 {% endblock %}
 
 {% block extra_scripts %}
+<script src="/static/app.js?v=8"></script>
 <script>
 let generateTokenModal = null;
 let tokenDisplayModal = null;
@@ -343,8 +344,11 @@ function displayShareTokens(tokens) {
         <div class="card token-card active mb-3">
             <div class="card-body">
                 <div class="token-card-header">
-                    <h6 class="token-name text-truncate" title="${escapeHtml(token.filename)}">${escapeHtml(token.filename)}</h6>
-                    <span class="badge bg-info">🔗 Share Link</span>
+                    <h6 class="token-name text-truncate" title="${escapeHtml(token.filename)}">
+                        <a href="#" onclick="openMemeSimplePreview('${escapeHtml(token.filename)}'); return false;" class="text-decoration-none text-dark">
+                            ${escapeHtml(token.filename)} 🔗
+                        </a>
+                    </h6>
                 </div>
                 
                 <div class="token-meta">
