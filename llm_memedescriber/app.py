@@ -302,7 +302,6 @@ async def lifespan(app_instance: FastAPI):
 
 app = FastAPI(title="llm_memedescriber", description="Meme describing service", version="0.0.1", lifespan=lifespan)
 app.state.limiter = limiter
-app.add_exception_handler(Exception, limiter.limit_handler)
 
 # Exception Handlers
 from starlette.exceptions import HTTPException as StarletteHTTPException
