@@ -370,19 +370,16 @@ class TestIntegrationScenarios:
 
     def test_default_cert_paths(self, tmp_path, monkeypatch):
         """Test that default cert paths are used correctly."""
-        default_cert_dir = str(tmp_path / "data" / "certs")
-        
-        def mock_generate(cert_dir="/data/certs", hostname="localhost"):
-            Path(cert_dir).mkdir(parents=True, exist_ok=True)
-            cert_path = Path(cert_dir) / "server.crt"
-            key_path = Path(cert_dir) / "server.key"
-            cert_path.write_text("-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----")
-            key_path.write_text("-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----")
-            return str(cert_path), str(key_path)
+        cert_dir = tmp_path / "certs"
+        cert_dir.mkdir(parents=True, exist_ok=True)
+        cert_path = cert_dir / "server.crt"
+        key_path = cert_dir / "server.key"
+        cert_path.write_text("-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----")
+        key_path.write_text("-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----")
         
         monkeypatch.setattr(
             "llm_memedescriber.ssl_helpers.get_or_create_self_signed_cert",
-            mock_generate
+            lambda: (str(cert_path), str(key_path))
         )
         
         result_cert, result_key = validate_certificate_files(None, None)
@@ -390,8 +387,19 @@ class TestIntegrationScenarios:
         assert "server.crt" in result_cert
         assert "server.key" in result_key
 
-    def test_https_only_configured(self):
+    def test_https_only_configured(self, tmp_path, monkeypatch):
         """Verify app is configured for HTTPS only."""
+        cert_dir = tmp_path / "certs"
+        cert_dir.mkdir(parents=True, exist_ok=True)
+        cert_path = cert_dir / "server.crt"
+        key_path = cert_dir / "server.key"
+        cert_path.write_text("-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----")
+        key_path.write_text("-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----")
+        
+        monkeypatch.setattr(
+            "llm_memedescriber.ssl_helpers.get_or_create_self_signed_cert",
+            lambda: (str(cert_path), str(key_path))
+        )
         
         cert, key = validate_certificate_files(None, None)
         assert os.path.isfile(cert), "Certificate file should exist"
