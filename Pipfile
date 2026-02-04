@@ -20,7 +20,7 @@ cryptography = "*"
 authlib = "*"
 python-jose = {extras = ["cryptography"], version = "*"}
 httpx = "*"
-fastapi-limiter2 = "*"
+slowapi = "*"
 fastapi-csrf-protect = "*"
 argon2-cffi = "*"
 
