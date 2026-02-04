@@ -235,23 +235,34 @@ jobs:
           
           if [[ "${{ github.event_name }}" == "push" && "${{ startsWith(github.ref, 'refs/tags/v') }}" == "true" ]]; then
             VERSION=${GITHUB_REF#refs/tags/v}
-            MESSAGE="✅ <b>Build Success: LLM Meme Describer v${VERSION}</b>%0A%0A"
-            MESSAGE="${MESSAGE}📦 <b>Available Tags:</b>%0A"
-            MESSAGE="${MESSAGE}🐳 Docker Hub:%0A"
-            MESSAGE="${MESSAGE}• <code>${DOCKERHUB_USER}/${{ env.IMAGE_NAME }}:${VERSION}</code>%0A"
-            MESSAGE="${MESSAGE}• <code>${DOCKERHUB_USER}/${{ env.IMAGE_NAME }}:latest</code>%0A"
-            MESSAGE="${MESSAGE}%0A🐳 GHCR:%0A"
-            MESSAGE="${MESSAGE}• <code>ghcr.io/${REPO_OWNER}/${{ env.IMAGE_NAME }}:${VERSION}</code>%0A"
-            MESSAGE="${MESSAGE}• <code>ghcr.io/${REPO_OWNER}/${{ env.IMAGE_NAME }}:latest</code>%0A"
+            MESSAGE="✅ **Build Success: LLM Meme Describer v${VERSION}**
+
+          📦 **Available Tags:**
+
+          🐳 **Docker Hub:**
+          • \`${DOCKERHUB_USER}/${{ env.IMAGE_NAME }}:${VERSION}\`
+          • \`${DOCKERHUB_USER}/${{ env.IMAGE_NAME }}:latest\`
+
+          🐳 **GHCR:**
+          • \`ghcr.io/${REPO_OWNER}/${{ env.IMAGE_NAME }}:${VERSION}\`
+          • \`ghcr.io/${REPO_OWNER}/${{ env.IMAGE_NAME }}:latest\`"
           else
             SHORT_SHA=${GITHUB_SHA:0:7}
-            MESSAGE="✅ <b>Build Success: LLM Meme Describer (SHA-${SHORT_SHA})</b>%0A%0A"
-            MESSAGE="${MESSAGE}📦 <b>Available Images:</b>%0A"
-            MESSAGE="${MESSAGE}🐳 Docker Hub: <code>${DOCKERHUB_USER}/${{ env.IMAGE_NAME }}:sha-${SHORT_SHA}</code>%0A"
-            MESSAGE="${MESSAGE}🐳 GHCR: <code>ghcr.io/${REPO_OWNER}/${{ env.IMAGE_NAME }}:sha-${SHORT_SHA}</code>%0A"
+            MESSAGE="✅ **Build Success: LLM Meme Describer (SHA-${SHORT_SHA})**
+
+          📦 **Available Images:**
+
+          🐳 **Docker Hub:** \`${DOCKERHUB_USER}/${{ env.IMAGE_NAME }}:sha-${SHORT_SHA}\`
+          🐳 **GHCR:** \`ghcr.io/${REPO_OWNER}/${{ env.IMAGE_NAME }}:sha-${SHORT_SHA}\`"
           fi
           
-          MESSAGE="${MESSAGE}%0A🔗 <a href='https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}'>View Workflow Run</a>"
+          MESSAGE="${MESSAGE}
+
+          🔗 [View Workflow Run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+          
+          # Escape newlines for output
+          MESSAGE="${MESSAGE//'%'/'%25'}"
+          MESSAGE="${MESSAGE//$'\n'/'%0A'}"
           echo "message=${MESSAGE}" >> $GITHUB_OUTPUT
       
       - name: Send Telegram notification
@@ -260,4 +271,4 @@ jobs:
           to: ${{ secrets.TELEGRAM_TO }}
           token: ${{ secrets.TELEGRAM_TOKEN }}
           message: ${{ steps.message.outputs.message }}
-          format: html
+          format: markdown
