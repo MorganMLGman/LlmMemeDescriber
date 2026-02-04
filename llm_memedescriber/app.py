@@ -395,16 +395,6 @@ app.add_middleware(
 )
 
 
-# Rate limit exception handler
-@app.exception_handler(RateLimitExceeded)
-async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
-    """Handle rate limit exceeded errors."""
-    return HTMLResponse(
-        content=f"<html><body><h1>429 Too Many Requests</h1><p>{str(exc.detail)}</p></body></html>",
-        status_code=429
-    )
-
-
 # Custom middleware to track API token usage
 @app.middleware("http")
 async def track_api_token_usage(request: Request, call_next):
