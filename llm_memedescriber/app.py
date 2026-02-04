@@ -1892,19 +1892,19 @@ def mark_meme_not_duplicate(filename: str, user_info: Dict = Depends(require_aut
 
 @app.post("/memes/merge-duplicates", tags=["deduplication"])
 @limiter.limit("30/minute")
-def merge_duplicate_memes(request: MergeDuplicatesRequest, user_info: Dict = Depends(require_auth)):
+def merge_duplicate_memes(request: Request, merge_request: MergeDuplicatesRequest, user_info: Dict = Depends(require_auth)):
     """Merge duplicate memes into the primary meme. REQUIRES AUTHENTICATION.
     
     Combines metadata (keywords, description) from duplicates into primary.
     Deletes duplicate files from storage and database.
     Primary meme is preserved with merged metadata.
     """
-    if not request.primary_filename or not request.duplicate_filenames:
+    if not merge_request.primary_filename or not merge_request.duplicate_filenames:
         raise HTTPException(status_code=400, detail="primary_filename and duplicate_filenames are required")
     
     try:
-        request.primary_filename = sanitize_filename(request.primary_filename)
-        request.duplicate_filenames = [sanitize_filename(f) for f in request.duplicate_filenames]
+        merge_request.primary_filename = sanitize_filename(merge_request.primary_filename)
+        merge_request.duplicate_filenames = [sanitize_filename(f) for f in merge_request.duplicate_filenames]
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     
@@ -1917,37 +1917,37 @@ def merge_duplicate_memes(request: MergeDuplicatesRequest, user_info: Dict = Dep
             success = merge_duplicates(
                 session,
                 storage,
-                request.primary_filename,
-                request.duplicate_filenames,
-                merge_metadata=request.merge_metadata,
-                metadata_sources=request.metadata_sources
+                merge_request.primary_filename,
+                merge_request.duplicate_filenames,
+                merge_metadata=merge_request.merge_metadata,
+                metadata_sources=merge_request.metadata_sources
             )
             
             if not success:
                 raise HTTPException(status_code=404, detail="Primary meme or duplicates not found")
             
-            logger.info(f"Merged {len(request.duplicate_filenames)} duplicates into {request.primary_filename} by user {user_info.get('sub')}")
+            logger.info(f"Merged {len(merge_request.duplicate_filenames)} duplicates into {merge_request.primary_filename} by user {user_info.get('sub')}")
             
             # Audit log
             log_audit_action(
                 app.state.engine,
                 user_id=user_info.get('sub', 'unknown'),
                 action="MERGE_DUPLICATES",
-                resource=request.primary_filename,
+                resource=merge_request.primary_filename,
                 resource_type="meme_group",
-                details=f"Merged {len(request.duplicate_filenames)} duplicates: {','.join(request.duplicate_filenames)}",
+                details=f"Merged {len(merge_request.duplicate_filenames)} duplicates: {','.join(merge_request.duplicate_filenames)}",
                 ip_address=None
             )
             
             return {
                 "status": "ok",
-                "message": f"Merged {len(request.duplicate_filenames)} duplicates into {request.primary_filename}",
-                "primary_filename": request.primary_filename
+                "message": f"Merged {len(merge_request.duplicate_filenames)} duplicates into {merge_request.primary_filename}",
+                "primary_filename": merge_request.primary_filename
             }
     except HTTPException:
         raise
     except Exception:
-        logger.exception(f"Failed to merge duplicates into {request.primary_filename}")
+        logger.exception(f"Failed to merge duplicates into {merge_request.primary_filename}")
         raise HTTPException(status_code=500, detail="Failed to merge duplicates")
 
 class PairDTO(BaseModel):
@@ -2011,17 +2011,17 @@ def delete_duplicate_pair(request: Request, pair: PairDTO, user_info: Dict = Dep
 
 @app.post("/memes/duplicates/delete-group", tags=["deduplication"])
 @limiter.limit("10/minute")
-def delete_duplicate_group(http_request: Request, request: MergeDuplicatesRequest, user_info: Dict = Depends(require_auth)):
+def delete_duplicate_group(request: Request, merge_request: MergeDuplicatesRequest, user_info: Dict = Depends(require_auth)):
     """Delete all duplicates in a group except the primary meme. REQUIRES AUTHENTICATION.
     
     Does not merge metadata - simply deletes all duplicates and keeps the primary.
     """
-    if not request.primary_filename or not request.duplicate_filenames:
+    if not merge_request.primary_filename or not merge_request.duplicate_filenames:
         raise HTTPException(status_code=400, detail="primary_filename and duplicate_filenames are required")
     
     try:
-        request.primary_filename = sanitize_filename(request.primary_filename)
-        request.duplicate_filenames = [sanitize_filename(f) for f in request.duplicate_filenames]
+        merge_request.primary_filename = sanitize_filename(merge_request.primary_filename)
+        merge_request.duplicate_filenames = [sanitize_filename(f) for f in merge_request.duplicate_filenames]
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     
@@ -2035,32 +2035,32 @@ def delete_duplicate_group(http_request: Request, request: MergeDuplicatesReques
             success = merge_duplicates(
                 session,
                 storage,
-                request.primary_filename,
-                request.duplicate_filenames,
+                merge_request.primary_filename,
+                merge_request.duplicate_filenames,
                 merge_metadata=False  # Don't merge metadata, just delete
             )
             
             if not success:
                 raise HTTPException(status_code=404, detail="Primary meme or duplicates not found")
             
-            logger.info(f"Deleted {len(request.duplicate_filenames)} duplicates from group, keeping {request.primary_filename}")
+            logger.info(f"Deleted {len(merge_request.duplicate_filenames)} duplicates from group, keeping {merge_request.primary_filename}")
             
             # Audit log
             log_audit_action(
                 app.state.engine,
                 user_id=user_info.get('sub', 'unknown'),
                 action="DELETE_DUPLICATE_GROUP",
-                resource=request.primary_filename,
+                resource=merge_request.primary_filename,
                 resource_type="meme_group",
-                details=f"Deleted {len(request.duplicate_filenames)} duplicates: {','.join(request.duplicate_filenames)}",
+                details=f"Deleted {len(merge_request.duplicate_filenames)} duplicates: {','.join(merge_request.duplicate_filenames)}",
                 ip_address=None
             )
             
             return {
                 "status": "ok",
-                "message": f"Deleted {len(request.duplicate_filenames)} duplicate(s), kept primary: {request.primary_filename}",
-                "primary_filename": request.primary_filename,
-                "deleted_count": len(request.duplicate_filenames)
+                "message": f"Deleted {len(merge_request.duplicate_filenames)} duplicate(s), kept primary: {merge_request.primary_filename}",
+                "primary_filename": merge_request.primary_filename,
+                "deleted_count": len(merge_request.duplicate_filenames)
             }
     except HTTPException:
         raise
