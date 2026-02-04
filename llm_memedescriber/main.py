@@ -46,7 +46,9 @@ def main():
     logger.info("Settings loaded")
 
     base_url = settings.webdav_url.rstrip('/')
-    base_storage = WebDavStorage(base_url, auth=(settings.webdav_username, settings.webdav_password))
+    username = settings.webdav_username.get_secret_value() if settings.webdav_username else None
+    password = settings.webdav_password.get_secret_value() if settings.webdav_password else None
+    base_storage = WebDavStorage(base_url, auth=(username, password))
     try:
         storage_workers = int(getattr(settings, 'storage_workers', DEFAULT_STORAGE_WORKERS) or DEFAULT_STORAGE_WORKERS)
     except Exception:

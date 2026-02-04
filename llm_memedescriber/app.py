@@ -121,7 +121,9 @@ async def lifespan(app_instance: FastAPI):
     storage = None
     if getattr(settings, 'webdav_url', None):
         base_url = settings.webdav_url.rstrip('/') + '/' + settings.webdav_path.lstrip('/')
-        base_storage = WebDavStorage(base_url, auth=(settings.webdav_username, settings.webdav_password))
+        username = settings.webdav_username.get_secret_value() if settings.webdav_username else None
+        password = settings.webdav_password.get_secret_value() if settings.webdav_password else None
+        base_storage = WebDavStorage(base_url, auth=(username, password))
         try:
             storage_workers = int(getattr(settings, 'storage_workers', DEFAULT_STORAGE_WORKERS) or DEFAULT_STORAGE_WORKERS)
         except Exception:
@@ -135,7 +137,8 @@ async def lifespan(app_instance: FastAPI):
 
     genai_client = None
     if getattr(settings, 'google_genai_api_key', None):
-        genai_client = get_client(settings.google_genai_api_key)
+        api_key = settings.google_genai_api_key.get_secret_value()
+        genai_client = get_client(api_key)
 
     interval = 60
     if getattr(settings, 'run_interval', None):
