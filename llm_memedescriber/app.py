@@ -5,9 +5,9 @@ from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware
 from fastapi_csrf_protect import CsrfProtect
-from slowapi import Limiter
-from slowapi.util import get_remote_address
-from slowapi.errors import RateLimitExceeded
+from fastapi_limiter2 import FastAPILimiter
+from fastapi_limiter2.backends import InMemoryBackend
+from fastapi_limiter2.util import get_remote_address
 from contextlib import asynccontextmanager
 from pathlib import Path
 import asyncio
@@ -67,6 +67,9 @@ def get_settings() -> Any:
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI):
     """Manage application lifecycle (startup and shutdown events)."""
+    # Initialize rate limiter
+    await FastAPILimiter.init(InMemoryBackend())
+    
     settings = load_settings()
     configure_logging(settings)
     
@@ -353,9 +356,8 @@ async def general_exception_handler(request: Request, exc: Exception):
         status_code=500
     )
 
-# Initialize rate limiter
-limiter = Limiter(key_func=get_remote_address)
-app.state.limiter = limiter
+# Rate limiter is initialized in lifespan
+# Use @limiter.limit decorator on routes
 
 # Initialize CSRF protection
 @CsrfProtect.load_config
@@ -712,7 +714,7 @@ async def download_meme(filename: str, user_info: Dict = Depends(require_auth)):
 
 
 @app.get("/memes/{filename}/share-link", tags=["memes"])
-@limiter.limit("10/minute")
+@FastAPILimiter.limit("10/minute")
 def generate_share_link(request: Request, filename: str, user_info: Dict = Depends(require_auth)):
     """Generate a temporary, signed share link for a meme (valid for 24h). REQUIRES AUTHENTICATION.
     
@@ -1063,7 +1065,7 @@ async def download_meme(filename: str, user_info: Dict = Depends(require_auth)):
 
 
 @app.get("/memes/{filename}/share-link", tags=["memes"])
-@limiter.limit("10/minute")
+@FastAPILimiter.limit("10/minute")
 def generate_share_link(request: Request, filename: str, user_info: Dict = Depends(require_auth)):
     """Generate a temporary, signed share link for a meme (valid for 24h). REQUIRES AUTHENTICATION.
     
@@ -1227,7 +1229,7 @@ def get_phash_status(user_info: Dict = Depends(require_auth)):
 
 
 @app.post("/sync", tags=["sync"])
-@limiter.limit("5/minute")
+@FastAPILimiter.limit("5/minute")
 def trigger_sync(request: Request, user_info: Dict = Depends(require_auth)):
     """Manually trigger a sync job to check for new/removed memes from WebDAV. REQUIRES AUTHENTICATION.
     
@@ -1246,7 +1248,7 @@ def trigger_sync(request: Request, user_info: Dict = Depends(require_auth)):
 
 
 @app.post("/memes/deduplication/analyze", tags=["deduplication"])
-@limiter.limit("10/minute")
+@FastAPILimiter.limit("10/minute")
 def analyze_duplicates(request: Request, user_info: Dict = Depends(require_auth)):
     """Analyze all memes and find duplicate groups using perceptual hashing. REQUIRES AUTHENTICATION.
 
@@ -1585,7 +1587,7 @@ def update_meme(filename: str, request: UpdateMemeRequest, user_info: Dict = Dep
 
 
 @app.delete("/memes/{filename}", tags=["memes"])
-@limiter.limit("10/hour")
+@FastAPILimiter.limit("10/hour")
 async def remove_meme(filename: str, request: Request, user_info: Dict = Depends(require_auth)):
     """Delete a meme from database and WebDAV storage. REQUIRES AUTHENTICATION and CSRF token."""
     try:
@@ -1692,7 +1694,7 @@ def get_prompt(user_info: Dict = Depends(require_auth)):
         raise HTTPException(status_code=500, detail="Failed to load prompt")
 
 @app.post("/api/prompt", tags=["config"])
-@limiter.limit("10/minute")
+@FastAPILimiter.limit("10/minute")
 def save_prompt(request: Request, request_body: dict, user_info: Dict = Depends(require_auth)):
     """Save custom prompt to /data/prompt.txt. REQUIRES AUTHENTICATION and CSRF token."""
     if not request_body.get("prompt"):
@@ -1770,7 +1772,7 @@ def get_meme_duplicates(filename: str, user_info: Dict = Depends(require_auth)):
         raise HTTPException(status_code=500, detail="Failed to get duplicates")
 
 @app.post("/memes/{filename}/recalculate-phash", tags=["deduplication"])
-@limiter.limit("20/minute")
+@FastAPILimiter.limit("20/minute")
 async def recalculate_meme_phash(filename: str, request: Request, user_info: Dict = Depends(require_auth)):
     """Manually recalculate perceptual hash for a meme. REQUIRES AUTHENTICATION.
     
@@ -1900,7 +1902,7 @@ def mark_meme_not_duplicate(filename: str, user_info: Dict = Depends(require_aut
 
 
 @app.post("/memes/merge-duplicates", tags=["deduplication"])
-@limiter.limit("30/minute")
+@FastAPILimiter.limit("30/minute")
 def merge_duplicate_memes(request: MergeDuplicatesRequest, user_info: Dict = Depends(require_auth)):
     """Merge duplicate memes into the primary meme. REQUIRES AUTHENTICATION.
     
@@ -1965,7 +1967,7 @@ class PairDTO(BaseModel):
 
 
 @app.post("/duplicates/pairs", tags=["deduplication"])
-@limiter.limit("10/minute")
+@FastAPILimiter.limit("10/minute")
 def create_duplicate_pair(request: Request, pair: PairDTO, user_info: Dict = Depends(require_auth)):
     try:
         a = sanitize_filename(pair.filename_a)
@@ -1996,7 +1998,7 @@ def list_duplicate_pairs(user_info: Dict = Depends(require_auth)):
 
 
 @app.delete("/duplicates/pairs", tags=["deduplication"])
-@limiter.limit("10/minute")
+@FastAPILimiter.limit("10/minute")
 def delete_duplicate_pair(request: Request, pair: PairDTO, user_info: Dict = Depends(require_auth)):
     try:
         a = sanitize_filename(pair.filename_a)
@@ -2019,7 +2021,7 @@ def delete_duplicate_pair(request: Request, pair: PairDTO, user_info: Dict = Dep
 
 
 @app.post("/memes/duplicates/delete-group", tags=["deduplication"])
-@limiter.limit("10/minute")
+@FastAPILimiter.limit("10/minute")
 def delete_duplicate_group(http_request: Request, request: MergeDuplicatesRequest, user_info: Dict = Depends(require_auth)):
     """Delete all duplicates in a group except the primary meme. REQUIRES AUTHENTICATION.
     
@@ -2124,7 +2126,7 @@ def get_user_from_request(request: Request) -> Optional[Dict[str, Any]]:
 
 
 @app.get("/auth/login", tags=["auth"])
-@limiter.limit("10/minute")
+@FastAPILimiter.limit("10/minute")
 def login(request: Request):
     """Redirect to OIDC provider for authentication."""
     auth_context = get_auth_context()
@@ -2142,7 +2144,7 @@ def login(request: Request):
 
 
 @app.get("/auth/callback", tags=["auth"])
-@limiter.limit("10/minute")
+@FastAPILimiter.limit("10/minute")
 async def callback(request: Request, code: Optional[str] = None, state: Optional[str] = None, error: Optional[str] = None, error_description: Optional[str] = None):
     """OIDC callback - exchange code for token and create session."""
     auth_context = get_auth_context()
@@ -2201,7 +2203,7 @@ async def callback(request: Request, code: Optional[str] = None, state: Optional
 
 
 @app.post("/auth/logout", tags=["auth"])
-@limiter.limit("10/minute")
+@FastAPILimiter.limit("10/minute")
 def logout(request: Request):
     """Logout user by revoking session."""
     auth_context = get_auth_context()
@@ -2267,7 +2269,7 @@ class TokenGenerateRequest(BaseModel):
 
 
 @app.post("/api/tokens", tags=["auth"], response_model=TokenResponse)
-@limiter.limit("10/hour")
+@FastAPILimiter.limit("10/hour")
 def generate_api_token(request_body: TokenGenerateRequest, request: Request):
     """Generate a new API token for authenticated user."""
     user_info = get_user_from_request(request)
