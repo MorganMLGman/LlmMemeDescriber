@@ -296,6 +296,57 @@ def make_fake_open(secret_path: str, secret_content: str):
     return fake_open
 
 
+def setup_oidc_secrets_monkeypatch(monkeypatch, secrets_dict):
+    """Setup monkeypatch for multiple OIDC secrets.
+    
+    Args:
+        monkeypatch: pytest monkeypatch fixture
+        secrets_dict: Dict mapping secret paths to their content
+                     e.g., {'/run/secrets/oidc_client_secret': 'secret123', ...}
+    """
+    import builtins, io, os
+    real_open = builtins.open
+    
+    def isfile(p):
+        return os.path.normpath(p) in [os.path.normpath(path) for path in secrets_dict.keys()]
+    
+    def fake_open(path, mode='r', encoding=None, *args, **kwargs):
+        norm = os.path.normpath(path)
+        for secret_path, content in secrets_dict.items():
+            if norm == os.path.normpath(secret_path):
+                return io.StringIO(content)
+        return real_open(path, mode, encoding=encoding, *args, **kwargs)
+    
+    monkeypatch.setattr(os.path, "isfile", isfile)
+    monkeypatch.setattr(builtins, "open", fake_open)
+
+
+def create_oidc_settings(override_dict=None):
+    """Create a Settings instance with standard OIDC configuration.
+    
+    Args:
+        override_dict: Optional dict to override default OIDC settings
+    
+    Returns:
+        Settings instance with OIDC enabled and default values
+    """
+    from llm_memedescriber.config import Settings
+    
+    defaults = {
+        'oidc_enabled': True,
+        'oidc_provider_url': 'https://auth.example.com',
+        'oidc_client_id': 'client123',
+        'oidc_client_secret': 'env-client-secret',
+        'oidc_redirect_uri': 'https://app.example.com/callback',
+        'jwt_secret': 'env-jwt-secret',
+    }
+    
+    if override_dict:
+        defaults.update(override_dict)
+    
+    return Settings(**defaults)
+
+
 def create_memes(session, items, model=None):
     """Create multiple model instances from dicts; defaults to Meme if model not provided."""
     if model is None:

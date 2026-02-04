@@ -37,7 +37,7 @@ class OIDCClient:
         self.settings = settings
         self.provider_url = settings.oidc_provider_url
         self.client_id = settings.oidc_client_id
-        self.client_secret = settings.oidc_client_secret
+        self.client_secret = settings.oidc_client_secret.get_secret_value() if settings.oidc_client_secret else None
         self.redirect_uri = settings.oidc_redirect_uri
         self.scopes = settings.oidc_scopes
         
@@ -134,8 +134,15 @@ class OIDCClient:
 class JWTManager:
     """Manages JWT token generation and validation for API access."""
     
-    def __init__(self, secret: str, expiry_days: int = 30):
-        self.secret = secret
+    def __init__(self, secret: str | None, expiry_days: int = 30):
+        # Handle both str and SecretStr
+        if hasattr(secret, 'get_secret_value'):
+            self.secret = secret
+        else:
+            if hasattr(secret, 'get_secret_value'):
+                self.secret = secret.get_secret_value()
+            else:
+                self.secret = secret
         self.expiry_days = expiry_days
         self.algorithm = "HS256"
     

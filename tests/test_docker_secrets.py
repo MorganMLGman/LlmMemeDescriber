@@ -15,14 +15,14 @@ def test_secret_over_env(monkeypatch):
     monkeypatch.setattr(os.path, "isfile", lambda p: os.path.normpath(p) == os.path.normpath(secret_path))
     monkeypatch.setattr(builtins, "open", make_fake_open(secret_path, "secret-value"))
 
-    s = Settings(google_genai_api_key="env-value")
-    assert s.google_genai_api_key == "secret-value"
+    s = Settings(public_mode=True, google_genai_api_key="env-value")
+    assert s.google_genai_api_key.get_secret_value() == "secret-value"
 
 
 def test_env_if_no_secret(monkeypatch):
     monkeypatch.setattr(os.path, "isfile", lambda p: False)
-    s = Settings(google_genai_api_key="env-value")
-    assert s.google_genai_api_key == "env-value"
+    s = Settings(public_mode=True, google_genai_api_key="env-value")
+    assert s.google_genai_api_key.get_secret_value() == "env-value"
 
 
 def test_empty_secret_fallbacks_to_env(monkeypatch):
@@ -30,8 +30,8 @@ def test_empty_secret_fallbacks_to_env(monkeypatch):
     monkeypatch.setattr(os.path, "isfile", lambda p: os.path.normpath(p) == os.path.normpath(secret_path))
     monkeypatch.setattr(builtins, "open", make_fake_open(secret_path, ""))
 
-    s = Settings(google_genai_api_key="env-value")
-    assert s.google_genai_api_key == "env-value"
+    s = Settings(public_mode=True, google_genai_api_key="env-value")
+    assert s.google_genai_api_key.get_secret_value() == "env-value"
 
 
 def test_uppercase_secret(monkeypatch):
@@ -39,8 +39,8 @@ def test_uppercase_secret(monkeypatch):
     monkeypatch.setattr(os.path, "isfile", lambda p: os.path.normpath(p) == os.path.normpath(secret_path))
     monkeypatch.setattr(builtins, "open", make_fake_open(secret_path, "upper-secret"))
 
-    s = Settings(google_genai_api_key="env-value")
-    assert s.google_genai_api_key == "upper-secret"
+    s = Settings(public_mode=True, google_genai_api_key="env-value")
+    assert s.google_genai_api_key.get_secret_value() == "upper-secret"
 
 
 def test_secret_with_special_characters(monkeypatch):
@@ -55,8 +55,8 @@ def test_secret_with_special_characters(monkeypatch):
     monkeypatch.setattr(os.path, "isfile", lambda p: os.path.normpath(p) == os.path.normpath(secret_path))
     monkeypatch.setattr(builtins, "open", make_fake_open(secret_path, special))
 
-    s = Settings(google_genai_api_key="env-value")
-    assert s.google_genai_api_key == special.strip()
+    s = Settings(public_mode=True, google_genai_api_key="env-value")
+    assert s.google_genai_api_key.get_secret_value() == special.strip()
 
 
 def test_whitespace_only_secret_fallbacks_to_env(monkeypatch):
@@ -64,8 +64,8 @@ def test_whitespace_only_secret_fallbacks_to_env(monkeypatch):
     monkeypatch.setattr(os.path, "isfile", lambda p: os.path.normpath(p) == os.path.normpath(secret_path))
     monkeypatch.setattr(builtins, "open", make_fake_open(secret_path, "   \n\t  \n"))
 
-    s = Settings(google_genai_api_key="env-value")
-    assert s.google_genai_api_key == "env-value"
+    s = Settings(public_mode=True, google_genai_api_key="env-value")
+    assert s.google_genai_api_key.get_secret_value() == "env-value"
 
 
 def test_open_raises_falls_back_to_env(monkeypatch):
@@ -81,8 +81,8 @@ def test_open_raises_falls_back_to_env(monkeypatch):
 
     monkeypatch.setattr(builtins, "open", raising_open)
 
-    s = Settings(google_genai_api_key="env-value")
-    assert s.google_genai_api_key == "env-value"
+    s = Settings(public_mode=True, google_genai_api_key="env-value")
+    assert s.google_genai_api_key.get_secret_value() == "env-value"
 
 
 def test_both_upper_and_lower_present_prefers_upper(monkeypatch):
@@ -104,8 +104,8 @@ def test_both_upper_and_lower_present_prefers_upper(monkeypatch):
     monkeypatch.setattr(os.path, "isfile", isfile)
     monkeypatch.setattr(builtins, "open", fake_open)
 
-    s = Settings(google_genai_api_key="env-value")
-    assert s.google_genai_api_key == "UPPER-SECRET"
+    s = Settings(public_mode=True, google_genai_api_key="env-value")
+    assert s.google_genai_api_key.get_secret_value() == "UPPER-SECRET"
 
 
 def test_multiple_fields_read_from_secrets(monkeypatch):
@@ -127,13 +127,13 @@ def test_multiple_fields_read_from_secrets(monkeypatch):
     monkeypatch.setattr(os.path, "isfile", isfile)
     monkeypatch.setattr(builtins, "open", fake_open)
 
-    s = Settings(google_genai_api_key="env-value", webdav_password="env-pass")
-    assert s.google_genai_api_key == "KEY-SECRET"
-    assert s.webdav_password == "PASS-SECRET"
+    s = Settings(public_mode=True, google_genai_api_key="env-value", webdav_password="env-pass")
+    assert s.google_genai_api_key.get_secret_value() == "KEY-SECRET"
+    assert s.webdav_password.get_secret_value() == "PASS-SECRET"
 
 
 def test_no_secret_and_env_none_results_in_none(monkeypatch):
     monkeypatch.setattr(os.path, "isfile", lambda p: False)
-    s = Settings()
+    s = Settings(public_mode=True)
     assert s.webdav_password is None
     assert s.google_genai_api_key is None

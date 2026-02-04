@@ -55,7 +55,7 @@ def test_parse_interval_negative_numbers_rejected(invalid):
 
 
 def test_settings_accepts_valid_intervals():
-    s = Settings(run_interval="2m")
+    s = Settings(public_mode=True, run_interval="2m")
     assert s.run_interval == "2m"
 
 

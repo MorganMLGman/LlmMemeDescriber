@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import Optional
 
 from pydantic_settings import BaseSettings
-from pydantic import field_validator, model_validator, ValidationError, ConfigDict
+from pydantic import field_validator, model_validator, ValidationError, ConfigDict, SecretStr
 
 logger = logging.getLogger(__name__)
 
@@ -17,11 +17,11 @@ class Settings(BaseSettings):
     )
     
     logging_level: str = "INFO"
-    google_genai_api_key: str | None = None
+    google_genai_api_key: SecretStr | None = None
     google_genai_model: str = "gemini-3-flash-preview"
     webdav_url: str | None = None
-    webdav_username: str | None = None
-    webdav_password: str | None = None
+    webdav_username: SecretStr | None = None
+    webdav_password: SecretStr | None = None
     webdav_path: str | None = None
     run_interval: str = "15min"
     timezone: str = "UTC"
@@ -41,13 +41,13 @@ class Settings(BaseSettings):
     basic_auth: bool = False  # Basic HTTP authentication (future)
     oidc_provider_url: str | None = None
     oidc_client_id: str | None = None
-    oidc_client_secret: str | None = None
+    oidc_client_secret: SecretStr | None = None
     oidc_redirect_uri: str | None = None
     oidc_scopes: str = "openid profile email"
     oidc_verify_ssl: bool = True  # Verify OIDC provider SSL certificate (default: True)
     oidc_ca_bundle_path: str | None = None  # Path to CA bundle for OIDC provider verification (optional)
     
-    jwt_secret: str | None = None
+    jwt_secret: SecretStr | None = None
     jwt_expiry_days: int = 30
     session_expiry_seconds: int = 86400
 
@@ -88,6 +88,10 @@ class Settings(BaseSettings):
             self.oidc_enabled,
             self.basic_auth
         ])
+        
+        # FIXME: Basic auth is not yet implemented
+        if self.basic_auth:
+            raise ValueError("Basic auth is not yet implemented. Please use public_mode or oidc_enabled instead.")
         
         if modes_enabled == 0:
             raise ValueError("At least one authentication mode must be enabled: public_mode, oidc_enabled, or basic_auth")

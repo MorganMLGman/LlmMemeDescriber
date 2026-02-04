@@ -17,7 +17,7 @@ def test_configure_logging_unknown_level_defaults_to_info():
     snap = _snapshot_logging()
     try:
         logging.getLogger().handlers[:] = []
-        s = Settings(logging_level="NOT_A_LEVEL")
+        s = Settings(public_mode=True, logging_level="NOT_A_LEVEL")
         configure_logging(s)
         assert logging.getLogger().level == logging.INFO
     finally:
@@ -28,7 +28,7 @@ def test_configure_logging_debug_sets_dependent_loggers():
     snap = _snapshot_logging()
     try:
         logging.getLogger().handlers[:] = []
-        s = Settings(logging_level="DEBUG")
+        s = Settings(public_mode=True, logging_level="DEBUG")
         configure_logging(s)
         assert logging.getLogger('alembic').level == logging.DEBUG
         assert logging.getLogger('alembic.runtime').level == logging.DEBUG
@@ -46,7 +46,7 @@ def test_uvicorn_handlers_cleared_and_propagate_set():
         uv.addHandler(h)
         uv.error = uv.getChild('error')
 
-        s = Settings(logging_level="INFO")
+        s = Settings(public_mode=True, logging_level="INFO")
         configure_logging(s)
 
         assert logging.getLogger('uvicorn').handlers == []
@@ -85,7 +85,7 @@ def test_configure_logging_does_not_add_duplicate_handlers():
     try:
         root = logging.getLogger()
         root.handlers[:] = []
-        s = Settings(logging_level="INFO")
+        s = Settings(public_mode=True, logging_level="INFO")
         configure_logging(s)
         assert len(root.handlers) == 1
         configure_logging(s)
@@ -98,7 +98,7 @@ def test_configure_logging_sets_noisy_loggers_to_warning():
     snap = _snapshot_logging()
     try:
         logging.getLogger().handlers[:] = []
-        s = Settings(logging_level="INFO")
+        s = Settings(public_mode=True, logging_level="INFO")
         configure_logging(s)
         for n in ['httpx', 'httpcore', 'webdav4', 'urllib3']:
             assert logging.getLogger(n).level == logging.WARNING
@@ -124,7 +124,7 @@ def test_uvicorn_error_handlers_cleared():
         err.addHandler(logging.StreamHandler())
         err.propagate = False
 
-        s = Settings(logging_level="INFO")
+        s = Settings(public_mode=True, logging_level="INFO")
         configure_logging(s)
 
         assert logging.getLogger('uvicorn.error').handlers == []
@@ -141,7 +141,7 @@ def test_uvicorn_handlers_idempotent():
         u.addHandler(logging.StreamHandler())
         ue.addHandler(logging.StreamHandler())
 
-        s = Settings(logging_level="INFO")
+        s = Settings(public_mode=True, logging_level="INFO")
         configure_logging(s)
         assert logging.getLogger('uvicorn').handlers == []
         assert logging.getLogger('uvicorn.error').handlers == []
@@ -158,7 +158,7 @@ def test_uvicorn_level_unchanged_by_configure():
     try:
         u = logging.getLogger('uvicorn')
         u.setLevel(logging.DEBUG)
-        s = Settings(logging_level="INFO")
+        s = Settings(public_mode=True, logging_level="INFO")
         configure_logging(s)
         assert logging.getLogger('uvicorn').level == logging.DEBUG
     finally:
