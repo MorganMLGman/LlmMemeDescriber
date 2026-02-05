@@ -169,6 +169,34 @@ class App:
         logger.exception("DB operation failed after %d attempts: %s", max_retries, last_exc)
         return False
 
+    def _update_meme_attempt(
+        self,
+        filename: str,
+        error: Optional[str] = None,
+        status: Optional[str] = None
+    ) -> None:
+        """Update meme record with attempt counter, timestamp, and error info.
+        
+        Args:
+            filename: The meme filename
+            error: Error message to set (None to keep existing, empty string to clear)
+            status: Optional status to set (e.g., 'unsupported')
+        """
+        try:
+            with session_scope(self.engine) as session:
+                m = session.exec(select(Meme).where(Meme.filename == filename)).first()
+                if m:
+                    m.attempts = (m.attempts or 0) + 1
+                    m.last_attempt_at = datetime.datetime.now(datetime.timezone.utc)
+                    if error is not None:
+                        m.last_error = error
+                    if status is not None:
+                        m.status = status
+                    session.add(m)
+                    session.commit()
+        except Exception:
+            logger.exception("Failed to update meme attempt for %s", filename)
+
     def _process_single_meme(self, name: str) -> Dict[str, Any]:
         """Process a single meme: generate description and save to DB only.
         Returns dict with 'saved', 'unsupported', 'rate_limited', or 'failed' keys, and 'desc' with description.
@@ -230,18 +258,7 @@ class App:
         except Exception as exc:
             error_info = str(exc)
             logger.error("Error reading file %s from WebDAV: %s", filename, exc)
-            
-            try:
-                with session_scope(self.engine) as session:
-                    m = session.exec(select(Meme).where(Meme.filename == filename)).first()
-                    if m:
-                        m.attempts = (m.attempts or 0) + 1
-                        m.last_attempt_at = datetime.datetime.now(datetime.timezone.utc)
-                        m.last_error = error_info
-                        session.add(m)
-                        session.commit()
-            except Exception:
-                pass
+            self._update_meme_attempt(filename, error=error_info)
             return {}
 
         mime_type, media_res = self._detect_media(filename)
@@ -283,20 +300,10 @@ class App:
             is_unsupported = 'Unsupported MIME type' in error_info
             is_rate_limited = '429' in error_info or 'rate limit' in error_info.lower()
             
-            try:
-                with session_scope(self.engine) as session:
-                    m = session.exec(select(Meme).where(Meme.filename == filename)).first()
-                    if m:
-                        m.attempts = (m.attempts or 0) + 1
-                        m.last_attempt_at = datetime.datetime.now(datetime.timezone.utc)
-                        m.last_error = error_info
-                        if is_unsupported:
-                            m.status = 'unsupported'
-                            logger.info("Marked %s as unsupported MIME type; will not retry", filename)
-                        session.add(m)
-                        session.commit()
-            except Exception:
-                pass
+            status = 'unsupported' if is_unsupported else None
+            if is_unsupported:
+                logger.info("Marked %s as unsupported MIME type; will not retry", filename)
+            self._update_meme_attempt(filename, error=error_info, status=status)
             
             if is_rate_limited:
                 return {'rate_limited': True, 'error': 'Rate limit exceeded'}
@@ -309,35 +316,12 @@ class App:
             parsed = self._extract_json_from_text(txt)
             if parsed is not None:
                 logger.debug("Generated JSON for %s", filename)
-                
-                try:
-                    with session_scope(self.engine) as session:
-                        m = session.exec(select(Meme).where(Meme.filename == filename)).first()
-                        if m:
-                            m.attempts = (m.attempts or 0) + 1
-                            m.last_attempt_at = datetime.datetime.now(datetime.timezone.utc)
-                            m.last_error = None
-                            session.add(m)
-                            session.commit()
-                except Exception:
-                    pass
+                self._update_meme_attempt(filename, error="")
                 return parsed
 
         logger.warning("Failed to extract JSON description for %s", filename)
-        
-        try:
-            with session_scope(self.engine) as session:
-                m = session.exec(select(Meme).where(Meme.filename == filename)).first()
-                if m:
-                    m.attempts = (m.attempts or 0) + 1
-                    m.last_attempt_at = datetime.datetime.now(datetime.timezone.utc)
-                    m.last_error = "no_json_extracted"
-                    session.add(m)
-                    session.commit()
-        except Exception:
-            pass
+        self._update_meme_attempt(filename, error="no_json_extracted")
         return {}
-    
 
 
     def sync_and_process(self) -> Dict[str, int]:
@@ -459,10 +443,10 @@ class App:
                                         except Exception:
                                             try:
                                                 m.created_at = datetime.datetime.fromisoformat(date_str)
-                                            except Exception:
-                                                pass
-                        except Exception:
-                            pass
+                                            except Exception as e:
+                                                logger.debug("Failed to parse date %s: %s", date_str, e)
+                        except Exception as e:
+                            logger.debug("Failed to update meme metadata: %s", e)
                         session.add(m)
                         newly_added_memes.append(name)
                 
@@ -673,8 +657,8 @@ class App:
                             texts.append(c)
                         elif isinstance(c, dict) and c.get("text"):
                             texts.append(c.get("text"))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to extract text candidates from response: %s", e)
         texts.append(str(response))
         return texts
 

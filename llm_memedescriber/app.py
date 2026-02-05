@@ -500,6 +500,29 @@ async def cleanup_sessions_periodically():
             logger.debug(f"Failed to cleanup sessions/states: {e}")
 
 
+def _validate_user_info(user_info: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate user_info dict contains required 'sub' claim.
+    
+    Args:
+        user_info: User information dictionary from auth
+        
+    Returns:
+        The validated user_info dict
+        
+    Raises:
+        HTTPException: If 'sub' is missing or invalid
+    """
+    if not user_info:
+        logger.warning("Empty user_info dict received")
+        raise HTTPException(status_code=401, detail="Invalid user info: missing user claims")
+    
+    if not user_info.get('sub'):
+        logger.warning(f"User info missing 'sub' claim: {list(user_info.keys())}")
+        raise HTTPException(status_code=401, detail="Invalid user info: missing 'sub' claim")
+    
+    return user_info
+
+
 # Authorization dependency for FastAPI
 def require_auth(request: Request, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
     """Dependency to require authentication (session cookie or bearer token).
@@ -507,7 +530,7 @@ def require_auth(request: Request, settings: Settings = Depends(get_settings)) -
     """
     # Public mode bypasses all authentication
     if settings.public_mode:
-        return {"sub": "public-user", "public": True}
+        return _validate_user_info({"sub": "public-user", "public": True})
     
     auth_context = get_auth_context()
     
@@ -516,7 +539,8 @@ def require_auth(request: Request, settings: Settings = Depends(get_settings)) -
     if session_id:
         session = auth_context.session_manager.get_session(session_id)
         if session:
-            return session.get('user_info', {})
+            user_info = session.get('user_info', {})
+            return _validate_user_info(user_info)
     
     auth_header = request.headers.get('Authorization')
     if auth_header and auth_header.startswith('Bearer '):
@@ -527,7 +551,7 @@ def require_auth(request: Request, settings: Settings = Depends(get_settings)) -
                 user_info = verify_api_token_not_revoked(token, request.app.state.engine)
                 if user_info:
                     logger.debug(f"API request authenticated for user: {user_info.get('sub')}")
-                    return user_info
+                    return _validate_user_info(user_info)
                 else:
                     logger.warning(f"API token rejected: token revoked, expired, or invalid")
                     raise HTTPException(status_code=401, detail="Token revoked, expired, or invalid")
@@ -858,7 +882,7 @@ def require_auth(request: Request, settings: Settings = Depends(get_settings)) -
     """
     # Public mode bypasses all authentication
     if settings.public_mode:
-        return {"sub": "public-user", "public": True}
+        return _validate_user_info({"sub": "public-user", "public": True})
     
     auth_context = get_auth_context()
     
@@ -867,7 +891,8 @@ def require_auth(request: Request, settings: Settings = Depends(get_settings)) -
     if session_id:
         session = auth_context.session_manager.get_session(session_id)
         if session:
-            return session.get('user_info', {})
+            user_info = session.get('user_info', {})
+            return _validate_user_info(user_info)
     
     auth_header = request.headers.get('Authorization')
     if auth_header and auth_header.startswith('Bearer '):
@@ -878,7 +903,7 @@ def require_auth(request: Request, settings: Settings = Depends(get_settings)) -
                 user_info = verify_api_token_not_revoked(token, request.app.state.engine)
                 if user_info:
                     logger.debug(f"API request authenticated for user: {user_info.get('sub')}")
-                    return user_info
+                    return _validate_user_info(user_info)
                 else:
                     logger.warning(f"API token rejected: token revoked, expired, or invalid")
                     raise HTTPException(status_code=401, detail="Token revoked, expired, or invalid")
@@ -1362,13 +1387,12 @@ def get_duplicates_by_group(user_info: Dict = Depends(require_auth)):
                                                 file_size = int(entry[size_field])
                                                 logger.debug(f"Found {size_field}={file_size} for {l.filename}")
                                                 break
-                                            except (ValueError, TypeError):
-                                                pass
+                                            except (ValueError, TypeError) as e:
+                                                logger.exception(f"Failed to parse file size for {l.filename}: {e}")
                             except Exception as e:
-                                logger.debug(f"WebDAV ls failed for {l.filename}: {e}")
-                                pass
-                        except Exception:
-                            pass
+                                logger.exception(f"WebDAV ls failed for {l.filename}: {e}")
+                        except Exception as e:
+                            logger.exception(f"Failed to fetch file size from WebDAV: {e}")
                         
                         if file_size == 0:
                             try:
@@ -1654,11 +1678,22 @@ async def preview_meme(filename: str, size: int = PREVIEW_SIZE, user_info: Dict 
 def get_stats_endpoint(user_info: Dict = Depends(require_auth)):
     """Get application statistics. REQUIRES AUTHENTICATION (excludes 'removed' status memes). Uses single aggregated query."""
     try:
+        # Try to get from Redis cache first (if configured)
+        if hasattr(app.state, 'session_manager') and hasattr(app.state.session_manager, 'get_cached_stats'):
+            cached_stats = app.state.session_manager.get_cached_stats()
+            if cached_stats:
+                return cached_stats
+        
         with session_scope(app.state.engine) as session:
             stats = get_stats(session)
             # Add max generation attempts from settings
             settings = load_settings()
             stats['max_generation_attempts'] = getattr(settings, 'max_generation_attempts', 3)
+            
+            # Cache stats for 60 seconds (if Redis available)
+            if hasattr(app.state, 'session_manager') and hasattr(app.state.session_manager, 'cache_stats'):
+                app.state.session_manager.cache_stats(stats, ttl_seconds=60)
+            
             return stats
     except Exception:
         logger.exception("Failed to get stats")
@@ -1867,14 +1902,14 @@ def mark_meme_not_duplicate(filename: str, user_info: Dict = Depends(require_aut
                             for r in remaining:
                                 try:
                                     session.delete(r)
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    logger.exception("Failed to delete duplicate link: %s", e)
                             try:
                                 grp = session.exec(select(DBDuplicateGroup).where(DBDuplicateGroup.id == gid)).first()
                                 if grp:
                                     session.delete(grp)
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.exception("Failed to delete duplicate group %s: %s", gid, e)
                     except Exception:
                         logger.debug("Failed to inspect/delete group %s during cleanup", gid)
                 session.commit()

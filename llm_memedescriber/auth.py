@@ -328,6 +328,46 @@ class RedisSessionManager:
             logger.debug(f"Error revoking session {session_id}: {e}")
             return False
     
+    def cache_stats(self, stats: Dict[str, Any], ttl_seconds: int = 60) -> bool:
+        """Cache application statistics with TTL (default 60 seconds).
+        
+        Args:
+            stats: Statistics dictionary to cache
+            ttl_seconds: Time-to-live in seconds (default 60)
+            
+        Returns:
+            True if cached successfully, False otherwise
+        """
+        try:
+            self.redis_client.setex(
+                "cache:stats",
+                ttl_seconds,
+                json.dumps(stats)
+            )
+            logger.debug(f"Stats cached in Redis with TTL {ttl_seconds}s")
+            return True
+        except Exception as e:
+            logger.exception(f"Failed to cache stats: {e}")
+            return False
+    
+    def get_cached_stats(self) -> Optional[Dict[str, Any]]:
+        """Retrieve cached statistics if available.
+        
+        Returns:
+            Stats dictionary if cache hit, None if cache miss or expired
+        """
+        try:
+            cached_data = self.redis_client.get("cache:stats")
+            if cached_data:
+                logger.debug("Stats cache hit")
+                return json.loads(cached_data)
+            logger.debug("Stats cache miss")
+            return None
+        except Exception as e:
+            logger.exception(f"Error retrieving cached stats: {e}")
+            return None
+    
+
     def cleanup_expired(self):
         """Redis handles TTL automatically, but we can log for monitoring."""
         try:
