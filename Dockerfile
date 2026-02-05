@@ -44,11 +44,12 @@ ENV PATH=/app/.venv/bin:$PATH
 COPY llm_memedescriber /app/llm_memedescriber
 COPY PROMPT.txt /app/
 COPY --chmod=0755 entrypoint.py /app/entrypoint.py
+COPY --chmod=0755 healthcheck.py /app/healthcheck.py
 
 EXPOSE 8443
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD ["/app/.venv/bin/python","-c","import urllib.request,ssl,sys;\nctx = ssl.create_default_context();\nctx.check_hostname = False;\nctx.verify_mode = ssl.CERT_NONE;\ntry:\n  urllib.request.urlopen('https://localhost:8443/health', context=ctx, timeout=5)\nexcept Exception as e:\n  print(f'Health check failed: {e}');\n  sys.exit(1)"]
+  CMD ["/app/.venv/bin/python", "/app/healthcheck.py"]
 
 ENTRYPOINT ["/app/.venv/bin/python", "/app/entrypoint.py"]
 CMD ["python", "-m", "uvicorn", "llm_memedescriber.app:app", "--host", "0.0.0.0", "--port", "8443", "--ssl-certfile=/data/certs/server.crt", "--ssl-keyfile=/data/certs/server.key", "--log-level", "info", "--no-access-log"]

@@ -11,6 +11,7 @@ Supports:
 import hashlib
 import logging
 import secrets
+import json
 import base64
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
@@ -285,7 +286,7 @@ class RedisSessionManager:
         
         session_data = {
             'user_id': user_id,
-            'user_info': str(user_info),  # Redis stores strings
+            'user_info': user_info,  # Store as dict, will serialize to JSON
             'created_at': datetime.now(timezone.utc).isoformat(),
             'last_activity': datetime.now(timezone.utc).isoformat(),
         }
@@ -294,7 +295,7 @@ class RedisSessionManager:
         self.redis_client.setex(
             f"session:{session_id}",
             self.expiry_seconds,
-            str(session_data)
+            json.dumps(session_data)
         )
         
         logger.debug(f"Session created in Redis: {session_id} for user {user_id}")
@@ -303,16 +304,15 @@ class RedisSessionManager:
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Get session data, return None if expired or not found."""
         try:
-            session_data = self.redis_client.get(f"session:{session_id}")
-            if not session_data:
+            session_data_str = self.redis_client.get(f"session:{session_id}")
+            if not session_data_str:
                 return None
             
             # Update TTL on access
             self.redis_client.expire(f"session:{session_id}", self.expiry_seconds)
             
-            # Parse back from string representation
-            import ast
-            return ast.literal_eval(session_data)
+            # Parse from JSON
+            return json.loads(session_data_str)
         except Exception as e:
             logger.debug(f"Error retrieving session {session_id}: {e}")
             return None
