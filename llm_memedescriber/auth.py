@@ -227,14 +227,12 @@ class SessionManager:
         if not session:
             return None
         
-        # Check expiry
         created = session['created_at']
         if datetime.now(timezone.utc) - created > timedelta(seconds=self.expiry_seconds):
             del self._sessions[session_id]
             logger.debug(f"Session expired: {session_id}")
             return None
         
-        # Update last activity
         session['last_activity'] = datetime.now(timezone.utc)
         return session
     
@@ -259,6 +257,97 @@ class SessionManager:
             logger.debug(f"Cleaned up {len(expired)} expired sessions")
 
 
+class RedisSessionManager:
+    """Manages session state using Redis as backend."""
+    
+    def __init__(self, redis_url: str, redis_password: str, expiry_seconds: int = 86400):
+        import redis
+        
+        self.expiry_seconds = expiry_seconds
+        self.redis_client = redis.from_url(
+            redis_url,
+            password=redis_password,
+            decode_responses=True,
+            socket_connect_timeout=5,
+            socket_keepalive=True
+        )
+        
+        try:
+            self.redis_client.ping()
+            logger.info(f"Connected to Redis at {redis_url}")
+        except Exception as e:
+            logger.error(f"Failed to connect to Redis: {e}")
+            raise
+    
+    def create_session(self, user_id: str, user_info: Dict[str, Any]) -> str:
+        """Create a new session, return session ID."""
+        session_id = secrets.token_urlsafe(32)
+        
+        session_data = {
+            'user_id': user_id,
+            'user_info': str(user_info),  # Redis stores strings
+            'created_at': datetime.now(timezone.utc).isoformat(),
+            'last_activity': datetime.now(timezone.utc).isoformat(),
+        }
+        
+        # Use SETEX to set with automatic expiry
+        self.redis_client.setex(
+            f"session:{session_id}",
+            self.expiry_seconds,
+            str(session_data)
+        )
+        
+        logger.debug(f"Session created in Redis: {session_id} for user {user_id}")
+        return session_id
+    
+    def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Get session data, return None if expired or not found."""
+        try:
+            session_data = self.redis_client.get(f"session:{session_id}")
+            if not session_data:
+                return None
+            
+            # Update TTL on access
+            self.redis_client.expire(f"session:{session_id}", self.expiry_seconds)
+            
+            # Parse back from string representation
+            import ast
+            return ast.literal_eval(session_data)
+        except Exception as e:
+            logger.debug(f"Error retrieving session {session_id}: {e}")
+            return None
+    
+    def revoke_session(self, session_id: str) -> bool:
+        """Revoke (delete) a session."""
+        try:
+            result = self.redis_client.delete(f"session:{session_id}")
+            if result:
+                logger.debug(f"Session revoked in Redis: {session_id}")
+            return result > 0
+        except Exception as e:
+            logger.debug(f"Error revoking session {session_id}: {e}")
+            return False
+    
+    def cleanup_expired(self):
+        """Redis handles TTL automatically, but we can log for monitoring."""
+        try:
+            # Get count of active sessions
+            pattern = "session:*"
+            cursor = 0
+            count = 0
+            
+            while True:
+                cursor, keys = self.redis_client.scan(cursor, match=pattern, count=100)
+                count += len(keys)
+                if cursor == 0:
+                    break
+            
+            if count > 0:
+                logger.debug(f"Active sessions in Redis: {count}")
+        except Exception as e:
+            logger.debug(f"Error checking active sessions: {e}")
+
+
 class OIDCAuthContext:
     """Singleton context for OIDC and JWT handling."""
     
@@ -272,7 +361,23 @@ class OIDCAuthContext:
             cls._instance.enabled = settings.oidc_enabled
             cls._instance.oidc_client = None
             cls._instance.jwt_manager = None
-            cls._instance.session_manager = SessionManager(settings.session_expiry_seconds)
+            
+            # Choose session manager based on Redis configuration
+            if settings.redis_url:
+                try:
+                    redis_password = settings.redis_password.get_secret_value()
+                    cls._instance.session_manager = RedisSessionManager(
+                        settings.redis_url,
+                        redis_password,
+                        settings.session_expiry_seconds
+                    )
+                    logger.info("Using Redis for session storage")
+                except Exception as e:
+                    logger.warning(f"Failed to initialize Redis session manager: {e}. Falling back to in-memory sessions.")
+                    cls._instance.session_manager = SessionManager(settings.session_expiry_seconds)
+            else:
+                cls._instance.session_manager = SessionManager(settings.session_expiry_seconds)
+                logger.info("Using in-memory session storage (redis_url not configured)")
             
             if settings.oidc_enabled:
                 if not all([settings.oidc_provider_url, settings.oidc_client_id, 

@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     jwt_secret: SecretStr | None = None
     jwt_expiry_days: int = 30
     session_expiry_seconds: int = 86400
+    
+    # Redis session storage (optional, falls back to in-memory if not configured)
+    redis_url: str | None = None  # e.g., "redis://redis:6379/0"
+    redis_password: SecretStr | None = None  # Required if redis_url is set
 
     @field_validator("run_interval")
     @classmethod
@@ -99,6 +103,13 @@ class Settings(BaseSettings):
         if modes_enabled > 1:
             raise ValueError("Only one authentication mode can be enabled: public_mode, oidc_enabled, or basic_auth")
         
+        return self
+    
+    @model_validator(mode="after")
+    def validate_redis_config(self):
+        """If redis_url is set, redis_password must be set."""
+        if self.redis_url and not self.redis_password:
+            raise ValueError("redis_password is required when redis_url is configured")
         return self
 
     @field_validator("oidc_enabled", mode="before")
@@ -171,7 +182,6 @@ class Settings(BaseSettings):
         if not v:
             return None
         
-        # List of system default certificate paths to ignore
         system_defaults = {
             "/etc/ssl/certs/ca-certificates.crt",  # Debian/Ubuntu
             "/etc/pki/tls/certs/ca-bundle.crt",    # CentOS/RHEL

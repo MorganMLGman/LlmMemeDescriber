@@ -69,6 +69,16 @@ services:
       # Default: true
       AUTO_START_WORKER: "true"
       
+      # === Redis Session Management (OPTIONAL) ===
+      # Enable persistent session storage with Redis
+      # If not set, sessions are stored in-memory (lost on container restart)
+      # Requires Redis service to be running
+      # Format: redis://redis:6379/0 (redis is the service hostname in docker-compose)
+      # Default: not set (uses in-memory sessions)
+      # REDIS_URL: "redis://redis:6379/0"
+      # Redis password (REQUIRED if REDIS_URL is set)
+      # REDIS_PASSWORD: "<your_redis_password>"
+      
       # === Advanced Configuration ===
       # Number of concurrent storage workers
       # Default: 4
@@ -93,6 +103,10 @@ services:
     # Restart policy
     restart: unless-stopped
     
+    # Network configuration (optional)
+    networks:
+      - meme-network
+    
     # Health check
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,ssl,sys; ctx=ssl.create_default_context(); ctx.check_hostname=False; ctx.verify_mode=ssl.CERT_NONE; urllib.request.urlopen('https://localhost:8443/health', context=ctx, timeout=5)"]
@@ -100,6 +114,39 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
+
+  redis:
+    image: redis:8-alpine
+    container_name: llm-meme-describer-redis
+    ports:
+      - "6379:6379"
+    
+    # Redis password must match REDIS_PASSWORD env var in app service
+    command: redis-server --requirepass ${REDIS_PASSWORD}
+    
+    # Volume for data persistence
+    volumes:
+      - ./redis-data:/data
+    
+    # Network configuration
+    networks:
+      - meme-network
+    
+    # Restart policy
+    restart: unless-stopped
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+# Networks
+networks:
+  meme-network:
+    driver: bridge
 
 # Secret definitions
 secrets:
