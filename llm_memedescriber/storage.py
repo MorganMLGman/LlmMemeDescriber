@@ -13,6 +13,41 @@ from .constants import *
 logger = logging.getLogger(__name__)
 
 
+def _detect_hw_encoder() -> Optional[str]:
+    """Detect available hardware video encoder.
+
+    Returns:
+        - 'h264_nvenc' for NVIDIA GPUs
+        - 'h264_qsv' for Intel Quick Sync
+        - 'h264_vaapi' for generic DRM/VAAPI (AMD, Intel integrated)
+        - None if no hardware encoder available
+    """
+    try:
+        result = subprocess.run(
+            ['ffmpeg', '-codecs'],
+            capture_output=True,
+            timeout=5,
+            text=True,
+            check=False
+        )
+        output = result.stdout + result.stderr
+
+        # Check in order of preference (NVIDIA > Intel QSV > VAAPI)
+        if 'h264_nvenc' in output:
+            logger.info("GPU encoder detected: h264_nvenc (NVIDIA)")
+            return 'h264_nvenc'
+        elif 'h264_qsv' in output:
+            logger.info("GPU encoder detected: h264_qsv (Intel Quick Sync)")
+            return 'h264_qsv'
+        elif 'h264_vaapi' in output and os.path.exists('/dev/dri/renderD128'):
+            logger.info("GPU encoder detected: h264_vaapi (DRM/VAAPI)")
+            return 'h264_vaapi'
+    except Exception as e:
+        logger.debug(f"GPU detection failed: {e}")
+
+    return None
+
+
 class WebDavStorage:
     def __init__(self, base_url: str, auth: Optional[tuple] = None):
         self.client = Client(base_url, auth=auth)
@@ -214,7 +249,7 @@ class WebDavStorage:
             raise IOError(f"Failed to extract video frame from {video_path}: {exc}") from exc
 
     def transcode_mkv_to_mp4(self, mkv_path: str) -> tuple[bytes, str]:
-        """Transcode MKV video to MP4 format using FFmpeg.
+        """Transcode MKV video to MP4 format using FFmpeg with GPU acceleration.
 
         Args:
             mkv_path: Path to MKV file on WebDAV
@@ -248,18 +283,53 @@ class WebDavStorage:
                 tmp_mp4_path = tmp_mp4.name
 
             try:
-                # FFmpeg transcoding command
+                # Detect GPU encoder, fallback to CPU
+                hw_encoder = _detect_hw_encoder()
+
+                # Build FFmpeg command based on encoder type
                 cmd = [
                     'ffmpeg',
                     '-i', tmp_mkv_path,
-                    '-c:v', TRANSCODE_VIDEO_CODEC,
-                    '-crf', str(TRANSCODE_CRF),
-                    '-preset', TRANSCODE_PRESET,
+                ]
+
+                if hw_encoder == 'h264_nvenc':
+                    # NVIDIA GPU - no preset or CRF with NVENC, use -rc and -cq instead
+                    cmd.extend([
+                        '-c:v', 'h264_nvenc',
+                        '-rc', 'vbr',  # Variable bitrate
+                        '-cq', '25',   # Quality (0-51, lower=higher quality)
+                    ])
+                    logger.info("Using NVIDIA GPU acceleration (h264_nvenc)")
+                elif hw_encoder == 'h264_qsv':
+                    # Intel Quick Sync
+                    cmd.extend([
+                        '-c:v', 'h264_qsv',
+                        '-q', '25',    # Quality (1-51, lower=higher quality)
+                    ])
+                    logger.info("Using Intel Quick Sync acceleration (h264_qsv)")
+                elif hw_encoder == 'h264_vaapi':
+                    # Generic VAAPI (AMD, Intel integrated)
+                    cmd.extend([
+                        '-c:v', 'h264_vaapi',
+                        '-q', '25',    # Quality for VAAPI
+                    ])
+                    logger.info("Using VAAPI GPU acceleration (h264_vaapi)")
+                else:
+                    # Fallback to CPU encoding
+                    cmd.extend([
+                        '-c:v', TRANSCODE_VIDEO_CODEC,
+                        '-crf', str(TRANSCODE_CRF),
+                        '-preset', TRANSCODE_PRESET,
+                    ])
+                    logger.info("GPU not available, using CPU encoding (libx264)")
+
+                # Add audio codec and streaming flags
+                cmd.extend([
                     '-c:a', TRANSCODE_AUDIO_CODEC,
                     '-movflags', '+faststart',  # Enable streaming
                     '-y',  # Overwrite output
                     tmp_mp4_path
-                ]
+                ])
 
                 logger.info(f"Running FFmpeg transcode command: {' '.join(cmd)}")
                 result = subprocess.run(
