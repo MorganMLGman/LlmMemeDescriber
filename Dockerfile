@@ -5,11 +5,6 @@ WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        build-essential pkg-config gcc libffi-dev libssl-dev wget xz-utils ca-certificates rustc cargo \
-       ffmpeg \
-       libva2 libva-drm2 libva-glx2 libva-wayland2 \
-       libdrm2 libdrm-common \
-       i965-va-driver intel-media-driver \
-       va-driver-all \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 RUN python3 -m pip install --upgrade pip setuptools wheel
