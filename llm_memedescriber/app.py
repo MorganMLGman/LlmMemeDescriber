@@ -407,7 +407,8 @@ async def add_security_headers(request: Request, call_next):
     # Enable browser XSS protection
     response.headers["X-XSS-Protection"] = "1; mode=block"
     # Content Security Policy - restrict resource loading
-    response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'"
+    # Allow Bootstrap from CDN (cdn.jsdelivr.net) and Cloudflare analytics
+    response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'"
     # Referrer policy - control referrer information
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     # Permissions policy - disable dangerous features
