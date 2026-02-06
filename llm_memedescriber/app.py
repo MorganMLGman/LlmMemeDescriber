@@ -26,7 +26,7 @@ from .constants import _get_extension
 from .db import init_db, get_stats, get_meme_by_filename
 from .db_helpers import log_audit_action
 from .main import App
-from .storage import WebDavStorage
+from .storage import WebDavStorage, initialize_gpu_detection
 from .storage_workers import StorageWorkerPool
 from .genai_client import get_client
 from .ssl_helpers import validate_certificate_files
@@ -80,6 +80,12 @@ async def lifespan(app_instance: FastAPI):
         logger.info("OIDC authentication enabled")
     
     logger.info("Starting llm_memedescriber FastAPI app (preview cache: %s)", CACHE_DIR)
+    
+    # Initialize GPU hardware detection at startup
+    try:
+        initialize_gpu_detection()
+    except Exception as e:
+        logger.warning("GPU detection failed, will use CPU encoding/decoding: %s", e)
     
     try:
         cert_path, key_path = validate_certificate_files(

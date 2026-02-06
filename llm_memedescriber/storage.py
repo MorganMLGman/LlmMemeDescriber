@@ -12,6 +12,11 @@ from .constants import *
 
 logger = logging.getLogger(__name__)
 
+# Cache for detected GPU encoder/decoder (detect once at startup)
+_cached_hw_encoder: Optional[str] = None
+_cached_hw_decoder: Optional[str] = None
+_hw_detection_done: bool = False
+
 
 def _detect_hw_encoder() -> Optional[str]:
     """Detect available hardware video encoder by actually testing it.
@@ -22,6 +27,12 @@ def _detect_hw_encoder() -> Optional[str]:
         - 'h264_vaapi' for generic DRM/VAAPI (AMD, Intel integrated)
         - None if no hardware encoder available
     """
+    global _cached_hw_encoder, _hw_detection_done
+    
+    # Return cached result if already detected
+    if _hw_detection_done:
+        return _cached_hw_encoder
+    
     try:
         result = subprocess.run(
             ['ffmpeg', '-codecs'],
@@ -76,16 +87,22 @@ def _detect_hw_encoder() -> Optional[str]:
                         'h264_vaapi': 'DRM/VAAPI'
                     }.get(encoder, encoder)
                     logger.info(f"GPU encoder detected and verified: {encoder} ({encoder_name})")
+                    _cached_hw_encoder = encoder
+                    _hw_detection_done = True
                     return encoder
                 else:
                     error_msg = test_result.stderr.decode('utf-8', errors='ignore')
-                    logger.warning(f"Encoder {encoder} test failed:\n{error_msg}")
+                    # Only log first line of error at DEBUG level to reduce noise
+                    first_line = error_msg.split('\n')[0] if error_msg else 'Unknown error'
+                    logger.debug(f"Encoder {encoder} not available: {first_line}")
             except Exception as e:
                 logger.debug(f"Failed to test {encoder}: {e}")
                 
     except Exception as e:
         logger.debug(f"GPU detection failed: {e}")
 
+    _hw_detection_done = True
+    _cached_hw_encoder = None
     return None
 
 
@@ -98,6 +115,12 @@ def _detect_hw_decoder() -> Optional[str]:
         - 'vaapi' for generic DRM/VAAPI (AMD, Intel integrated)
         - None if no hardware decoder available
     """
+    global _cached_hw_decoder
+    
+    # Return cached result if already detected
+    if _cached_hw_decoder is not None or _hw_detection_done:
+        return _cached_hw_decoder
+    
     try:
         result = subprocess.run(
             ['ffmpeg', '-hwaccels'],
@@ -111,17 +134,56 @@ def _detect_hw_decoder() -> Optional[str]:
         # Check in order of preference (NVIDIA > Intel QSV > VAAPI)
         if 'cuda' in output:
             logger.info("GPU decoder detected: cuda (NVIDIA)")
+            _cached_hw_decoder = 'cuda'
             return 'cuda'
         elif 'qsv' in output:
             logger.info("GPU decoder detected: qsv (Intel Quick Sync)")
+            _cached_hw_decoder = 'qsv'
             return 'qsv'
         elif 'vaapi' in output and os.path.exists('/dev/dri/renderD128'):
             logger.info("GPU decoder detected: vaapi (DRM/VAAPI)")
+            _cached_hw_decoder = 'vaapi'
             return 'vaapi'
     except Exception as e:
         logger.debug(f"GPU decoder detection failed: {e}")
 
+    _cached_hw_decoder = None
     return None
+
+
+def initialize_gpu_detection():
+    """Initialize GPU encoder/decoder detection at startup.
+    
+    This runs detection tests once and caches the results to avoid
+    repeated testing on every transcoding operation.
+    """
+    logger.info("Initializing GPU hardware detection...")
+    
+    # Detect encoder
+    encoder = _detect_hw_encoder()
+    if encoder:
+        encoder_name = {
+            'h264_nvenc': 'NVIDIA NVENC',
+            'h264_qsv': 'Intel Quick Sync',
+            'h264_vaapi': 'Intel/AMD VAAPI'
+        }.get(encoder, encoder)
+        logger.info(f"✓ Hardware encoder available: {encoder_name}")
+    else:
+        logger.info("✗ No hardware encoder available, will use CPU (libx264)")
+    
+    # Detect decoder
+    decoder = _detect_hw_decoder()
+    if decoder:
+        decoder_name = {
+            'cuda': 'NVIDIA NVDEC',
+            'qsv': 'Intel Quick Sync',
+            'vaapi': 'Intel/AMD VAAPI'
+        }.get(decoder, decoder)
+        logger.info(f"✓ Hardware decoder available: {decoder_name}")
+    else:
+        logger.info("✗ No hardware decoder available, will use CPU decoding")
+    
+    logger.info("GPU hardware detection complete")
 
 
 class WebDavStorage:
