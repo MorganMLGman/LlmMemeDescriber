@@ -18,6 +18,7 @@ RUN python3 -m pip install --no-cache-dir pipenv \
 RUN mkdir -p /data && chmod 755 /data
 
 FROM python:3.14-slim AS production
+ARG TARGETARCH
 WORKDIR /app
 
 RUN apt-get update \
@@ -25,9 +26,10 @@ RUN apt-get update \
        libva2 libva-drm2 libva-wayland2 \
        libdrm2 libdrm-common \
        va-driver-all \
-       intel-media-va-driver \
-       i965-va-driver \
        ffmpeg \
+    && if [ "$TARGETARCH" = "amd64" ]; then \
+         apt-get install -y --no-install-recommends intel-media-va-driver i965-va-driver || true; \
+       fi \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 COPY --from=builder /app/.venv /app/.venv
