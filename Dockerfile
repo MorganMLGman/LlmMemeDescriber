@@ -5,6 +5,11 @@ WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        build-essential pkg-config gcc libffi-dev libssl-dev wget xz-utils ca-certificates rustc cargo \
+       ffmpeg \
+       libva2 libva-drm2 libva-glx2 libva-wayland2 \
+       libdrm2 libdrm-common \
+       i965-va-driver intel-media-driver \
+       va-driver-all \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 RUN python3 -m pip install --upgrade pip setuptools wheel
@@ -15,27 +20,22 @@ RUN python3 -m pip install --no-cache-dir pipenv \
   && PIPENV_VENV_IN_PROJECT=1 pipenv install --deploy --ignore-pipfile \
   && rm -rf /root/.cache /root/.local /tmp/* /var/tmp/*
 
-RUN set -e; \
-    ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "amd64") && \
-    cd /tmp && \
-    wget "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-${ARCH}-static.tar.xz" && \
-    wget "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-${ARCH}-static.tar.xz.md5" && \
-    md5sum -c "ffmpeg-release-${ARCH}-static.tar.xz.md5" && \
-    mkdir -p /tmp/ffmpeg-static && \
-    tar -C /tmp/ffmpeg-static --strip-components=1 -xf "ffmpeg-release-${ARCH}-static.tar.xz" && \
-    mv /tmp/ffmpeg-static/ffmpeg /usr/bin/ffmpeg && \
-    mv /tmp/ffmpeg-static/ffprobe /usr/bin/ffprobe && \
-    rm -rf /tmp/ffmpeg* && \
-    chmod +x /usr/bin/ffmpeg /usr/bin/ffprobe
-
 RUN mkdir -p /data && chmod 755 /data
 
-FROM dhi.io/python:3.14-debian13 AS production
+FROM dhi.io/python:3.14-debian13-dev AS production
 WORKDIR /app
 
+# Install VAAPI runtime libraries (FFmpeg and build tools are only in builder stage)
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       ffmpeg \
+       libva2 libva-drm2 libva-glx2 libva-wayland2 \
+       libdrm2 libdrm-common \
+       i965-va-driver intel-media-driver \
+       va-driver-all \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
 COPY --from=builder /app/.venv /app/.venv
-COPY --from=builder /usr/bin/ffmpeg /usr/bin/ffmpeg
-COPY --from=builder /usr/bin/ffprobe /usr/bin/ffprobe
 COPY --from=builder /data /data
 VOLUME ["/data"]
 

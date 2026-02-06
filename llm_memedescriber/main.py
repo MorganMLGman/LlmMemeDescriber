@@ -319,12 +319,21 @@ class App:
                     if not m:
                         raise Exception(f"Database record not found for {mkv_filename}")
 
-                    m.filename = new_filename
-                    if m.source_url:
-                        m.source_url = m.source_url.replace(mkv_filename, new_filename)
-                    m.updated_at = datetime.datetime.now(datetime.timezone.utc)
+                    # Check if MP4 record already exists (due to duplicate processing or manual upload)
+                    existing_mp4 = session.exec(select(Meme).where(Meme.filename == new_filename)).first()
 
-                    session.add(m)
+                    if existing_mp4:
+                        # MP4 already in DB - delete the MKV record, keep MP4
+                        logger.info(f"MP4 {new_filename} already exists in DB - deleting duplicate MKV record")
+                        session.delete(m)
+                    else:
+                        # Update MKV record with new MP4 filename
+                        m.filename = new_filename
+                        if m.source_url:
+                            m.source_url = m.source_url.replace(mkv_filename, new_filename)
+                        m.updated_at = datetime.datetime.now(datetime.timezone.utc)
+                        session.add(m)
+
                     session.commit()
 
             if not self._db_operation_with_retry(update_db_filename, max_retries=3):
@@ -335,7 +344,7 @@ class App:
 
             # Step 4: Delete original MKV from WebDAV
             try:
-                self.storage.client.remove(mkv_filename)
+                self.storage.delete_file(mkv_filename)
                 logger.info("Deleted original MKV: %s", mkv_filename)
             except Exception as delete_exc:
                 logger.warning("Failed to delete MKV %s: %s", mkv_filename, delete_exc)
