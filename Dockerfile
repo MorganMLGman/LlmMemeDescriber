@@ -1,4 +1,4 @@
-FROM dhi.io/python:3.14-debian13-dev AS builder
+FROM python:3.14-slim AS builder
 ARG TARGETARCH
 WORKDIR /app
 
@@ -17,16 +17,15 @@ RUN python3 -m pip install --no-cache-dir pipenv \
 
 RUN mkdir -p /data && chmod 755 /data
 
-FROM dhi.io/python:3.14-debian13-dev AS production
+FROM python:3.14-slim AS production
 WORKDIR /app
 
-# Install VAAPI runtime libraries (FFmpeg and build tools are only in builder stage)
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-       ffmpeg \
-       libva2 libva-drm2 libva-glx2 libva-wayland2 \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+       libva2 libva-drm2 libva-wayland2 \
        libdrm2 libdrm-common \
        va-driver-all \
+       ffmpeg \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 COPY --from=builder /app/.venv /app/.venv
