@@ -42,14 +42,22 @@ def _detect_hw_encoder() -> Optional[str]:
         if 'h264_vaapi' in output and os.path.exists('/dev/dri/renderD128'):
             encoders_to_test.append('h264_vaapi')
         
-        # Actually test each encoder with a dummy encode
         for encoder in encoders_to_test:
             try:
-                # Try to encode 1 frame to verify encoder works
-                test_cmd = [
-                    'ffmpeg', '-f', 'lavfi', '-i', 'testsrc=duration=0.1:size=320x240:rate=1',
+                # For VAAPI, need to specify the device explicitly
+                test_cmd = ['ffmpeg', '-f', 'lavfi', '-i', 'testsrc=duration=0.1:size=320x240:rate=1']
+                
+                if encoder == 'h264_vaapi':
+                    # VAAPI needs hwaccel device initialization
+                    test_cmd.extend([
+                        '-vaapi_device', '/dev/dri/renderD128',
+                        '-vf', 'format=nv12,hwupload',
+                    ])
+                
+                test_cmd.extend([
                     '-c:v', encoder, '-frames:v', '1', '-f', 'null', '-'
-                ]
+                ])
+                
                 test_result = subprocess.run(
                     test_cmd,
                     capture_output=True,
@@ -67,7 +75,7 @@ def _detect_hw_encoder() -> Optional[str]:
                     return encoder
                 else:
                     error_msg = test_result.stderr.decode('utf-8', errors='ignore')
-                    logger.debug(f"Encoder {encoder} test failed: {error_msg[:100]}")
+                    logger.warning(f"Encoder {encoder} test failed:\n{error_msg}")
             except Exception as e:
                 logger.debug(f"Failed to test {encoder}: {e}")
                 
