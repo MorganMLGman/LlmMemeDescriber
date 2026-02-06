@@ -25,6 +25,8 @@ RUN apt-get update \
        libva2 libva-drm2 libva-wayland2 \
        libdrm2 libdrm-common \
        va-driver-all \
+       intel-media-va-driver \
+       i965-va-driver \
        ffmpeg \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
@@ -35,6 +37,7 @@ VOLUME ["/data"]
 ENV PYTHONUNBUFFERED=1
 ENV LOGGING_LEVEL=INFO
 ENV GOOGLE_GENAI_MODEL=gemini-3-flash-preview
+ENV LIBVA_DRIVER_NAME=iHD
 ENV PATH=/app/.venv/bin:$PATH
 
 COPY llm_memedescriber /app/llm_memedescriber
