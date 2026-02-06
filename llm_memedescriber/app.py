@@ -408,7 +408,7 @@ async def add_security_headers(request: Request, call_next):
     response.headers["X-XSS-Protection"] = "1; mode=block"
     # Content Security Policy - restrict resource loading
     # Allow Bootstrap from CDN (cdn.jsdelivr.net) and Cloudflare analytics
-    response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'"
+    response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data:; font-src 'self'; connect-src 'self' https://cdn.jsdelivr.net; frame-ancestors 'none'"
     # Referrer policy - control referrer information
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     # Permissions policy - disable dangerous features
@@ -1260,32 +1260,32 @@ def force_description_generation(filename: str):
 
 
 @app.patch("/memes/{filename}", tags=["memes"])
-def update_meme(filename: str, request: UpdateMemeRequest, user_info: Dict = Depends(require_auth)):
+def update_meme(filename: str, request_body: UpdateMemeRequest, http_request: Request, user_info: Dict = Depends(require_auth)):
     """Update meme metadata (category, keywords, description). REQUIRES AUTHENTICATION and CSRF token. Only provided fields are updated."""
     try:
         filename = sanitize_filename(filename)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    
+
     with session_scope(app.state.engine) as session:
         m = get_meme_by_filename(session, filename)
         if not m:
             raise HTTPException(status_code=404, detail="Meme not found")
-        
-        if request.category is not None:
-            m.category = request.category
-        if request.keywords is not None:
-            m.keywords = request.keywords
-        if request.description is not None:
-            m.description = request.description
-        
+
+        if request_body.category is not None:
+            m.category = request_body.category
+        if request_body.keywords is not None:
+            m.keywords = request_body.keywords
+        if request_body.description is not None:
+            m.description = request_body.description
+
         m.updated_at = datetime.datetime.now(datetime.timezone.utc)
-        
+
         session.add(m)
         session.commit()
         session.refresh(m)
         logger.info("Updated meme %s by user %s", filename, user_info.get('sub'))
-        
+
         # Audit log
         log_audit_action(
             app.state.engine,
@@ -1293,8 +1293,8 @@ def update_meme(filename: str, request: UpdateMemeRequest, user_info: Dict = Dep
             action="PATCH_MEME",
             resource=filename,
             resource_type="meme",
-            details=str(request.model_dump()),
-            ip_address=request.client.host if request.client else None
+            details=str(request_body.model_dump()),
+            ip_address=http_request.client.host if http_request.client else None
         )
         
         try:
