@@ -66,6 +66,18 @@ class UserToken(SQLModel, table=True):
     revoked: bool = Field(default=False, index=True)
 
 
+class BasicAuthUser(SQLModel, table=True):
+    """Basic Auth user credentials table."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    username: str = Field(index=True, unique=True)
+    password_hash: str
+    enabled: bool = Field(default=True, index=True)
+    created_at: datetime.datetime = Field(default_factory=lambda: datetime.datetime.now(datetime.timezone.utc))
+    last_used_at: Optional[datetime.datetime] = None
+    failed_attempts: int = Field(default=0)
+    locked_until: Optional[datetime.datetime] = None
+
+
 class FileShareToken(SQLModel, table=True):
     """Temporary share token for accessing a specific file."""
     id: Optional[int] = Field(default=None, primary_key=True)

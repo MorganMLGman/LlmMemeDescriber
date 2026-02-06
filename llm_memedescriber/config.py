@@ -96,17 +96,13 @@ class Settings(BaseSettings):
             self.oidc_enabled,
             self.basic_auth
         ])
-        
-        # FIXME: Basic auth is not yet implemented
-        if self.basic_auth:
-            raise ValueError("Basic auth is not yet implemented. Please use public_mode or oidc_enabled instead.")
-        
+
         if modes_enabled == 0:
             raise ValueError("At least one authentication mode must be enabled: public_mode, oidc_enabled, or basic_auth")
-        
+
         if modes_enabled > 1:
             raise ValueError("Only one authentication mode can be enabled: public_mode, oidc_enabled, or basic_auth")
-        
+
         return self
     
     @model_validator(mode="after")

@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.responses import HTMLResponse, StreamingResponse, FileResponse, RedirectResponse, JSONResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
@@ -49,7 +50,7 @@ from sqlmodel import select
 from .db_helpers import session_scope
 import datetime
 from sqlalchemy import text
-from .auth import OIDCAuthContext, hash_token, generate_state_token, verify_api_token_not_revoked, verify_share_token_db
+from .auth import OIDCAuthContext, hash_token, generate_state_token, verify_api_token_not_revoked, verify_share_token_db, verify_basic_auth_user, BASIC_AUTH_MAX_ATTEMPTS
 
 logger = logging.getLogger(__name__)
 
@@ -540,16 +541,45 @@ def _validate_user_info(user_info: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # Authorization dependency for FastAPI
-def require_auth(request: Request, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
-    """Dependency to require authentication (session cookie or bearer token).
+def require_auth(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+    credentials: Optional[HTTPBasicCredentials] = Depends(HTTPBasic(auto_error=False))
+) -> Dict[str, Any]:
+    """Dependency to require authentication (session cookie, bearer token, or Basic Auth).
     If public_mode is enabled, returns a public user without authentication.
     """
     # Public mode bypasses all authentication
     if settings.public_mode:
         return _validate_user_info({"sub": "public-user", "public": True})
-    
+
+    # Basic Auth mode
+    if settings.basic_auth:
+        if not credentials:
+            raise HTTPException(
+                status_code=401,
+                detail="Basic authentication required",
+                headers={"WWW-Authenticate": "Basic"}
+            )
+
+        user_info = verify_basic_auth_user(
+            credentials.username,
+            credentials.password,
+            request.app.state.engine
+        )
+
+        if not user_info:
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid credentials",
+                headers={"WWW-Authenticate": "Basic"}
+            )
+
+        return _validate_user_info(user_info)
+
+    # OIDC mode - session cookie and JWT token
     auth_context = get_auth_context()
-    
+
     # Check session cookie first
     session_id = request.cookies.get('session_id')
     if session_id:
@@ -557,7 +587,7 @@ def require_auth(request: Request, settings: Settings = Depends(get_settings)) -
         if session:
             user_info = session.get('user_info', {})
             return _validate_user_info(user_info)
-    
+
     auth_header = request.headers.get('Authorization')
     if auth_header and auth_header.startswith('Bearer '):
         token = auth_header[7:]
@@ -571,7 +601,7 @@ def require_auth(request: Request, settings: Settings = Depends(get_settings)) -
                 else:
                     logger.warning(f"API token rejected: token revoked, expired, or invalid")
                     raise HTTPException(status_code=401, detail="Token revoked, expired, or invalid")
-    
+
     raise HTTPException(status_code=401, detail="Not authenticated")
 
 
@@ -658,9 +688,54 @@ async def _aget_or_generate_preview(filename: str, is_vid: bool, storage: Any, s
 
 
 @app.get("/login", response_class=HTMLResponse, tags=["ui"])
-def login_page(request: Request):
-    """Serve the login page. Shows OIDC login button."""
-    return templates.TemplateResponse("login.html", {"request": request})
+def login_page(request: Request, settings: Settings = Depends(get_settings)):
+    """Serve the login page. Shows Basic Auth form or OIDC button."""
+    return templates.TemplateResponse("login.html", {
+        "request": request,
+        "basic_auth": settings.basic_auth,
+        "oidc_enabled": settings.oidc_enabled
+    })
+
+
+@app.get("/api/auth/lockout-status", tags=["auth"])
+async def get_lockout_status(username: str, settings: Settings = Depends(get_settings)):
+    """Get lockout status for Basic Auth user (public endpoint)."""
+    if not settings.basic_auth:
+        raise HTTPException(status_code=404, detail="Not applicable")
+
+    from .models import BasicAuthUser
+    from sqlmodel import Session, select
+
+    with Session(app.state.engine) as session:
+        stmt = select(BasicAuthUser).where(BasicAuthUser.username == username)
+        user = session.exec(stmt).first()
+
+        if not user:
+            # Don't reveal if user exists - return neutral response
+            return {
+                "locked": False,
+                "attempts_left": 3,
+                "retry_after_seconds": 0
+            }
+
+        now = datetime.datetime.now(datetime.timezone.utc)
+
+        # Check if locked
+        if user.locked_until and now < user.locked_until:
+            retry_seconds = int((user.locked_until - now).total_seconds())
+            return {
+                "locked": True,
+                "attempts_left": 0,
+                "retry_after_seconds": retry_seconds
+            }
+
+        # Not locked
+        attempts_left = max(0, BASIC_AUTH_MAX_ATTEMPTS - user.failed_attempts)
+        return {
+            "locked": False,
+            "attempts_left": attempts_left,
+            "retry_after_seconds": 0
+        }
 
 
 @app.get("/", response_class=HTMLResponse, tags=["ui"])

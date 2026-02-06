@@ -150,13 +150,37 @@
         <div id="statusMessage" class="status-message"></div>
         
         <div class="login-content">
+            {% if basic_auth %}
+            <!-- Basic Auth Form -->
+            <form id="basicAuthForm" onsubmit="handleBasicAuth(event)">
+                <div class="mb-3">
+                    <label for="username" class="form-label">Username</label>
+                    <input type="text" class="form-control" id="username" name="username" required autofocus>
+                </div>
+                <div class="mb-3">
+                    <label for="password" class="form-label">Password</label>
+                    <input type="password" class="form-control" id="password" name="password" required>
+                </div>
+
+                <!-- Lockout indicator -->
+                <div id="lockoutWarning" class="alert alert-warning" style="display: none;">
+                    <strong>⚠️ Warning:</strong> <span id="lockoutMessage"></span>
+                </div>
+
+                <button type="submit" class="btn-login" id="loginBtn">
+                    Sign in
+                </button>
+            </form>
+            {% else %}
+            <!-- OIDC Login -->
             <div class="info-box">
                 🔐 Secure login via OIDC authentication. Your credentials are never shared with this application.
             </div>
-            
+
             <button class="btn-login" id="loginBtn" onclick="handleLogin()">
                 Sign in with OIDC
             </button>
+            {% endif %}
         </div>
         
         <div class="security-notice">
@@ -166,23 +190,118 @@
     </div>
 
     <script>
+        const isBasicAuth = {{ 'true' if basic_auth else 'false' }};
+
         function showMessage(text, type = 'error') {
             const messageEl = document.getElementById('statusMessage');
             messageEl.textContent = text;
             messageEl.className = `status-message ${type}`;
         }
 
-        async function handleLogin() {
+        function showLockout(attemptsLeft, retrySeconds) {
+            const warningEl = document.getElementById('lockoutWarning');
+            const messageEl = document.getElementById('lockoutMessage');
+            const loginBtn = document.getElementById('loginBtn');
+
+            if (retrySeconds > 0) {
+                // Locked out
+                const minutes = Math.floor(retrySeconds / 60);
+                const seconds = retrySeconds % 60;
+                const timeStr = minutes > 0
+                    ? `${minutes}m ${seconds}s`
+                    : `${seconds}s`;
+                messageEl.textContent = `Account locked. Try again in ${timeStr}.`;
+                warningEl.style.display = 'block';
+                loginBtn.disabled = true;
+
+                // Countdown timer
+                const countdown = setInterval(() => {
+                    retrySeconds--;
+                    if (retrySeconds <= 0) {
+                        clearInterval(countdown);
+                        warningEl.style.display = 'none';
+                        loginBtn.disabled = false;
+                        location.reload(); // Refresh to reset form
+                    } else {
+                        const m = Math.floor(retrySeconds / 60);
+                        const s = retrySeconds % 60;
+                        const t = m > 0 ? `${m}m ${s}s` : `${s}s`;
+                        messageEl.textContent = `Account locked. Try again in ${t}.`;
+                    }
+                }, 1000);
+            } else if (attemptsLeft < 3) {
+                // Warning about remaining attempts
+                messageEl.textContent = `${attemptsLeft} login attempt${attemptsLeft !== 1 ? 's' : ''} remaining.`;
+                warningEl.style.display = 'block';
+            } else {
+                warningEl.style.display = 'none';
+            }
+        }
+
+        async function checkLockoutStatus(username) {
+            if (!isBasicAuth || !username) return;
+
+            try {
+                const response = await fetch(`/api/auth/lockout-status?username=${encodeURIComponent(username)}`);
+                if (response.ok) {
+                    const data = await response.json();
+                    showLockout(data.attempts_left, data.retry_after_seconds);
+                }
+            } catch (error) {
+                console.error('Failed to check lockout status:', error);
+            }
+        }
+
+        async function handleBasicAuth(event) {
+            event.preventDefault();
             const btn = document.getElementById('loginBtn');
-            
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+
+            try {
+                btn.disabled = true;
+                showMessage('Signing in...', 'loading');
+
+                // Basic Auth uses browser's built-in dialog, but we intercept for better UX
+                const response = await fetch('/', {
+                    method: 'GET',
+                    headers: {
+                        'Authorization': 'Basic ' + btoa(username + ':' + password)
+                    }
+                });
+
+                if (response.ok) {
+                    // Success - redirect to main page with auth header set
+                    showMessage('Login successful! Redirecting...', 'loading');
+
+                    // Store credentials in browser (will be sent automatically)
+                    // Note: This relies on browser's Basic Auth caching
+                    window.location.href = '/';
+                } else if (response.status === 401) {
+                    showMessage('Invalid username or password', 'error');
+                    await checkLockoutStatus(username);
+                    btn.disabled = false;
+                } else {
+                    showMessage('Login failed. Please try again.', 'error');
+                    btn.disabled = false;
+                }
+            } catch (error) {
+                console.error('Login error:', error);
+                showMessage('Failed to sign in. Please try again.', 'error');
+                btn.disabled = false;
+            }
+        }
+
+        async function handleLogin() {
+            // OIDC login (existing code)
+            const btn = document.getElementById('loginBtn');
+
             try {
                 btn.disabled = true;
                 showMessage('Redirecting to login...', 'loading');
-                
-                // Check if OIDC is enabled and redirect to /auth/login
+
                 const response = await fetch('/health');
                 if (response.ok) {
-                    // OIDC should be enabled, redirect to login endpoint
                     window.location.href = '/auth/login';
                 } else {
                     showMessage('Service temporarily unavailable. Please try again.', 'error');
@@ -203,10 +322,12 @@
             showMessage(urlParams.get('message'), 'loading');
         }
 
-        // Auto-focus on login button
-        window.addEventListener('load', () => {
-            document.getElementById('loginBtn').focus();
-        });
+        // Basic Auth: Check lockout on username blur
+        if (isBasicAuth) {
+            document.getElementById('username').addEventListener('blur', (e) => {
+                checkLockoutStatus(e.target.value);
+            });
+        }
     </script>
 </body>
 </html>

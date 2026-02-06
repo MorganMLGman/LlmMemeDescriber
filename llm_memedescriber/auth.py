@@ -22,10 +22,33 @@ from argon2.exceptions import InvalidHashError, VerifyMismatchError
 from authlib.integrations.httpx_client import AsyncOAuth2Client
 from jose import JWTError, jwt
 from pydantic import BaseModel
+from sqlmodel import Session, select
 
 from .config import load_settings
 
 logger = logging.getLogger(__name__)
+
+# Argon2id parameters for password/token hashing (strong production config)
+ARGON2_TIME_COST = 4          # 4 iterations
+ARGON2_MEMORY_COST = 262144   # 256 MB (4x default)
+ARGON2_PARALLELISM = 8        # 8 threads (2x default)
+ARGON2_HASH_LEN = 32          # 32 bytes (2x default)
+ARGON2_SALT_LEN = 16          # 16 bytes (2x default)
+
+# Basic Auth rate limiting (exponential backoff)
+BASIC_AUTH_MAX_ATTEMPTS = 3
+BASIC_AUTH_LOCKOUT_DELAYS = [30, 60, 300, 900]  # 30s, 1min, 5min, 15min
+
+
+def get_password_hasher() -> PasswordHasher:
+    """Return configured Argon2id PasswordHasher with strong parameters."""
+    return PasswordHasher(
+        time_cost=ARGON2_TIME_COST,
+        memory_cost=ARGON2_MEMORY_COST,
+        parallelism=ARGON2_PARALLELISM,
+        hash_len=ARGON2_HASH_LEN,
+        salt_len=ARGON2_SALT_LEN
+    )
 
 
 class OIDCClient:
@@ -547,14 +570,73 @@ class OIDCAuthContext:
 
 def hash_token(token: str) -> str:
     """Hash a token for storage in database using Argon2 with strong parameters."""
-    ph = PasswordHasher(
-        time_cost=4,            # 4 iterations (higher = slower/more secure)
-        memory_cost=262144,     # 256 MB (4x default)
-        parallelism=8,          # 8 threads (2x default)
-        hash_len=32,            # 32 bytes (2x default)
-        salt_len=16             # 16 bytes (2x default)
-    )
+    ph = get_password_hasher()
     return ph.hash(token)
+
+
+def verify_basic_auth_user(username: str, password: str, engine) -> Optional[Dict[str, Any]]:
+    """Verify Basic Auth credentials against database with rate limiting.
+
+    Rate limit: 3 attempts, then lockout for 30s → 1m → 5m → 15m (repeating).
+
+    Returns user info dict if valid, None otherwise.
+    """
+    from .models import BasicAuthUser
+
+    with Session(engine) as session:
+        stmt = select(BasicAuthUser).where(
+            BasicAuthUser.username == username,
+            BasicAuthUser.enabled == True
+        )
+        user = session.exec(stmt).first()
+
+        if not user:
+            return None
+
+        now = datetime.now(timezone.utc)
+
+        # Check if user is locked out
+        if user.locked_until and now < user.locked_until:
+            return None
+
+        # Unlock if lock period expired
+        if user.locked_until and now >= user.locked_until:
+            user.locked_until = None
+            user.failed_attempts = 0
+
+        try:
+            ph = get_password_hasher()
+            ph.verify(user.password_hash, password)
+
+            # Successful login - reset counters
+            user.last_used_at = now
+            user.failed_attempts = 0
+            user.locked_until = None
+            session.add(user)
+            session.commit()
+
+            return {
+                'sub': user.username,
+                'name': user.username,
+                'basic_auth': True
+            }
+        except Exception:
+            # Failed attempt - increment counter
+            user.failed_attempts += 1
+
+            # Apply lockout if max attempts exceeded
+            if user.failed_attempts >= BASIC_AUTH_MAX_ATTEMPTS:
+                # Calculate lockout delay (exponential backoff, capped at 15 min)
+                lockout_index = min(
+                    (user.failed_attempts - BASIC_AUTH_MAX_ATTEMPTS) // BASIC_AUTH_MAX_ATTEMPTS,
+                    len(BASIC_AUTH_LOCKOUT_DELAYS) - 1
+                )
+                delay_seconds = BASIC_AUTH_LOCKOUT_DELAYS[lockout_index]
+                user.locked_until = now + timedelta(seconds=delay_seconds)
+
+            session.add(user)
+            session.commit()
+            return None
 
 
 def generate_state_token() -> str:
