@@ -198,6 +198,9 @@ def get_or_create_self_signed_cert(cert_dir: str = "/data/certs", hostname: str 
     ).sign(private_key, hashes.SHA256(), default_backend())
     
     if encrypt_key:
+        # Development-only passphrase: "development-key-passphrase"
+        # This is acceptable for auto-generated development certificates only.
+        # In production, provide your own certificates via SSL_CERT_FILE/SSL_KEY_FILE environment variables.
         encryption = serialization.BestAvailableEncryption(b"development-key-passphrase")
         logger.warning("⚠️  Private key will be encrypted with default development passphrase")
     else:

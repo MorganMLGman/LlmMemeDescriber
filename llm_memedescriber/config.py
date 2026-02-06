@@ -32,7 +32,11 @@ class Settings(BaseSettings):
     ssl_key_file: str | None = None
     ssl_hostname: str = "localhost"
     
+    # CORS settings
+    cors_origins: str = ""  # Comma-separated allowed origins, e.g. "https://example.com,https://app.example.com"
+
     # Security settings
+    csrf_secret: SecretStr | None = None  # Required for CSRF protection; set via CSRF_SECRET env var or Docker secret
     debug_mode: bool = False  # Set to False in production to enforce HTTPS
     
     # Authentication modes (mutually exclusive - only one can be True)
@@ -106,6 +110,13 @@ class Settings(BaseSettings):
         return self
     
     @model_validator(mode="after")
+    def validate_csrf_secret(self):
+        """Require csrf_secret when authentication is enabled."""
+        if not self.public_mode and not self.csrf_secret:
+            raise ValueError("csrf_secret is required when authentication is enabled. Set CSRF_SECRET env var or Docker secret.")
+        return self
+
+    @model_validator(mode="after")
     def validate_redis_config(self):
         """If redis_url is set, redis_password must be set."""
         if self.redis_url and not self.redis_password:
@@ -145,7 +156,7 @@ class Settings(BaseSettings):
             logger.info("  Redirect URI: %s", self.oidc_redirect_uri)
             logger.info("  Scopes: %s", self.oidc_scopes)
 
-    @field_validator("google_genai_api_key", "webdav_url", "webdav_username", "webdav_password", "oidc_client_secret", "jwt_secret", mode="before")
+    @field_validator("google_genai_api_key", "webdav_url", "webdav_username", "webdav_password", "oidc_client_secret", "jwt_secret", "csrf_secret", mode="before")
     @classmethod
     def _prefer_docker_secret(cls, v, info):
         """

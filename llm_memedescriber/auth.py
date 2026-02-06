@@ -34,21 +34,22 @@ class OIDCClient:
     Supports PKCE (Proof Key for Code Exchange) for enhanced security.
     """
     
-    def __init__(self, settings):
+    def __init__(self, settings, session_manager=None):
         self.settings = settings
         self.provider_url = settings.oidc_provider_url
         self.client_id = settings.oidc_client_id
         self.client_secret = settings.oidc_client_secret.get_secret_value() if settings.oidc_client_secret else None
         self.redirect_uri = settings.oidc_redirect_uri
         self.scopes = settings.oidc_scopes
-        
+
         # SSL verification settings
         self.verify_ssl = settings.oidc_verify_ssl
         self.ca_bundle = settings.oidc_ca_bundle_path if settings.oidc_ca_bundle_path else True
         # If ca_bundle_path not set, use default True (system CA bundle)
-        
-        # PKCE state storage (in production, use Redis or similar)
-        self.pkce_states = {}
+
+        # PKCE state storage (uses session_manager if provided, otherwise fallback to in-memory)
+        self.session_manager = session_manager
+        self.pkce_states = {} if not session_manager else None
     
     def _generate_pkce_pair(self) -> Dict[str, str]:
         """Generate PKCE code_verifier and code_challenge for S256."""
@@ -67,13 +68,18 @@ class OIDCClient:
         
     def get_authorization_url(self, state: str) -> str:
         """Generate authorization URL for OIDC provider with PKCE.
-        
+
         Generates PKCE code_challenge and stores code_verifier for later token exchange.
         """
         # Generate PKCE pair
         pkce = self._generate_pkce_pair()
-        self.pkce_states[state] = pkce
-        
+
+        # Store PKCE state (use session_manager if available, otherwise in-memory)
+        if self.session_manager:
+            self.session_manager.store_pkce_state(state, pkce)
+        else:
+            self.pkce_states[state] = pkce
+
         params = {
             'client_id': self.client_id,
             'redirect_uri': self.redirect_uri,
@@ -87,16 +93,21 @@ class OIDCClient:
     
     async def exchange_code_for_token(self, code: str, state: str) -> Dict[str, Any]:
         """Exchange authorization code for tokens (backend call).
-        
+
         Verifies OIDC provider SSL certificate to prevent MITM attacks.
         Uses PKCE code_verifier to prevent authorization code interception.
         """
         # Get the stored code_verifier for this state
-        if state not in self.pkce_states:
-            raise ValueError("Invalid state - PKCE verifier not found")
-        
-        code_verifier = self.pkce_states[state]['code_verifier']
-        del self.pkce_states[state]  # Clean up
+        if self.session_manager:
+            pkce_data = self.session_manager.get_pkce_state(state)
+            if not pkce_data:
+                raise ValueError("Invalid state - PKCE verifier not found")
+            code_verifier = pkce_data['code_verifier']
+        else:
+            if state not in self.pkce_states:
+                raise ValueError("Invalid state - PKCE verifier not found")
+            code_verifier = self.pkce_states[state]['code_verifier']
+            del self.pkce_states[state]  # Clean up
         
         # Determine SSL verification parameter
         verify = self.ca_bundle if self.verify_ssl else False
@@ -137,13 +148,7 @@ class JWTManager:
     
     def __init__(self, secret: str | None, expiry_days: int = 30):
         # Handle both str and SecretStr
-        if hasattr(secret, 'get_secret_value'):
-            self.secret = secret
-        else:
-            if hasattr(secret, 'get_secret_value'):
-                self.secret = secret.get_secret_value()
-            else:
-                self.secret = secret
+        self.secret = secret.get_secret_value() if hasattr(secret, 'get_secret_value') else secret
         self.expiry_days = expiry_days
         self.algorithm = "HS256"
     
@@ -256,6 +261,51 @@ class SessionManager:
             del self._sessions[sid]
         if expired:
             logger.debug(f"Cleaned up {len(expired)} expired sessions")
+
+    # OAuth/PKCE state storage methods
+    def store_oauth_state(self, state: str, ttl_seconds: int = 300) -> bool:
+        """Store OAuth state token with expiry (default 5 minutes)."""
+        if not hasattr(self, '_oauth_states'):
+            self._oauth_states = {}
+        self._oauth_states[state] = datetime.now(timezone.utc)
+        return True
+
+    def verify_oauth_state(self, state: str) -> bool:
+        """Verify and consume OAuth state token."""
+        if not hasattr(self, '_oauth_states'):
+            return False
+        if state not in self._oauth_states:
+            return False
+        state_time = self._oauth_states[state]
+        if datetime.now(timezone.utc) - state_time > timedelta(seconds=300):
+            del self._oauth_states[state]
+            return False
+        del self._oauth_states[state]
+        return True
+
+    def store_pkce_state(self, state: str, pkce_data: Dict[str, str], ttl_seconds: int = 300) -> bool:
+        """Store PKCE verifier with expiry (default 5 minutes)."""
+        if not hasattr(self, '_pkce_states'):
+            self._pkce_states = {}
+        self._pkce_states[state] = {
+            'data': pkce_data,
+            'created_at': datetime.now(timezone.utc)
+        }
+        return True
+
+    def get_pkce_state(self, state: str) -> Optional[Dict[str, str]]:
+        """Get and consume PKCE verifier."""
+        if not hasattr(self, '_pkce_states'):
+            return None
+        if state not in self._pkce_states:
+            return None
+        entry = self._pkce_states[state]
+        if datetime.now(timezone.utc) - entry['created_at'] > timedelta(seconds=300):
+            del self._pkce_states[state]
+            return None
+        pkce_data = entry['data']
+        del self._pkce_states[state]
+        return pkce_data
 
 
 class RedisSessionManager:
@@ -375,29 +425,89 @@ class RedisSessionManager:
             pattern = "session:*"
             cursor = 0
             count = 0
-            
+
             while True:
                 cursor, keys = self.redis_client.scan(cursor, match=pattern, count=100)
                 count += len(keys)
                 if cursor == 0:
                     break
-            
+
             if count > 0:
                 logger.debug(f"Active sessions in Redis: {count}")
         except Exception as e:
             logger.debug(f"Error checking active sessions: {e}")
 
+    # OAuth/PKCE state storage methods
+    def store_oauth_state(self, state: str, ttl_seconds: int = 300) -> bool:
+        """Store OAuth state token with expiry (default 5 minutes) in Redis."""
+        try:
+            self.redis_client.setex(
+                f"oauth_state:{state}",
+                ttl_seconds,
+                datetime.now(timezone.utc).isoformat()
+            )
+            logger.debug(f"OAuth state stored in Redis: {state}")
+            return True
+        except Exception as e:
+            logger.exception(f"Failed to store OAuth state: {e}")
+            return False
+
+    def verify_oauth_state(self, state: str) -> bool:
+        """Verify and consume OAuth state token from Redis."""
+        try:
+            result = self.redis_client.get(f"oauth_state:{state}")
+            if result:
+                self.redis_client.delete(f"oauth_state:{state}")
+                logger.debug(f"OAuth state verified and consumed: {state}")
+                return True
+            return False
+        except Exception as e:
+            logger.exception(f"Error verifying OAuth state: {e}")
+            return False
+
+    def store_pkce_state(self, state: str, pkce_data: Dict[str, str], ttl_seconds: int = 300) -> bool:
+        """Store PKCE verifier with expiry (default 5 minutes) in Redis."""
+        try:
+            self.redis_client.setex(
+                f"pkce_state:{state}",
+                ttl_seconds,
+                json.dumps(pkce_data)
+            )
+            logger.debug(f"PKCE state stored in Redis: {state}")
+            return True
+        except Exception as e:
+            logger.exception(f"Failed to store PKCE state: {e}")
+            return False
+
+    def get_pkce_state(self, state: str) -> Optional[Dict[str, str]]:
+        """Get and consume PKCE verifier from Redis."""
+        try:
+            pkce_data_str = self.redis_client.get(f"pkce_state:{state}")
+            if not pkce_data_str:
+                return None
+            self.redis_client.delete(f"pkce_state:{state}")
+            logger.debug(f"PKCE state retrieved and consumed: {state}")
+            # Parse from JSON (decode_responses=True ensures string type)
+            return json.loads(str(pkce_data_str))
+        except Exception as e:
+            logger.exception(f"Error retrieving PKCE state: {e}")
+            return None
+
 
 class OIDCAuthContext:
     """Singleton context for OIDC and JWT handling."""
-    
-    _instance = None
-    
+
+    _instance: Optional['OIDCAuthContext'] = None
+    enabled: bool
+    oidc_client: Optional[OIDCClient]
+    jwt_manager: Optional['JWTManager']
+    session_manager: 'SessionManager | RedisSessionManager'
+
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             settings = load_settings()
-            
+
             cls._instance.enabled = settings.oidc_enabled
             cls._instance.oidc_client = None
             cls._instance.jwt_manager = None
@@ -420,12 +530,12 @@ class OIDCAuthContext:
                 logger.info("Using in-memory session storage (redis_url not configured)")
             
             if settings.oidc_enabled:
-                if not all([settings.oidc_provider_url, settings.oidc_client_id, 
-                           settings.oidc_client_secret, settings.oidc_redirect_uri, 
+                if not all([settings.oidc_provider_url, settings.oidc_client_id,
+                           settings.oidc_client_secret, settings.oidc_redirect_uri,
                            settings.jwt_secret]):
                     logger.error("OIDC enabled but missing required settings")
                 else:
-                    cls._instance.oidc_client = OIDCClient(settings)
+                    cls._instance.oidc_client = OIDCClient(settings, cls._instance.session_manager)
                     cls._instance.jwt_manager = JWTManager(
                         settings.jwt_secret,
                         settings.jwt_expiry_days

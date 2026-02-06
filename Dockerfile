@@ -17,9 +17,12 @@ RUN python3 -m pip install --no-cache-dir pipenv \
 
 RUN set -e; \
     ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "amd64") && \
-    wget -O /tmp/ffmpeg.tar.xz "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-${ARCH}-static.tar.xz" && \
+    cd /tmp && \
+    wget "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-${ARCH}-static.tar.xz" && \
+    wget "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-${ARCH}-static.tar.xz.md5" && \
+    md5sum -c "ffmpeg-release-${ARCH}-static.tar.xz.md5" && \
     mkdir -p /tmp/ffmpeg-static && \
-    tar -C /tmp/ffmpeg-static --strip-components=1 -xf /tmp/ffmpeg.tar.xz && \
+    tar -C /tmp/ffmpeg-static --strip-components=1 -xf "ffmpeg-release-${ARCH}-static.tar.xz" && \
     mv /tmp/ffmpeg-static/ffmpeg /usr/bin/ffmpeg && \
     mv /tmp/ffmpeg-static/ffprobe /usr/bin/ffprobe && \
     rm -rf /tmp/ffmpeg* && \

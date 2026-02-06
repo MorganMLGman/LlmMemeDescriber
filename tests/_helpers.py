@@ -323,15 +323,15 @@ def setup_oidc_secrets_monkeypatch(monkeypatch, secrets_dict):
 
 def create_oidc_settings(override_dict=None):
     """Create a Settings instance with standard OIDC configuration.
-    
+
     Args:
         override_dict: Optional dict to override default OIDC settings
-    
+
     Returns:
         Settings instance with OIDC enabled and default values
     """
     from llm_memedescriber.config import Settings
-    
+
     defaults = {
         'oidc_enabled': True,
         'oidc_provider_url': 'https://auth.example.com',
@@ -339,11 +339,12 @@ def create_oidc_settings(override_dict=None):
         'oidc_client_secret': 'env-client-secret',
         'oidc_redirect_uri': 'https://app.example.com/callback',
         'jwt_secret': 'env-jwt-secret',
+        'csrf_secret': 'test-csrf-secret',  # Required for CSRF protection when auth is enabled
     }
-    
+
     if override_dict:
         defaults.update(override_dict)
-    
+
     return Settings(**defaults)
 
 

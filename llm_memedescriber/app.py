@@ -1,5 +1,7 @@
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.responses import HTMLResponse, StreamingResponse, FileResponse, RedirectResponse, JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,7 +18,7 @@ import os
 from typing import Dict, Optional, Any, List
 import logging
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .config import load_settings, configure_logging, parse_interval, Settings
 from .constants import *
@@ -151,8 +153,6 @@ async def lifespan(app_instance: FastAPI):
     app_instance.state.app_instance = App(settings=settings, storage=storage, genai_client=genai_client, engine=app_instance.state.engine, interval_seconds=interval)
     app_instance.state._started = True
 
-    # No longer using listing.json for backfill; relying entirely on database
-
     if getattr(settings, 'auto_start_worker', False):
         logger.info("auto_start_worker enabled")
         try:
@@ -179,7 +179,7 @@ async def lifespan(app_instance: FastAPI):
                 filenames = []
             with session_scope(app_instance.state.engine) as session:
                 rows = session.exec(select(Meme).where(Meme.phash == None)).all()
-                # Only process supported file types; skip unsupported files like listing.json
+                # Only process supported file types
                 filenames = [r.filename for r in rows if is_supported(r.filename)]
 
             if filenames:
@@ -222,7 +222,7 @@ async def lifespan(app_instance: FastAPI):
                 with session_scope(app_instance.state.engine) as session:
                     rows = session.exec(select(Meme)).all()
                     for r in rows:
-                        # Skip unsupported file types like listing.json
+                        # Skip unsupported file types
                         if not is_supported(r.filename):
                             continue
                         cache_path = _get_cache_path(r.filename)
@@ -303,10 +303,6 @@ async def lifespan(app_instance: FastAPI):
 app = FastAPI(title="llm_memedescriber", description="Meme describing service", version="0.0.1", lifespan=lifespan)
 app.state.limiter = limiter
 
-# Exception Handlers
-from starlette.exceptions import HTTPException as StarletteHTTPException
-from fastapi.exceptions import RequestValidationError
-
 def is_api_request(request: Request) -> bool:
     """Determine if the request expects JSON response or is an API call."""
     return (
@@ -358,11 +354,14 @@ async def general_exception_handler(request: Request, exc: Exception):
 # Rate limiter is initialized in lifespan
 # Use @limiter.limit decorator on routes
 
-# Initialize CSRF protection
+# Initialize CSRF protection (csrf_secret is validated at startup via Settings)
+_csrf_settings = load_settings()
+_csrf_secret_value = _csrf_settings.csrf_secret.get_secret_value() if _csrf_settings.csrf_secret else "unused-public-mode"
+
 @CsrfProtect.load_config
 def load_csrf_config():
     return [
-        ("secret", os.getenv("CSRF_SECRET", "your-secret-key-change-in-production")),
+        ("secret", _csrf_secret_value),
         ("cookie_name", "csrftoken"),
         ("cookie_samesite", "strict")
     ]
@@ -379,20 +378,41 @@ if os.path.isdir(static_dir):
 
 # ======================== Middleware Setup ========================
 
-# HTTPS Redirect middleware - enforce HTTPS in production (check debug_mode at runtime)
+# HTTPS Redirect middleware - enforce HTTPS in production
 # Default to enforcing HTTPS unless DEBUG_MODE is explicitly set to True
 debug_mode_env = os.getenv("DEBUG_MODE", "false").lower() in ("true", "1", "yes")
 if not debug_mode_env:
     app.add_middleware(HTTPSRedirectMiddleware)
 
-# CORS middleware - allow credentials for session cookies
+# CORS middleware - use explicit origins from settings (falls back to no origins allowed)
+_cors_settings = load_settings()
+_cors_origins = [o.strip() for o in _cors_settings.cors_origins.split(",") if o.strip()] if _cors_settings.cors_origins else []
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_cors_origins,
+    allow_credentials=bool(_cors_origins),
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-CSRF-Token"],
 )
+
+# Security headers middleware
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    """Add security headers to all responses."""
+    response = await call_next(request)
+    # Prevent MIME type sniffing
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    # Prevent clickjacking attacks
+    response.headers["X-Frame-Options"] = "DENY"
+    # Enable browser XSS protection
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    # Content Security Policy - restrict resource loading
+    response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'"
+    # Referrer policy - control referrer information
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    # Permissions policy - disable dangerous features
+    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+    return response
 
 
 # Custom middleware to track API token usage
@@ -414,7 +434,7 @@ async def track_api_token_usage(request: Request, call_next):
                     # Schedule update in background
                     asyncio.create_task(_update_token_usage(token))
                 except Exception as e:
-                    logger.debug(f"Failed to track token usage: {e}")
+                    logger.exception(f"Failed to track token usage: {e}")
     
     response = await call_next(request)
     return response
@@ -440,7 +460,7 @@ async def _update_token_usage(token: str):
                 except VerifyMismatchError:
                     continue
     except Exception as e:
-        logger.debug(f"Failed to update token usage: {e}")
+        logger.exception(f"Failed to update token usage: {e}")
 
 
 # Periodic session cleanup (runs every hour)
@@ -450,19 +470,8 @@ async def cleanup_sessions_periodically():
         try:
             await asyncio.sleep(3600)  # Every hour
             auth_context = OIDCAuthContext()
+            # Cleanup expired sessions and OAuth/PKCE states (handled by session_manager)
             auth_context.session_manager.cleanup_expired()
-            
-            # Clean up expired OAuth states (5+ minutes old)
-            if hasattr(app, 'state') and hasattr(app.state, 'oauth_states'):
-                now = datetime.datetime.now(datetime.timezone.utc)
-                expired = [
-                    s for s, t in app.state.oauth_states.items()
-                    if now - t > datetime.timedelta(minutes=5)
-                ]
-                for s in expired:
-                    del app.state.oauth_states[s]
-                if expired:
-                    logger.debug(f"Cleaned up {len(expired)} expired OAuth states")
             
             try:
                 with session_scope(app.state.engine) as session:
@@ -494,10 +503,10 @@ async def cleanup_sessions_periodically():
                     
                     session.commit()
             except Exception as e:
-                logger.error(f"Failed to cleanup database tokens: {e}")
+                logger.exception(f"Failed to cleanup database tokens: {e}")
                 
         except Exception as e:
-            logger.debug(f"Failed to cleanup sessions/states: {e}")
+            logger.exception(f"Failed to cleanup sessions/states: {e}")
 
 
 def _validate_user_info(user_info: Dict[str, Any]) -> Dict[str, Any]:
@@ -566,9 +575,9 @@ def optional_auth(request: Request) -> Optional[Dict[str, Any]]:
 
 class UpdateMemeRequest(BaseModel):
     """Request body for updating meme metadata."""
-    category: Optional[str] = None
-    keywords: Optional[str] = None
-    description: Optional[str] = None
+    category: Optional[str] = Field(None, max_length=100)
+    keywords: Optional[str] = Field(None, max_length=500)
+    description: Optional[str] = Field(None, max_length=2000)
 
 
 class DuplicateInfo(BaseModel):
@@ -592,19 +601,12 @@ class MergeDuplicatesRequest(BaseModel):
     metadata_sources: Optional[List[str]] = None
 
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 app.state._started = False
 
 def _get_cache_path(filename: str) -> str:
-    """Get safe cache file path from filename hash."""
-    name_hash = hashlib.md5(filename.encode()).hexdigest()
+    """Get safe cache file path from filename hash (using SHA256)."""
+    name_hash = hashlib.sha256(filename.encode()).hexdigest()
     return os.path.join(CACHE_DIR, f"{name_hash}.jpg")
 
 
@@ -645,13 +647,7 @@ async def _aget_or_generate_preview(filename: str, is_vid: bool, storage: Any, s
         raise HTTPException(status_code=503, detail='Storage/FFmpeg error')
 
 
-def get_settings() -> Settings:
-    return load_settings()
 
-
-@app.get("/health", tags=["health"])
-def health() -> Dict[str, Any]:
-    return {"status": "ok"}
 
 
 @app.get("/login", response_class=HTMLResponse, tags=["ui"])
@@ -875,299 +871,6 @@ def revoke_share_token(token_id: int, request: Request, user_info: Dict = Depend
         raise HTTPException(status_code=500, detail="Failed to delete share token")
 
 
-# Authorization dependency for FastAPI
-def require_auth(request: Request, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
-    """Dependency to require authentication (session cookie or bearer token).
-    If public_mode is enabled, returns a public user without authentication.
-    """
-    # Public mode bypasses all authentication
-    if settings.public_mode:
-        return _validate_user_info({"sub": "public-user", "public": True})
-    
-    auth_context = get_auth_context()
-    
-    # Check session cookie first
-    session_id = request.cookies.get('session_id')
-    if session_id:
-        session = auth_context.session_manager.get_session(session_id)
-        if session:
-            user_info = session.get('user_info', {})
-            return _validate_user_info(user_info)
-    
-    auth_header = request.headers.get('Authorization')
-    if auth_header and auth_header.startswith('Bearer '):
-        token = auth_header[7:]
-        if auth_context.jwt_manager:
-            payload = auth_context.jwt_manager.verify_token(token)
-            if payload:
-                user_info = verify_api_token_not_revoked(token, request.app.state.engine)
-                if user_info:
-                    logger.debug(f"API request authenticated for user: {user_info.get('sub')}")
-                    return _validate_user_info(user_info)
-                else:
-                    logger.warning(f"API token rejected: token revoked, expired, or invalid")
-                    raise HTTPException(status_code=401, detail="Token revoked, expired, or invalid")
-    
-    raise HTTPException(status_code=401, detail="Not authenticated")
-
-
-def optional_auth(request: Request) -> Optional[Dict[str, Any]]:
-    """Dependency for optional authentication."""
-    return get_user_from_request(request)
-
-
-class UpdateMemeRequest(BaseModel):
-    """Request body for updating meme metadata."""
-    category: Optional[str] = None
-    keywords: Optional[str] = None
-    description: Optional[str] = None
-
-
-class DuplicateInfo(BaseModel):
-    """Information about a single duplicate."""
-    filename: str
-    similarity: int  # hamming distance (0-64)
-    preview_url: Optional[str] = None
-
-
-class DuplicateGroup(BaseModel):
-    """Group of duplicate memes."""
-    primary: DuplicateInfo
-    duplicates: List[DuplicateInfo]
-
-
-class MergeDuplicatesRequest(BaseModel):
-    """Request to merge duplicate memes."""
-    primary_filename: str
-    duplicate_filenames: List[str]
-    merge_metadata: bool = True
-    metadata_sources: Optional[List[str]] = None
-
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-app.state._started = False
-
-def _get_cache_path(filename: str) -> str:
-    """Get safe cache file path from filename hash."""
-    name_hash = hashlib.md5(filename.encode()).hexdigest()
-    return os.path.join(CACHE_DIR, f"{name_hash}.jpg")
-
-
-def _get_mime_type(ext: str) -> str:
-    """Get MIME type based on file extension."""
-    ext = ext.lower()
-    mime_types = {
-        'jpg': 'image/jpeg',
-        'jpeg': 'image/jpeg',
-        'png': 'image/png',
-        'webp': 'image/webp',
-        'gif': 'image/gif',
-        'bmp': 'image/bmp',
-        'tiff': 'image/tiff',
-        'mp4': 'video/mp4',
-        'webm': 'video/webm',
-        'mov': 'video/quicktime',
-        'mkv': 'video/x-matroska',
-        'avi': 'video/x-msvideo',
-        'flv': 'video/x-flv',
-    }
-    return mime_types.get(ext, 'application/octet-stream')
-
-
-async def _aget_or_generate_preview(filename: str, is_vid: bool, storage: Any, size: int = 300) -> bytes:
-    """Async wrapper for preview generation that uses storage async methods when available."""
-    cache_path = _get_cache_path(filename)
-
-    try:
-        return await async_generate_preview(filename, is_vid, storage, size=size)
-    except FileNotFoundError:
-        logger.info('File not found: %s', filename)
-        raise HTTPException(status_code=404, detail='File not found in storage')
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.exception('Storage/FFmpeg error for %s: %s', filename, exc)
-        raise HTTPException(status_code=503, detail='Storage/FFmpeg error')
-
-
-def get_settings() -> Settings:
-    return load_settings()
-
-
-@app.get("/health", tags=["health"])
-def health() -> Dict[str, Any]:
-    return {"status": "ok"}
-
-
-@app.get("/login", response_class=HTMLResponse, tags=["ui"])
-def login_page(request: Request):
-    """Serve the login page. Shows OIDC login button."""
-    return templates.TemplateResponse("login.html", {"request": request})
-
-
-@app.get("/", response_class=HTMLResponse, tags=["ui"])
-def index(request: Request, settings: Settings = Depends(get_settings), user_info: Optional[Dict] = Depends(optional_auth)):
-    """Serve the main meme gallery page. Redirects to login if not authenticated (unless public_mode)."""
-    if not settings.public_mode and not user_info:
-        return RedirectResponse(url="/login", status_code=302)
-    return templates.TemplateResponse("index.html", {"request": request})
-
-
-@app.get("/duplicates", response_class=HTMLResponse, tags=["ui"])
-def duplicates_page(request: Request, settings: Settings = Depends(get_settings), user_info: Optional[Dict] = Depends(optional_auth)):
-    """Serve the duplicates UI page. Requires authentication (unless public_mode)."""
-    if not settings.public_mode and not user_info:
-        return RedirectResponse(url="/login", status_code=302)
-    return templates.TemplateResponse("duplicates.html", {"request": request})
-
-
-@app.get("/pending", response_class=HTMLResponse, tags=["ui"])
-def pending_page(request: Request):
-    """Serve the pending memes UI page."""
-    return templates.TemplateResponse("pending.html", {"request": request})
-
-
-@app.get("/tokens", response_class=HTMLResponse, tags=["ui"])
-def tokens_page(request: Request, user_info: Optional[Dict] = Depends(optional_auth)):
-    """Serve the API tokens management page. Requires authentication."""
-    if not user_info:
-        return RedirectResponse(url="/login", status_code=302)
-    return templates.TemplateResponse("tokens.html", {"request": request})
-
-
-@app.get("/memes/{filename}/download", tags=["memes"])
-async def download_meme(filename: str, user_info: Dict = Depends(require_auth)):
-    """Download raw meme bytes from WebDAV proxy. REQUIRES AUTHENTICATION."""
-    try:
-        filename = sanitize_filename(filename)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    
-    storage = getattr(app.state, 'app_instance', None) and getattr(app.state.app_instance, 'storage', None)
-    if not storage:
-        raise HTTPException(status_code=503, detail='Storage is not configured')
-    try:
-        data = await getattr(storage, 'async_download_file', storage.download_file)(filename)
-        if data is None:
-            raise HTTPException(status_code=404, detail='File not found in storage')
-        
-        ext = _get_extension(filename)
-        ctype = _get_mime_type(ext)
-        return StreamingResponse(
-            BytesIO(data),
-            media_type=ctype,
-            headers={"Content-Length": str(len(data))}
-        )
-    except HTTPException:
-        raise
-    except FileNotFoundError:
-        logger.info('File not found: %s', filename)
-        raise HTTPException(status_code=404, detail='File not found in storage')
-    except IOError as exc:
-        logger.exception('Storage error for %s: %s', filename, exc)
-        raise HTTPException(status_code=503, detail='Storage error')
-    except Exception as exc:
-        logger.exception('Failed to download %s: %s', filename, exc)
-        raise HTTPException(status_code=500, detail='Download failed')
-
-
-@app.get("/memes/{filename}/share-link", tags=["memes"])
-@limiter.limit("10/minute")
-def generate_share_link(request: Request, filename: str, user_info: Dict = Depends(require_auth)):
-    """Generate a temporary, signed share link for a meme (valid for 24h). REQUIRES AUTHENTICATION.
-    
-    Generates a new random token each time (allowing multiple valid links).
-    Token is hashed with Argon2id and stored in DB.
-    """
-    try:
-        filename = sanitize_filename(filename)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    
-    # Generate random token (not stored in DB)
-    import secrets
-    raw_token = secrets.token_urlsafe(32)
-    token_hash = hash_token(raw_token)
-    
-    expires_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=24)
-    
-    try:
-        with session_scope(app.state.engine) as session:
-            # Create new token (allow multiple tokens for same file)
-            share_token = FileShareToken(
-                filename=filename,
-                token_hash=token_hash,
-                created_by=user_info.get('sub', 'unknown'),
-                created_at=datetime.datetime.now(datetime.timezone.utc),
-                expires_at=expires_at
-            )
-            session.add(share_token)
-            session.commit()
-            
-            # Audit log
-            log_audit_action(
-                app.state.engine,
-                user_id=user_info.get('sub', 'unknown'),
-                action="CREATE_SHARE_LINK",
-                resource=filename,
-                resource_type="file",
-                details=None,
-                ip_address=request.client.host if request.client else None
-            )
-    except Exception as e:
-        logger.exception("Failed to create share token")
-        raise HTTPException(status_code=500, detail="Failed to create share link")
-    
-    # Construct full URL
-    base_url = str(request.base_url).rstrip('/')
-    share_url = f"{base_url}/memes/{filename}/shared?token={raw_token}"
-    
-    return {"url": share_url, "expires_in": "24h"}
-
-
-@app.get("/memes/{filename}/shared", tags=["memes"])
-async def access_shared_meme(filename: str, token: str):
-    """Access a shared meme via signed token. PUBLIC (validated by token)."""
-    try:
-        filename = sanitize_filename(filename)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    
-    if not verify_share_token_db(token, filename, app.state.engine):
-        # Add a small delay to prevent timing attacks/brute force
-        await asyncio.sleep(0.1)
-        raise HTTPException(status_code=403, detail="Invalid or expired share token")
-    
-    # Serve file (same logic as download_meme)
-    storage = getattr(app.state, 'app_instance', None) and getattr(app.state.app_instance, 'storage', None)
-    if not storage:
-        raise HTTPException(status_code=503, detail='Storage is not configured')
-    
-    try:
-        data = await getattr(storage, 'async_download_file', storage.download_file)(filename)
-        if data is None:
-            raise HTTPException(status_code=404, detail='File not found in storage')
-        
-        ext = _get_extension(filename)
-        ctype = _get_mime_type(ext)
-        return StreamingResponse(
-            BytesIO(data),
-            media_type=ctype,
-            headers={"Content-Length": str(len(data))}
-        )
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.exception('Failed to download shared file %s: %s', filename, exc)
-        raise HTTPException(status_code=500, detail='Download failed')
-
 
 @app.get("/health", tags=["health"])
 def health_check():
@@ -1186,11 +889,15 @@ def list_memes(limit: int = DEFAULT_LIST_LIMIT, offset: int = DEFAULT_OFFSET, st
             
             if status:
                 q = q.where(Meme.status == status)
-            
+
+            _ALLOWED_SORT_FIELDS = {"created_at", "updated_at", "status", "filename", "category", "description"}
+            sort_field = sort[1:] if sort.startswith("-") else sort
+            if sort_field not in _ALLOWED_SORT_FIELDS:
+                raise HTTPException(status_code=400, detail=f"Invalid sort field: {sort_field}. Allowed: {', '.join(sorted(_ALLOWED_SORT_FIELDS))}")
             if sort.startswith("-"):
-                q = q.order_by(desc(getattr(Meme, sort[1:])))
+                q = q.order_by(desc(getattr(Meme, sort_field)))
             else:
-                q = q.order_by(getattr(Meme, sort))
+                q = q.order_by(getattr(Meme, sort_field))
             
             q = q.limit(limit).offset(offset)
             rows = session.exec(q).all()
@@ -1971,7 +1678,7 @@ def merge_duplicate_memes(request: Request, merge_request: MergeDuplicatesReques
                 resource=merge_request.primary_filename,
                 resource_type="meme_group",
                 details=f"Merged {len(merge_request.duplicate_filenames)} duplicates: {','.join(merge_request.duplicate_filenames)}",
-                ip_address=None
+                ip_address=request.client.host if request.client else None
             )
             
             return {
@@ -2088,7 +1795,7 @@ def delete_duplicate_group(request: Request, merge_request: MergeDuplicatesReque
                 resource=merge_request.primary_filename,
                 resource_type="meme_group",
                 details=f"Deleted {len(merge_request.duplicate_filenames)} duplicates: {','.join(merge_request.duplicate_filenames)}",
-                ip_address=None
+                ip_address=request.client.host if request.client else None
             )
             
             return {
@@ -2154,15 +1861,14 @@ def get_user_from_request(request: Request) -> Optional[Dict[str, Any]]:
 def login(request: Request):
     """Redirect to OIDC provider for authentication."""
     auth_context = get_auth_context()
-    
+
     if not auth_context.enabled or not auth_context.oidc_client:
         raise HTTPException(status_code=503, detail="OIDC authentication not enabled")
-    
+
     state = generate_state_token()
-    if not hasattr(app.state, 'oauth_states'):
-        app.state.oauth_states = {}
-    app.state.oauth_states[state] = datetime.datetime.now(datetime.timezone.utc)
-    
+    # Store OAuth state (uses Redis if configured, otherwise in-memory)
+    auth_context.session_manager.store_oauth_state(state)
+
     auth_url = auth_context.oidc_client.get_authorization_url(state)
     return RedirectResponse(url=auth_url)
 
@@ -2189,16 +1895,10 @@ async def callback(request: Request, code: Optional[str] = None, state: Optional
     if not state:
         logger.error("Missing state parameter in callback")
         raise HTTPException(status_code=400, detail="Missing state parameter")
-    
-    if not hasattr(app.state, 'oauth_states') or state not in app.state.oauth_states:
-        raise HTTPException(status_code=400, detail="Invalid state parameter")
-    
-    state_time = app.state.oauth_states[state]
-    if datetime.datetime.now(datetime.timezone.utc) - state_time > datetime.timedelta(minutes=5):
-        del app.state.oauth_states[state]
-        raise HTTPException(status_code=400, detail="State parameter expired")
-    
-    del app.state.oauth_states[state]
+
+    # Verify OAuth state (retrieves from Redis if configured, otherwise in-memory)
+    if not auth_context.session_manager.verify_oauth_state(state):
+        raise HTTPException(status_code=400, detail="Invalid or expired state parameter")
     
     try:
         token = await auth_context.oidc_client.exchange_code_for_token(code, state)
@@ -2336,7 +2036,7 @@ def generate_api_token(request_body: TokenGenerateRequest, request: Request):
             session.refresh(user_token)
             
             logger.info(f"API token generated for user {user_id}: {request_body.name}")
-            
+
             # Audit log
             log_audit_action(
                 app.state.engine,
@@ -2345,7 +2045,7 @@ def generate_api_token(request_body: TokenGenerateRequest, request: Request):
                 resource=str(user_token.id),
                 resource_type="token",
                 details=f"Token name: {request_body.name}",
-                ip_address=None
+                ip_address=request.client.host if request.client else None
             )
             
             return TokenResponse(
@@ -2424,7 +2124,7 @@ def revoke_api_token(token_id: int, request: Request):
             session.commit()
             
             logger.info(f"API token revoked for user {user_id}: {token.name}")
-            
+
             # Audit log
             log_audit_action(
                 app.state.engine,
@@ -2433,7 +2133,7 @@ def revoke_api_token(token_id: int, request: Request):
                 resource=str(token_id),
                 resource_type="token",
                 details=f"Token name: {token.name}",
-                ip_address=None
+                ip_address=request.client.host if request.client else None
             )
             
             return {"status": "revoked", "token_id": token_id}
@@ -2470,7 +2170,7 @@ def delete_api_token(token_id: int, request: Request):
             session.commit()
             
             logger.info(f"API token deleted for user {user_id}: {token_name}")
-            
+
             # Audit log
             log_audit_action(
                 app.state.engine,
@@ -2479,7 +2179,7 @@ def delete_api_token(token_id: int, request: Request):
                 resource=str(token_id),
                 resource_type="token",
                 details=f"Token name: {token_name}",
-                ip_address=None
+                ip_address=request.client.host if request.client else None
             )
             
             return {"status": "deleted", "token_id": token_id}

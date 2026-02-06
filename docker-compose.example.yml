@@ -118,9 +118,7 @@ services:
   redis:
     image: redis:8-alpine
     container_name: llm-meme-describer-redis
-    ports:
-      - "6379:6379"
-    
+
     # Redis password must match REDIS_PASSWORD env var in app service
     command: redis-server --requirepass ${REDIS_PASSWORD}
     
