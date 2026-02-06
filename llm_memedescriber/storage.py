@@ -109,6 +109,8 @@ def _detect_hw_encoder() -> Optional[str]:
 
 def _detect_hw_decoder() -> Optional[str]:
     """Detect available hardware video decoder for frame extraction.
+    
+    Tests each decoder with actual decode operation to verify hardware availability.
 
     Returns:
         - 'cuda' for NVIDIA GPUs (nvdec)
@@ -123,6 +125,10 @@ def _detect_hw_decoder() -> Optional[str]:
         return _cached_hw_decoder
     
     try:
+        # Test decoders in order of preference: cuda > qsv > vaapi
+        decoders_to_test = []
+        
+        # Build list of decoders to test based on available hardware
         result = subprocess.run(
             ['ffmpeg', '-hwaccels'],
             capture_output=True,
@@ -130,22 +136,65 @@ def _detect_hw_decoder() -> Optional[str]:
             text=True,
             check=False
         )
-        output = result.stdout + result.stderr
-
-        # Check in order of preference (NVIDIA > Intel QSV > VAAPI)
-        if 'cuda' in output:
-            logger.info("GPU decoder detected: cuda (NVIDIA)")
-            _cached_hw_decoder = 'cuda'
-            return 'cuda'
-        elif 'qsv' in output:
-            logger.info("GPU decoder detected: qsv (Intel Quick Sync)")
-            _cached_hw_decoder = 'qsv'
-            return 'qsv'
-        elif 'vaapi' in output and os.path.exists('/dev/dri/renderD128'):
-            logger.info("GPU decoder detected: vaapi (DRM/VAAPI)")
-            _cached_hw_decoder = 'vaapi'
-            _decoder_detection_done = True
-            return 'vaapi'
+        hwaccels = (result.stdout + result.stderr).lower()
+        
+        if 'cuda' in hwaccels:
+            decoders_to_test.append('cuda')
+        if 'qsv' in hwaccels:
+            decoders_to_test.append('qsv')
+        if 'vaapi' in hwaccels and os.path.exists('/dev/dri/renderD128'):
+            decoders_to_test.append('vaapi')
+        
+        # Test each decoder with actual decode operation
+        for decoder in decoders_to_test:
+            try:
+                # Build test command based on decoder type
+                if decoder == 'vaapi':
+                    test_cmd = [
+                        'ffmpeg', '-hide_banner',
+                        '-vaapi_device', '/dev/dri/renderD128',
+                        '-hwaccel', 'vaapi',
+                        '-hwaccel_output_format', 'vaapi',
+                        '-f', 'lavfi', '-i', 'testsrc=duration=0.1:size=320x240:rate=1',
+                        '-frames:v', '1',
+                        '-f', 'null', '-'
+                    ]
+                else:
+                    # For cuda and qsv
+                    test_cmd = [
+                        'ffmpeg', '-hide_banner',
+                        '-hwaccel', decoder,
+                        '-hwaccel_output_format', decoder,
+                        '-f', 'lavfi', '-i', 'testsrc=duration=0.1:size=320x240:rate=1',
+                        '-frames:v', '1',
+                        '-f', 'null', '-'
+                    ]
+                
+                test_result = subprocess.run(
+                    test_cmd,
+                    capture_output=True,
+                    timeout=5,
+                    check=False
+                )
+                
+                # Check if decode was successful
+                if test_result.returncode == 0:
+                    decoder_name = {
+                        'cuda': 'NVIDIA NVDEC',
+                        'qsv': 'Intel Quick Sync',
+                        'vaapi': 'Intel/AMD VAAPI'
+                    }.get(decoder, decoder)
+                    logger.info(f"GPU decoder detected and verified: {decoder} ({decoder_name})")
+                    _cached_hw_decoder = decoder
+                    _decoder_detection_done = True
+                    return decoder
+                else:
+                    error_msg = test_result.stderr.decode('utf-8', errors='ignore')
+                    first_line = error_msg.split('\n')[0] if error_msg else 'Unknown error'
+                    logger.debug(f"Decoder {decoder} not available: {first_line}")
+            except Exception as e:
+                logger.debug(f"Failed to test {decoder}: {e}")
+                
     except Exception as e:
         logger.debug(f"GPU decoder detection failed: {e}")
 
