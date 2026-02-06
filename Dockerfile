@@ -31,7 +31,6 @@ RUN apt-get update \
        ffmpeg \
        libva2 libva-drm2 libva-glx2 libva-wayland2 \
        libdrm2 libdrm-common \
-       i965-va-driver intel-media-driver \
        va-driver-all \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
