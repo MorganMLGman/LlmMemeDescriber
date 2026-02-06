@@ -15,7 +15,8 @@ logger = logging.getLogger(__name__)
 # Cache for detected GPU encoder/decoder (detect once at startup)
 _cached_hw_encoder: Optional[str] = None
 _cached_hw_decoder: Optional[str] = None
-_hw_detection_done: bool = False
+_encoder_detection_done: bool = False
+_decoder_detection_done: bool = False
 
 
 def _detect_hw_encoder() -> Optional[str]:
@@ -27,10 +28,10 @@ def _detect_hw_encoder() -> Optional[str]:
         - 'h264_vaapi' for generic DRM/VAAPI (AMD, Intel integrated)
         - None if no hardware encoder available
     """
-    global _cached_hw_encoder, _hw_detection_done
+    global _cached_hw_encoder, _encoder_detection_done
     
     # Return cached result if already detected
-    if _hw_detection_done:
+    if _encoder_detection_done:
         return _cached_hw_encoder
     
     try:
@@ -88,7 +89,7 @@ def _detect_hw_encoder() -> Optional[str]:
                     }.get(encoder, encoder)
                     logger.info(f"GPU encoder detected and verified: {encoder} ({encoder_name})")
                     _cached_hw_encoder = encoder
-                    _hw_detection_done = True
+                    _encoder_detection_done = True
                     return encoder
                 else:
                     error_msg = test_result.stderr.decode('utf-8', errors='ignore')
@@ -101,7 +102,7 @@ def _detect_hw_encoder() -> Optional[str]:
     except Exception as e:
         logger.debug(f"GPU detection failed: {e}")
 
-    _hw_detection_done = True
+    _encoder_detection_done = True
     _cached_hw_encoder = None
     return None
 
@@ -115,10 +116,10 @@ def _detect_hw_decoder() -> Optional[str]:
         - 'vaapi' for generic DRM/VAAPI (AMD, Intel integrated)
         - None if no hardware decoder available
     """
-    global _cached_hw_decoder
+    global _cached_hw_decoder, _decoder_detection_done
     
     # Return cached result if already detected
-    if _cached_hw_decoder is not None or _hw_detection_done:
+    if _decoder_detection_done:
         return _cached_hw_decoder
     
     try:
@@ -143,11 +144,13 @@ def _detect_hw_decoder() -> Optional[str]:
         elif 'vaapi' in output and os.path.exists('/dev/dri/renderD128'):
             logger.info("GPU decoder detected: vaapi (DRM/VAAPI)")
             _cached_hw_decoder = 'vaapi'
+            _decoder_detection_done = True
             return 'vaapi'
     except Exception as e:
         logger.debug(f"GPU decoder detection failed: {e}")
 
     _cached_hw_decoder = None
+    _decoder_detection_done = True
     return None
 
 
