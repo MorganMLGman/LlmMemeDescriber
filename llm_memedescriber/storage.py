@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 def _detect_hw_encoder() -> Optional[str]:
-    """Detect available hardware video encoder.
+    """Detect available hardware video encoder by actually testing it.
 
     Returns:
         - 'h264_nvenc' for NVIDIA GPUs
@@ -32,16 +32,45 @@ def _detect_hw_encoder() -> Optional[str]:
         )
         output = result.stdout + result.stderr
 
-        # Check in order of preference (NVIDIA > Intel QSV > VAAPI)
+        # Test encoders in order of preference (NVIDIA > Intel QSV > VAAPI)
+        encoders_to_test = []
+        
         if 'h264_nvenc' in output:
-            logger.info("GPU encoder detected: h264_nvenc (NVIDIA)")
-            return 'h264_nvenc'
-        elif 'h264_qsv' in output:
-            logger.info("GPU encoder detected: h264_qsv (Intel Quick Sync)")
-            return 'h264_qsv'
-        elif 'h264_vaapi' in output and os.path.exists('/dev/dri/renderD128'):
-            logger.info("GPU encoder detected: h264_vaapi (DRM/VAAPI)")
-            return 'h264_vaapi'
+            encoders_to_test.append('h264_nvenc')
+        if 'h264_qsv' in output:
+            encoders_to_test.append('h264_qsv')
+        if 'h264_vaapi' in output and os.path.exists('/dev/dri/renderD128'):
+            encoders_to_test.append('h264_vaapi')
+        
+        # Actually test each encoder with a dummy encode
+        for encoder in encoders_to_test:
+            try:
+                # Try to encode 1 frame to verify encoder works
+                test_cmd = [
+                    'ffmpeg', '-f', 'lavfi', '-i', 'testsrc=duration=0.1:size=320x240:rate=1',
+                    '-c:v', encoder, '-frames:v', '1', '-f', 'null', '-'
+                ]
+                test_result = subprocess.run(
+                    test_cmd,
+                    capture_output=True,
+                    timeout=5,
+                    check=False
+                )
+                
+                if test_result.returncode == 0:
+                    encoder_name = {
+                        'h264_nvenc': 'NVIDIA',
+                        'h264_qsv': 'Intel Quick Sync',
+                        'h264_vaapi': 'DRM/VAAPI'
+                    }.get(encoder, encoder)
+                    logger.info(f"GPU encoder detected and verified: {encoder} ({encoder_name})")
+                    return encoder
+                else:
+                    error_msg = test_result.stderr.decode('utf-8', errors='ignore')
+                    logger.debug(f"Encoder {encoder} test failed: {error_msg[:100]}")
+            except Exception as e:
+                logger.debug(f"Failed to test {encoder}: {e}")
+                
     except Exception as e:
         logger.debug(f"GPU detection failed: {e}")
 
