@@ -44,15 +44,19 @@ def _detect_hw_encoder() -> Optional[str]:
         
         for encoder in encoders_to_test:
             try:
-                # For VAAPI, need to specify the device explicitly
-                test_cmd = ['ffmpeg', '-f', 'lavfi', '-i', 'testsrc=duration=0.1:size=320x240:rate=1']
-                
+                # For VAAPI, need to specify the device explicitly BEFORE input
                 if encoder == 'h264_vaapi':
-                    # VAAPI needs hwaccel device initialization
-                    test_cmd.extend([
+                    test_cmd = [
+                        'ffmpeg',
                         '-vaapi_device', '/dev/dri/renderD128',
+                        '-f', 'lavfi', '-i', 'testsrc=duration=0.1:size=320x240:rate=1',
                         '-vf', 'format=nv12,hwupload',
-                    ])
+                    ]
+                else:
+                    test_cmd = [
+                        'ffmpeg',
+                        '-f', 'lavfi', '-i', 'testsrc=duration=0.1:size=320x240:rate=1'
+                    ]
                 
                 test_cmd.extend([
                     '-c:v', encoder, '-frames:v', '1', '-f', 'null', '-'
@@ -410,7 +414,13 @@ class WebDavStorage:
 
                 def build_transcode_cmd(use_gpu: bool, encoder: Optional[str] = None) -> list[str]:
                     """Build FFmpeg transcode command with or without GPU acceleration."""
-                    cmd = ['ffmpeg', '-i', tmp_mkv_path]
+                    cmd = ['ffmpeg']
+                    
+                    # VAAPI needs device initialization BEFORE input
+                    if use_gpu and encoder == 'h264_vaapi':
+                        cmd.extend(['-vaapi_device', '/dev/dri/renderD128'])
+                    
+                    cmd.extend(['-i', tmp_mkv_path])
                     
                     if use_gpu and encoder == 'h264_nvenc':
                         # NVIDIA GPU - no preset or CRF with NVENC, use -rc and -cq instead
@@ -428,8 +438,9 @@ class WebDavStorage:
                     elif use_gpu and encoder == 'h264_vaapi':
                         # Generic VAAPI (AMD, Intel integrated)
                         cmd.extend([
+                            '-vf', 'format=nv12,hwupload',
                             '-c:v', 'h264_vaapi',
-                            '-q', '25',    # Quality for VAAPI
+                            '-qp', '25',    # Quality for VAAPI (constant QP mode)
                         ])
                     else:
                         # Fallback to CPU encoding
