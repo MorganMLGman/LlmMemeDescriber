@@ -953,20 +953,70 @@ def get_phash_status(user_info: Dict = Depends(require_auth)):
 @app.post("/sync", tags=["sync"])
 @limiter.limit("5/minute")
 def trigger_sync(request: Request, user_info: Dict = Depends(require_auth)):
-    """Manually trigger a sync job to check for new/removed memes from WebDAV. REQUIRES AUTHENTICATION.
-    
-    Returns dict with added, removed, saved, failed, unfilled, unsupported counts.
+    """Manually trigger a sync job to check for new/removed memes from WebDAV and transcode existing MKVs. REQUIRES AUTHENTICATION.
+
+    Returns dict with added, removed, saved, failed, unfilled, unsupported counts, plus mkv_transcoding stats.
     """
     try:
         if not hasattr(app.state, 'app_instance') or app.state.app_instance is None:
             raise HTTPException(status_code=503, detail="Application not fully initialized")
-        
+
+        # Audit log
+        username = user_info.get('preferred_username', 'unknown')
+        client_ip = request.client.host if request.client else 'unknown'
+        logger.info("Manual sync triggered by user: %s (IP: %s)", username, client_ip)
+
         result = app.state.app_instance.sync_and_process()
-        logger.info(f"Sync triggered by user {user_info.get('sub')}")
-        return result
+
+        # Extract MKV transcoding stats if present
+        mkv_stats = result.get('mkv_transcoding', {})
+        mkv_found = mkv_stats.get('total_found', 0)
+        mkv_transcoded = mkv_stats.get('transcoded', 0)
+        mkv_failed = mkv_stats.get('failed', 0)
+
+        # Build response message
+        message_parts = ["Sync completed"]
+        if mkv_found > 0:
+            message_parts.append(
+                f"Transcoded {mkv_transcoded}/{mkv_found} MKV files"
+            )
+            if mkv_failed > 0:
+                message_parts.append(f"({mkv_failed} failed)")
+
+        return {
+            "status": "completed",
+            "message": "; ".join(message_parts),
+            "result": result
+        }
     except Exception as e:
         logger.exception("Error during manual sync: %s", e)
         raise HTTPException(status_code=500, detail=f"Sync failed: {str(e)}")
+
+
+@app.get("/sync/status", tags=["sync"])
+@limiter.limit("20/minute")
+def get_sync_status(request: Request, user_info: Dict = Depends(require_auth)):
+    """Get current sync/transcoding operation status. REQUIRES AUTHENTICATION.
+
+    Returns status with current operation and progress details.
+    Used by frontend to show real-time progress during sync.
+
+    Returns dict with 'operation' (str or None) and 'progress' (dict) keys.
+    """
+    try:
+        if not hasattr(app.state, 'app_instance') or app.state.app_instance is None:
+            return {"operation": None, "progress": {}}
+
+        status = app.state.app_instance.get_operation_status()
+
+        # Return status with operation name and progress
+        return {
+            "operation": status.get('operation'),
+            "progress": status.get('progress', {})
+        }
+    except Exception as e:
+        logger.exception("Error getting sync status: %s", e)
+        return {"operation": None, "progress": {}, "error": str(e)}
 
 
 @app.post("/memes/deduplication/analyze", tags=["deduplication"])

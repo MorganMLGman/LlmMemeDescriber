@@ -6,7 +6,7 @@ import logging
 import re
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
 from google.genai import types
@@ -91,6 +91,38 @@ class App:
         self._shutdown_done: bool = False
         self._sync_lock = threading.Lock()
         self._sync_in_progress: bool = False
+        self._current_operation: Optional[str] = None  # Current operation name (syncing, transcoding, etc)
+        self._operation_progress: Dict[str, Any] = {}  # Progress details for current operation
+        self._operation_lock = threading.Lock()  # Lock for operation status access
+
+    def set_operation_status(self, operation: Optional[str], progress: Optional[Dict[str, Any]] = None) -> None:
+        """Set current operation status for progress tracking.
+
+        Args:
+            operation: Current operation name ('syncing', 'transcoding', 'completed', or None)
+            progress: Progress details dict (e.g., {'transcoded': 3, 'total': 10})
+        """
+        with self._operation_lock:
+            self._current_operation = operation
+            self._operation_progress = progress or {}
+
+    def get_operation_status(self) -> Dict[str, Any]:
+        """Get current operation status.
+
+        Returns:
+            Dict with 'operation' (str or None) and 'progress' (dict) keys
+        """
+        with self._operation_lock:
+            return {
+                'operation': self._current_operation,
+                'progress': self._operation_progress.copy()
+            }
+
+    def clear_operation_status(self) -> None:
+        """Clear operation status."""
+        with self._operation_lock:
+            self._current_operation = None
+            self._operation_progress = {}
 
     def start(self):
         """Start the worker thread (non-blocking)."""
@@ -395,20 +427,127 @@ class App:
         return {}
 
 
-    def sync_and_process(self) -> Dict[str, int]:
-        """Run a single sync and generate descriptions for unfilled files using instance clients."""
-        
+    def sync_and_process(self) -> Dict[str, Any]:
+        """Run a single sync and generate descriptions for unfilled files, then transcode existing MKVs."""
+
         if not self._sync_lock.acquire(blocking=False):
             logger.warning("Previous sync job still in progress; skipping this cycle")
             return {
                 'added': 0, 'removed': 0, 'unfilled': 0,
                 'saved': 0, 'failed': 0, 'unsupported': 0
             }
-        
+
         try:
-            return self._sync_and_process_impl()
+            # Set status to syncing
+            self.set_operation_status('syncing', {'phase': 'WebDAV sync'})
+            logger.info("Starting manual sync and process...")
+
+            # Run main sync workflow
+            sync_result = self._sync_and_process_impl()
+
+            # After main sync, transcode existing MKVs
+            self.set_operation_status('transcoding', {'phase': 'Scanning for MKVs'})
+            logger.info("Main sync complete, now scanning for existing MKVs to transcode")
+            transcode_result = self.transcode_existing_mkvs()
+
+            # Combine results
+            combined_result = {**sync_result, 'mkv_transcoding': transcode_result}
+            self.set_operation_status('completed', {'result': combined_result})
+            logger.info("Sync and MKV transcoding workflow complete")
+            return combined_result
         finally:
             self._sync_lock.release()
+            # Clear status after a delay to allow final poll
+            threading.Timer(5.0, self.clear_operation_status).start()
+
+    def transcode_existing_mkvs(self) -> Dict[str, Any]:
+        """Scan database for existing MKV files and transcode them to MP4.
+
+        This handles already-processed MKV files that were added before transcoding
+        was implemented. Runs as part of manual sync operation.
+
+        Returns:
+            Dict with 'total_found', 'transcoded', 'failed', 'skipped' counts
+        """
+        try:
+            logger.info("Scanning for existing MKV files to transcode")
+
+            # Query database for all MKV files
+            def get_mkv_files():
+                with session_scope(self.engine) as session:
+                    # Get all memes and filter for .mkv extension in Python (case-insensitive)
+                    all_memes = session.exec(select(Meme)).all()
+                    return [m.filename for m in all_memes if m.filename.lower().endswith('.mkv')]
+
+            mkv_files = get_mkv_files() if self._db_operation_with_retry(get_mkv_files) else []
+
+            if not mkv_files:
+                logger.info("No MKV files found to transcode")
+                return {'total_found': 0, 'transcoded': 0, 'failed': 0, 'skipped': 0}
+
+            logger.info("Found %d MKV files to transcode", len(mkv_files))
+
+            # Set initial progress
+            self.set_operation_status('transcoding', {
+                'phase': 'Transcoding MKVs',
+                'transcoded': 0,
+                'total': len(mkv_files)
+            })
+
+            # Transcode each MKV in parallel using thread pool
+            results = []
+            completed = 0
+            with ThreadPoolExecutor(max_workers=BATCH_PROCESS_WORKERS) as executor:
+                futures = {executor.submit(self._transcode_and_replace_mkv, mkv): mkv
+                          for mkv in mkv_files}
+
+                for future in as_completed(futures):
+                    mkv_name = futures[future]
+                    try:
+                        result = future.result(timeout=TRANSCODE_TIMEOUT + 30)  # Extra buffer
+                        results.append(result)
+                        completed += 1
+
+                        # Update progress
+                        self.set_operation_status('transcoding', {
+                            'phase': 'Transcoding MKVs',
+                            'transcoded': completed,
+                            'total': len(mkv_files),
+                            'current_file': mkv_name if completed < len(mkv_files) else None
+                        })
+                    except Exception as exc:
+                        logger.exception("Exception transcoding %s: %s", mkv_name, exc)
+                        results.append({'success': False, 'error': str(exc)})
+                        completed += 1
+                        self.set_operation_status('transcoding', {
+                            'phase': 'Transcoding MKVs',
+                            'transcoded': completed,
+                            'total': len(mkv_files)
+                        })
+
+            # Calculate statistics
+            transcoded = sum(1 for r in results if r.get('success'))
+            failed = sum(1 for r in results if not r.get('success'))
+
+            logger.info("Transcoding complete: %d succeeded, %d failed out of %d total",
+                       transcoded, failed, len(mkv_files))
+
+            return {
+                'total_found': len(mkv_files),
+                'transcoded': transcoded,
+                'failed': failed,
+                'skipped': 0
+            }
+
+        except Exception as exc:
+            logger.exception("Failed to transcode existing MKVs: %s", exc)
+            return {
+                'total_found': 0,
+                'transcoded': 0,
+                'failed': 0,
+                'skipped': 0,
+                'error': str(exc)
+            }
 
     def _sync_and_process_impl(self) -> Dict[str, int]:
         """Implementation of sync and process (called with lock held)."""

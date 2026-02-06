@@ -14,6 +14,8 @@ let totalFetched = 0;
 let csrfToken = null;
 let lastRateLimitWarningTime = 0;
 let maxGenerationAttempts = null;
+let syncStatusPolling = null;  // Interval ID for sync status polling
+let syncStartTime = null;      // Timestamp when sync started
 
 // ======================== CSRF Token Management ========================
 
@@ -178,46 +180,136 @@ function setSyncButtonState(enabled) {
     refreshBtn.textContent = enabled ? 'Refresh' : '⏳ Syncing...';
 }
 
+async function pollSyncStatus() {
+    /**Poll the /sync/status endpoint to get current operation status and update UI.*/
+    try {
+        const response = await fetch('/sync/status', {
+            method: 'GET',
+            headers: { 'Content-Type': 'application/json' }
+        });
+
+        if (!response.ok) {
+            console.warn('Failed to get sync status:', response.status);
+            return;
+        }
+
+        const status = await response.json();
+        updateSyncButtonStatus(status);
+
+        // Stop polling if completed or no operation
+        if (!status.operation || status.operation === 'completed') {
+            if (syncStatusPolling) {
+                clearInterval(syncStatusPolling);
+                syncStatusPolling = null;
+            }
+        }
+    } catch (error) {
+        console.error('Error polling sync status:', error);
+    }
+}
+
+function updateSyncButtonStatus(status) {
+    /**Update sync button text based on current operation status.*/
+    const refreshBtn = document.querySelector('button[onclick="startSyncJob()"]');
+    if (!refreshBtn) return;
+
+    const operation = status.operation;
+    const progress = status.progress || {};
+
+    if (operation === 'syncing') {
+        refreshBtn.textContent = '⏳ Syncing...';
+    } else if (operation === 'transcoding') {
+        const transcoded = progress.transcoded || 0;
+        const total = progress.total || 0;
+        if (total > 0) {
+            refreshBtn.textContent = `⏳ Transcoding MKVs (${transcoded}/${total})`;
+        } else {
+            refreshBtn.textContent = '⏳ Scanning for MKVs...';
+        }
+    } else if (operation === 'completed') {
+        refreshBtn.textContent = '✓ Complete';
+        // Will be reset to "Refresh" in finally block
+    }
+}
+
 async function startSyncJob() {
     try {
         console.log('Starting sync job...');
-        setSyncButtonState(false);
-        
+        const refreshBtn = document.querySelector('button[onclick="startSyncJob()"]');
+        refreshBtn.disabled = true;
+        refreshBtn.textContent = '⏳ Starting...';
+
+        syncStartTime = Date.now();
+
         const response = await fetch('/sync', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
             }
         });
-        
+
         if (response.status === 429) {
             showRateLimitWarning();
             showError('Rate limit reached. Processing will retry automatically on the next sync cycle.');
             return;
         }
-        
+
         if (!response.ok) {
             throw new Error(`Sync failed: ${response.status} ${response.statusText}`);
         }
-        
-        const result = await response.json();
-        console.log('Sync completed:', result);
-        
+
+        // Start polling for status updates (every 2 seconds)
+        syncStatusPolling = setInterval(pollSyncStatus, 2000);
+
+        const data = await response.json();
+        console.log('Sync completed:', data);
+
+        // Stop polling
+        if (syncStatusPolling) {
+            clearInterval(syncStatusPolling);
+            syncStatusPolling = null;
+        }
+
+        // Build success message from new response format
+        let successMessage = data.message || 'Sync completed successfully';
+
+        // Extract nested result if using new format
+        const result = data.result || data;
+
         // Check if we got rate limited during sync
         if (result.rate_limited) {
             showRateLimitWarning();
-            showAlert(`Sync partially completed: ${result.saved} saved. Rate limit reached - will retry automatically on next cycle.`, 'success');
-        } else {
-            showAlert(`Sync completed: ${result.added} added, ${result.removed} removed, ${result.saved} saved`, 'success');
+            successMessage += `. Rate limit reached - will retry automatically on next cycle.`;
         }
-        
+
+        // Add MKV transcoding details if present
+        if (data.result && data.result.mkv_transcoding) {
+            const mkv = data.result.mkv_transcoding;
+            if (mkv.total_found > 0) {
+                successMessage += `\n\nMKV Transcoding:\nFound: ${mkv.total_found}, Transcoded: ${mkv.transcoded}`;
+                if (mkv.failed > 0) {
+                    successMessage += `, Failed: ${mkv.failed}`;
+                }
+            }
+        }
+
+        showAlert(successMessage, 'success');
+
         // Reload memes after sync
         await loadMemes();
     } catch (error) {
         console.error('Error during sync:', error);
         showAlert(`Sync failed: ${error.message}`, 'error');
+
+        // Stop polling on error
+        if (syncStatusPolling) {
+            clearInterval(syncStatusPolling);
+            syncStatusPolling = null;
+        }
     } finally {
-        setSyncButtonState(true);
+        const refreshBtn = document.querySelector('button[onclick="startSyncJob()"]');
+        refreshBtn.disabled = false;
+        refreshBtn.textContent = 'Refresh';
     }
 }
 
