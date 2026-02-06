@@ -17,6 +17,13 @@ PREVIEW_JPEG_QUALITY_VIDEO = 8
 VIDEO_FRAME_TIMESTAMP = 1.0
 VIDEO_EXTRACTION_TIMEOUT = 30
 
+# Transcoding settings
+TRANSCODE_VIDEO_CODEC = 'libx264'
+TRANSCODE_AUDIO_CODEC = 'aac'
+TRANSCODE_CRF = 20  # Constant Rate Factor (18-28, lower=higher quality, 20=high quality for small files)
+TRANSCODE_PRESET = 'medium'  # Encoding speed (fast/medium/slow)
+TRANSCODE_TIMEOUT = 180  # 3 minutes maximum (files typically < 50MB, so shorter timeout)
+
 MAX_FILENAME_LENGTH = 255
 MIN_SEARCH_QUERY_LENGTH = 2
 

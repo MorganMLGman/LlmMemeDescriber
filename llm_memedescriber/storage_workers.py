@@ -111,6 +111,16 @@ class StorageWorkerPool:
     async def async_extract_video_frame(self, *args, timeout: Optional[float] = None, **kwargs):
         return await self.async_run(self._storage.extract_video_frame, *args, timeout=timeout, **kwargs)
 
+    def transcode_mkv_to_mp4(self, *args, timeout: Optional[float] = None, **kwargs):
+        from .constants import TRANSCODE_TIMEOUT
+        return self.run(self._storage.transcode_mkv_to_mp4, *args,
+                        timeout=timeout or TRANSCODE_TIMEOUT, **kwargs)
+
+    async def async_transcode_mkv_to_mp4(self, *args, timeout: Optional[float] = None, **kwargs):
+        from .constants import TRANSCODE_TIMEOUT
+        return await self.async_run(self._storage.transcode_mkv_to_mp4, *args,
+                                    timeout=timeout or TRANSCODE_TIMEOUT, **kwargs)
+
     def open(self, path: str, mode: str = 'rb'):
         """Provide a file-like object for callers that expect `open`.
 

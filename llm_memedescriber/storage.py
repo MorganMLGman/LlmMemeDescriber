@@ -212,3 +212,88 @@ class WebDavStorage:
             raise IOError(f"FFmpeg timeout while processing {video_path}")
         except Exception as exc:
             raise IOError(f"Failed to extract video frame from {video_path}: {exc}") from exc
+
+    def transcode_mkv_to_mp4(self, mkv_path: str) -> tuple[bytes, str]:
+        """Transcode MKV video to MP4 format using FFmpeg.
+
+        Args:
+            mkv_path: Path to MKV file on WebDAV
+
+        Returns:
+            Tuple of (mp4_bytes, new_filename_with_mp4_extension)
+
+        Raises:
+            FileNotFoundError: If MKV file not found on WebDAV
+            IOError: If transcoding fails or times out
+        """
+        try:
+            # Download MKV file from WebDAV
+            logger.info(f"Downloading MKV file: {mkv_path}")
+            mkv_data = self.download_file(mkv_path)
+            if mkv_data is None:
+                raise FileNotFoundError(f"MKV file not found: {mkv_path}")
+
+            logger.info(f"Downloaded {mkv_path} ({len(mkv_data)} bytes), starting transcode...")
+
+            # Create temporary files for processing
+            with tempfile.NamedTemporaryFile(suffix='.mkv', delete=False) as tmp_mkv:
+                tmp_mkv.write(mkv_data)
+                tmp_mkv_path = tmp_mkv.name
+
+            # Generate output filename (.mkv -> .mp4)
+            base_name = mkv_path.rsplit('.', 1)[0] if '.' in mkv_path else mkv_path
+            new_filename = f"{base_name}.mp4"
+
+            with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp_mp4:
+                tmp_mp4_path = tmp_mp4.name
+
+            try:
+                # FFmpeg transcoding command
+                cmd = [
+                    'ffmpeg',
+                    '-i', tmp_mkv_path,
+                    '-c:v', TRANSCODE_VIDEO_CODEC,
+                    '-crf', str(TRANSCODE_CRF),
+                    '-preset', TRANSCODE_PRESET,
+                    '-c:a', TRANSCODE_AUDIO_CODEC,
+                    '-movflags', '+faststart',  # Enable streaming
+                    '-y',  # Overwrite output
+                    tmp_mp4_path
+                ]
+
+                logger.info(f"Running FFmpeg transcode command: {' '.join(cmd)}")
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    timeout=TRANSCODE_TIMEOUT,
+                    check=False
+                )
+
+                if result.returncode != 0:
+                    error_msg = result.stderr.decode('utf-8', errors='ignore')
+                    raise IOError(f"FFmpeg transcoding failed (exit code {result.returncode}): {error_msg}")
+
+                # Read transcoded MP4
+                with open(tmp_mp4_path, 'rb') as f:
+                    mp4_data = f.read()
+
+                if not mp4_data:
+                    raise IOError("FFmpeg produced no output")
+
+                logger.info(f"Successfully transcoded {mkv_path} to MP4 ({len(mp4_data)} bytes)")
+                return mp4_data, new_filename
+
+            finally:
+                # Cleanup temp files
+                for path in [tmp_mkv_path, tmp_mp4_path]:
+                    try:
+                        os.unlink(path)
+                    except Exception:
+                        pass
+
+        except FileNotFoundError:
+            raise
+        except subprocess.TimeoutExpired:
+            raise IOError(f"Transcoding timeout for {mkv_path} (>{TRANSCODE_TIMEOUT}s)")
+        except Exception as exc:
+            raise IOError(f"Failed to transcode {mkv_path}: {exc}") from exc

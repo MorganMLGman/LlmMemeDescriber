@@ -198,13 +198,30 @@ class App:
             logger.exception("Failed to update meme attempt for %s", filename)
 
     def _process_single_meme(self, name: str) -> Dict[str, Any]:
-        """Process a single meme: generate description and save to DB only.
+        """Process a single meme: transcode if MKV, generate description and save to DB only.
         Returns dict with 'saved', 'unsupported', 'rate_limited', or 'failed' keys, and 'desc' with description.
         """
         if not is_supported(name):
             logger.debug("Skipping %s: file type not supported", name)
             return {'unsupported': True}
-        
+
+        # Check if file is MKV and needs transcoding
+        if name.lower().endswith('.mkv'):
+            try:
+                transcode_result = self._transcode_and_replace_mkv(name)
+                if not transcode_result['success']:
+                    logger.error("Failed to transcode %s: %s", name, transcode_result.get('error'))
+                    return {'failed': True}
+
+                # Update name to new MP4 filename for description generation
+                name = transcode_result['new_filename']
+                logger.info("Transcoded to %s, proceeding with description generation", name)
+
+            except Exception as exc:
+                logger.exception("Exception during MKV transcoding for %s: %s", name, exc)
+                self._update_meme_attempt(name, error=f"Transcode failed: {str(exc)}")
+                return {'failed': True}
+
         try:
             desc = self.generate_description(name)
             
@@ -245,6 +262,60 @@ class App:
         except Exception as exc:
             logger.exception("Failed to process meme %s: %s", name, exc)
             return {'failed': True}
+
+    def _transcode_and_replace_mkv(self, mkv_filename: str) -> Dict[str, Any]:
+        """Transcode MKV to MP4, upload to WebDAV, delete MKV, update database.
+
+        Returns:
+            Dict with 'success' (bool), 'new_filename' (str), and 'error' (str) keys
+        """
+        try:
+            logger.info("Starting MKV transcoding workflow for %s", mkv_filename)
+
+            # Step 1: Transcode MKV to MP4
+            mp4_bytes, new_filename = self.storage.transcode_mkv_to_mp4(mkv_filename)
+            logger.info("Transcoded %s to %s (%d bytes)", mkv_filename, new_filename, len(mp4_bytes))
+
+            # Step 2: Upload MP4 to WebDAV
+            from io import BytesIO
+            self.storage.client.upload_fileobj(BytesIO(mp4_bytes), new_filename, overwrite=True)
+            logger.info("Uploaded MP4: %s", new_filename)
+
+            # Step 3: Update database filename (.mkv → .mp4)
+            def update_db_filename():
+                with session_scope(self.engine) as session:
+                    m = session.exec(select(Meme).where(Meme.filename == mkv_filename)).first()
+                    if not m:
+                        raise Exception(f"Database record not found for {mkv_filename}")
+
+                    m.filename = new_filename
+                    if m.source_url:
+                        m.source_url = m.source_url.replace(mkv_filename, new_filename)
+                    m.updated_at = datetime.datetime.now(datetime.timezone.utc)
+
+                    session.add(m)
+                    session.commit()
+
+            if not self._db_operation_with_retry(update_db_filename, max_retries=3):
+                logger.error("Failed to update database filename")
+                return {'success': False, 'error': "Database update failed"}
+
+            logger.info("Updated database: %s -> %s", mkv_filename, new_filename)
+
+            # Step 4: Delete original MKV from WebDAV
+            try:
+                self.storage.client.remove(mkv_filename)
+                logger.info("Deleted original MKV: %s", mkv_filename)
+            except Exception as delete_exc:
+                logger.warning("Failed to delete MKV %s: %s", mkv_filename, delete_exc)
+                # Non-critical - MP4 is already uploaded and DB updated
+
+            return {'success': True, 'new_filename': new_filename}
+
+        except Exception as exc:
+            logger.exception("Transcoding workflow failed for %s: %s", mkv_filename, exc)
+            self._update_meme_attempt(mkv_filename, error=f"Transcode failed: {str(exc)}")
+            return {'success': False, 'error': str(exc)}
 
     def generate_description(self, filename: str) -> Dict[str, Any]:
         """Generate a description for `filename` using the instance genai client and webdav client.
