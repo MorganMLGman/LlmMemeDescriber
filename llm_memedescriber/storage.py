@@ -12,7 +12,6 @@ from .constants import *
 
 logger = logging.getLogger(__name__)
 
-# Cache for detected GPU encoder/decoder (detect once at startup)
 _cached_hw_encoder: Optional[str] = None
 _cached_hw_decoder: Optional[str] = None
 _encoder_detection_done: bool = False
@@ -30,7 +29,6 @@ def _detect_hw_encoder() -> Optional[str]:
     """
     global _cached_hw_encoder, _encoder_detection_done
     
-    # Return cached result if already detected
     if _encoder_detection_done:
         return _cached_hw_encoder
     
@@ -44,7 +42,6 @@ def _detect_hw_encoder() -> Optional[str]:
         )
         output = result.stdout + result.stderr
 
-        # Test encoders in order of preference (NVIDIA > Intel QSV > VAAPI)
         encoders_to_test = []
         
         if 'h264_nvenc' in output:
@@ -56,7 +53,6 @@ def _detect_hw_encoder() -> Optional[str]:
         
         for encoder in encoders_to_test:
             try:
-                # For VAAPI, need to specify the device explicitly BEFORE input
                 if encoder == 'h264_vaapi':
                     test_cmd = [
                         'ffmpeg',
@@ -93,7 +89,6 @@ def _detect_hw_encoder() -> Optional[str]:
                     return encoder
                 else:
                     error_msg = test_result.stderr.decode('utf-8', errors='ignore')
-                    # Only log first line of error at DEBUG level to reduce noise
                     first_line = error_msg.split('\n')[0] if error_msg else 'Unknown error'
                     logger.debug(f"Encoder {encoder} not available: {first_line}")
             except Exception as e:
@@ -120,15 +115,12 @@ def _detect_hw_decoder() -> Optional[str]:
     """
     global _cached_hw_decoder, _decoder_detection_done
     
-    # Return cached result if already detected
     if _decoder_detection_done:
         return _cached_hw_decoder
     
     try:
-        # Test decoders in order of preference: cuda > qsv > vaapi
         decoders_to_test = []
         
-        # Build list of decoders to test based on available hardware
         result = subprocess.run(
             ['ffmpeg', '-hwaccels'],
             capture_output=True,
@@ -145,10 +137,8 @@ def _detect_hw_decoder() -> Optional[str]:
         if 'vaapi' in hwaccels and os.path.exists('/dev/dri/renderD128'):
             decoders_to_test.append('vaapi')
         
-        # Test each decoder with actual decode operation
         for decoder in decoders_to_test:
             try:
-                # Build test command based on decoder type
                 if decoder == 'vaapi':
                     test_cmd = [
                         'ffmpeg', '-hide_banner',
@@ -160,7 +150,6 @@ def _detect_hw_decoder() -> Optional[str]:
                         '-f', 'null', '-'
                     ]
                 else:
-                    # For cuda and qsv
                     test_cmd = [
                         'ffmpeg', '-hide_banner',
                         '-hwaccel', decoder,
@@ -177,7 +166,6 @@ def _detect_hw_decoder() -> Optional[str]:
                     check=False
                 )
                 
-                # Check if decode was successful
                 if test_result.returncode == 0:
                     decoder_name = {
                         'cuda': 'NVIDIA NVDEC',
@@ -211,7 +199,6 @@ def initialize_gpu_detection():
     """
     logger.info("Initializing GPU hardware detection...")
     
-    # Detect encoder
     encoder = _detect_hw_encoder()
     if encoder:
         encoder_name = {
@@ -223,7 +210,6 @@ def initialize_gpu_detection():
     else:
         logger.info("✗ No hardware encoder available, will use CPU (libx264)")
     
-    # Detect decoder
     decoder = _detect_hw_decoder()
     if decoder:
         decoder_name = {
@@ -316,6 +302,34 @@ class WebDavStorage:
             return data.encode('utf-8')
         return data
 
+    def stream_file(self, path: str, chunk_size: int = 2**22):
+        """Stream file from WebDAV in chunks. Yields file_size first, then bytes chunks."""
+        remote = path if str(path).startswith('/') else '/' + str(path).lstrip('/')
+        from webdav4.stream import IterStream
+        iter_stream = IterStream(self.client, self.client.join_url(remote), chunk_size=chunk_size)
+        try:
+            iter_stream.__enter__()
+            yield iter_stream.size
+            while True:
+                chunk = iter_stream.read(chunk_size)
+                if not chunk:
+                    break
+                yield chunk
+        except FileNotFoundError:
+            raise
+        except Exception as exc:
+            error_str = str(exc).lower()
+            if any(x in error_str for x in ['404', 'not found', 'does not exist', 'resource not found']):
+                raise FileNotFoundError(f"File not found: {remote}") from exc
+            if 'notfound' in exc.__class__.__name__.lower():
+                raise FileNotFoundError(f"File not found: {remote}") from exc
+            raise IOError(f"Failed to stream {remote}: {exc}") from exc
+        finally:
+            try:
+                iter_stream.close()
+            except Exception:
+                pass
+
     def upload_fileobj(self, path: str, data: bytes, overwrite: bool = True) -> None:
         try:
             self.client.upload_fileobj(io.BytesIO(data), path if str(path).startswith('/') else '/' + str(path).lstrip('/'), overwrite=overwrite)
@@ -370,14 +384,11 @@ class WebDavStorage:
                 tmp_frame_path = tmp_frame.name
 
             try:
-                # Detect GPU decoder for hardware acceleration
                 hw_decoder = _detect_hw_decoder()
 
-                # Build base FFmpeg command with GPU acceleration if available
                 def build_cmd(use_gpu: bool = False, ts: float = timestamp) -> list:
                     cmd = ['ffmpeg']
 
-                    # Add hardware acceleration if requested and available
                     if use_gpu and hw_decoder:
                         if hw_decoder == 'cuda':
                             cmd.extend(['-hwaccel', 'cuda'])
@@ -397,7 +408,6 @@ class WebDavStorage:
                     ])
                     return cmd
 
-                # Try with GPU acceleration first
                 result = None
                 if hw_decoder:
                     logger.info(f"Extracting frame with GPU acceleration ({hw_decoder}) for {video_path}")
@@ -409,14 +419,12 @@ class WebDavStorage:
                         check=False
                     )
 
-                    # If GPU fails, fall back to CPU
                     if result.returncode != 0:
                         error_msg = result.stderr.decode('utf-8', errors='ignore')
                         if 'hwaccel' in error_msg.lower():
                             logger.warning(f"GPU decoding failed for {video_path}, falling back to CPU")
                             result = None  # Reset to try CPU
 
-                # Try with CPU if GPU not available or failed
                 if result is None:
                     logger.info(f"Extracting frame with CPU for {video_path}")
                     cmd = build_cmd(use_gpu=False, ts=timestamp)
@@ -432,7 +440,6 @@ class WebDavStorage:
                     if 'Immediate exit requested' in error_msg or 'Invalid' in error_msg:
                         logger.info(f"Could not extract frame at {timestamp}s (video too short?), extracting first frame instead for {video_path}")
 
-                        # Retry at timestamp 0 (first frame)
                         result = None
                         if hw_decoder:
                             cmd = build_cmd(use_gpu=True, ts=0.0)

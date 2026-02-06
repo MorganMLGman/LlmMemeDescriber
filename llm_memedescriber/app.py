@@ -693,6 +693,23 @@ def tokens_page(request: Request, user_info: Optional[Dict] = Depends(optional_a
     return templates.TemplateResponse("tokens.html", {"request": request})
 
 
+async def _stream_from_storage(storage, filename: str):
+    """Create a StreamingResponse that streams file from storage in chunks."""
+    ext = _get_extension(filename)
+    ctype = _get_mime_type(ext)
+    stream_gen = storage.async_stream_file(filename)
+    file_size = await stream_gen.__anext__()
+    headers = {}
+    if file_size is not None:
+        headers["Content-Length"] = str(file_size)
+
+    async def chunk_generator():
+        async for chunk in stream_gen:
+            yield chunk
+
+    return StreamingResponse(chunk_generator(), media_type=ctype, headers=headers)
+
+
 @app.get("/memes/{filename}/download", tags=["memes"])
 async def download_meme(filename: str, user_info: Dict = Depends(require_auth)):
     """Download raw meme bytes from WebDAV proxy. REQUIRES AUTHENTICATION."""
@@ -705,17 +722,7 @@ async def download_meme(filename: str, user_info: Dict = Depends(require_auth)):
     if not storage:
         raise HTTPException(status_code=503, detail='Storage is not configured')
     try:
-        data = await getattr(storage, 'async_download_file', storage.download_file)(filename)
-        if data is None:
-            raise HTTPException(status_code=404, detail='File not found in storage')
-        
-        ext = _get_extension(filename)
-        ctype = _get_mime_type(ext)
-        return StreamingResponse(
-            BytesIO(data),
-            media_type=ctype,
-            headers={"Content-Length": str(len(data))}
-        )
+        return await _stream_from_storage(storage, filename)
     except HTTPException:
         raise
     except FileNotFoundError:
@@ -796,25 +803,17 @@ async def access_shared_meme(filename: str, token: str):
         await asyncio.sleep(0.1)
         raise HTTPException(status_code=403, detail="Invalid or expired share token")
     
-    # Serve file (same logic as download_meme)
     storage = getattr(app.state, 'app_instance', None) and getattr(app.state.app_instance, 'storage', None)
     if not storage:
         raise HTTPException(status_code=503, detail='Storage is not configured')
-    
+
     try:
-        data = await getattr(storage, 'async_download_file', storage.download_file)(filename)
-        if data is None:
-            raise HTTPException(status_code=404, detail='File not found in storage')
-        
-        ext = _get_extension(filename)
-        ctype = _get_mime_type(ext)
-        return StreamingResponse(
-            BytesIO(data),
-            media_type=ctype,
-            headers={"Content-Length": str(len(data))}
-        )
+        return await _stream_from_storage(storage, filename)
     except HTTPException:
         raise
+    except FileNotFoundError:
+        logger.info('Shared file not found: %s', filename)
+        raise HTTPException(status_code=404, detail='File not found in storage')
     except Exception as exc:
         logger.exception('Failed to download shared file %s: %s', filename, exc)
         raise HTTPException(status_code=500, detail='Download failed')

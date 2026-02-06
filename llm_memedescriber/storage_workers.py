@@ -93,6 +93,29 @@ class StorageWorkerPool:
     async def async_download_file(self, *args, timeout: Optional[float] = None, **kwargs):
         return await self.async_run(self._storage.download_file, *args, timeout=timeout, **kwargs)
 
+    async def async_stream_file(self, path: str, chunk_size: int = 2**22):
+        """Async generator streaming file chunks. Yields file_size first, then bytes."""
+        loop = asyncio.get_running_loop()
+        gen = None
+        _sentinel = object()
+
+        def _next_chunk(generator):
+            try:
+                return next(generator)
+            except StopIteration:
+                return _sentinel
+
+        try:
+            gen = self._storage.stream_file(path, chunk_size=chunk_size)
+            while True:
+                chunk = await loop.run_in_executor(self._executor, _next_chunk, gen)
+                if chunk is _sentinel:
+                    break
+                yield chunk
+        finally:
+            if gen is not None:
+                await loop.run_in_executor(self._executor, gen.close)
+
     def upload_fileobj(self, *args, timeout: Optional[float] = None, **kwargs):
         return self.run(self._storage.upload_fileobj, *args, timeout=timeout, **kwargs)
 
