@@ -371,58 +371,78 @@ class WebDavStorage:
                 # Detect GPU encoder, fallback to CPU
                 hw_encoder = _detect_hw_encoder()
 
-                # Build FFmpeg command based on encoder type
-                cmd = [
-                    'ffmpeg',
-                    '-i', tmp_mkv_path,
-                ]
+                def build_transcode_cmd(use_gpu: bool, encoder: Optional[str] = None) -> list[str]:
+                    """Build FFmpeg transcode command with or without GPU acceleration."""
+                    cmd = ['ffmpeg', '-i', tmp_mkv_path]
+                    
+                    if use_gpu and encoder == 'h264_nvenc':
+                        # NVIDIA GPU - no preset or CRF with NVENC, use -rc and -cq instead
+                        cmd.extend([
+                            '-c:v', 'h264_nvenc',
+                            '-rc', 'vbr',  # Variable bitrate
+                            '-cq', '25',   # Quality (0-51, lower=higher quality)
+                        ])
+                    elif use_gpu and encoder == 'h264_qsv':
+                        # Intel Quick Sync
+                        cmd.extend([
+                            '-c:v', 'h264_qsv',
+                            '-q', '25',    # Quality (1-51, lower=higher quality)
+                        ])
+                    elif use_gpu and encoder == 'h264_vaapi':
+                        # Generic VAAPI (AMD, Intel integrated)
+                        cmd.extend([
+                            '-c:v', 'h264_vaapi',
+                            '-q', '25',    # Quality for VAAPI
+                        ])
+                    else:
+                        # Fallback to CPU encoding
+                        cmd.extend([
+                            '-c:v', TRANSCODE_VIDEO_CODEC,
+                            '-crf', str(TRANSCODE_CRF),
+                            '-preset', TRANSCODE_PRESET,
+                        ])
+                    
+                    # Add audio codec and streaming flags
+                    cmd.extend([
+                        '-c:a', TRANSCODE_AUDIO_CODEC,
+                        '-movflags', '+faststart',  # Enable streaming
+                        '-y',  # Overwrite output
+                        tmp_mp4_path
+                    ])
+                    return cmd
 
-                if hw_encoder == 'h264_nvenc':
-                    # NVIDIA GPU - no preset or CRF with NVENC, use -rc and -cq instead
-                    cmd.extend([
-                        '-c:v', 'h264_nvenc',
-                        '-rc', 'vbr',  # Variable bitrate
-                        '-cq', '25',   # Quality (0-51, lower=higher quality)
-                    ])
-                    logger.info("Using NVIDIA GPU acceleration (h264_nvenc)")
-                elif hw_encoder == 'h264_qsv':
-                    # Intel Quick Sync
-                    cmd.extend([
-                        '-c:v', 'h264_qsv',
-                        '-q', '25',    # Quality (1-51, lower=higher quality)
-                    ])
-                    logger.info("Using Intel Quick Sync acceleration (h264_qsv)")
-                elif hw_encoder == 'h264_vaapi':
-                    # Generic VAAPI (AMD, Intel integrated)
-                    cmd.extend([
-                        '-c:v', 'h264_vaapi',
-                        '-q', '25',    # Quality for VAAPI
-                    ])
-                    logger.info("Using VAAPI GPU acceleration (h264_vaapi)")
-                else:
-                    # Fallback to CPU encoding
-                    cmd.extend([
-                        '-c:v', TRANSCODE_VIDEO_CODEC,
-                        '-crf', str(TRANSCODE_CRF),
-                        '-preset', TRANSCODE_PRESET,
-                    ])
-                    logger.info("GPU not available, using CPU encoding (libx264)")
+                # Try with GPU acceleration first if available
+                result = None
+                if hw_encoder:
+                    logger.info(f"Using {hw_encoder} GPU acceleration")
+                    cmd = build_transcode_cmd(use_gpu=True, encoder=hw_encoder)
+                    logger.info(f"Running FFmpeg transcode command: {' '.join(cmd)}")
+                    result = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        timeout=TRANSCODE_TIMEOUT,
+                        check=False
+                    )
 
-                # Add audio codec and streaming flags
-                cmd.extend([
-                    '-c:a', TRANSCODE_AUDIO_CODEC,
-                    '-movflags', '+faststart',  # Enable streaming
-                    '-y',  # Overwrite output
-                    tmp_mp4_path
-                ])
+                    # If GPU fails, fall back to CPU
+                    if result.returncode != 0:
+                        error_msg = result.stderr.decode('utf-8', errors='ignore')
+                        # Check for GPU-related errors
+                        if any(err in error_msg.lower() for err in ['cannot load', 'hwaccel', 'cuda', 'nvenc', 'qsv', 'vaapi', 'no device']):
+                            logger.warning(f"GPU encoding with {hw_encoder} failed, falling back to CPU: {error_msg[:200]}")
+                            result = None  # Reset to try CPU
 
-                logger.info(f"Running FFmpeg transcode command: {' '.join(cmd)}")
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    timeout=TRANSCODE_TIMEOUT,
-                    check=False
-                )
+                # Try with CPU if GPU not available or failed
+                if result is None:
+                    logger.info("Using CPU encoding (libx264)")
+                    cmd = build_transcode_cmd(use_gpu=False)
+                    logger.info(f"Running FFmpeg transcode command: {' '.join(cmd)}")
+                    result = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        timeout=TRANSCODE_TIMEOUT,
+                        check=False
+                    )
 
                 if result.returncode != 0:
                     error_msg = result.stderr.decode('utf-8', errors='ignore')
