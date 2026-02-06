@@ -11,6 +11,11 @@ services:
       # Main data directory for caching and database
       - ./data:/data
 
+    # GPU device passthrough (Intel iGPU)
+    devices:
+      - /dev/dri/card0:/dev/dri/card0      # Primary GPU device
+      - /dev/dri/renderD128:/dev/dri/renderD128  # Render node for VAAPI
+
     # Environment variables
     environment:
       # ========== REQUIRED VARIABLES ==========
