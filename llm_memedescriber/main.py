@@ -309,8 +309,7 @@ class App:
             logger.info("Transcoded %s to %s (%d bytes)", mkv_filename, new_filename, len(mp4_bytes))
 
             # Step 2: Upload MP4 to WebDAV
-            from io import BytesIO
-            self.storage.client.upload_fileobj(BytesIO(mp4_bytes), new_filename, overwrite=True)
+            self.storage.upload_fileobj(new_filename, mp4_bytes, overwrite=True)
             logger.info("Uploaded MP4: %s", new_filename)
 
             # Step 3: Update database filename (.mkv → .mp4)
