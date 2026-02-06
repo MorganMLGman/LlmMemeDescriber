@@ -77,7 +77,6 @@ jobs:
       - name: Login to registries
         run: |
           echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
-          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login dhi.io -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
           echo "${{ secrets.GHCR_PAT }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
       
       - name: Generate metadata
@@ -129,7 +128,6 @@ jobs:
       - name: Login to registries
         run: |
           echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
-          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login dhi.io -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin  
           echo "${{ secrets.GHCR_PAT }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
       
       - name: Generate tags
@@ -195,7 +193,6 @@ jobs:
       - name: Login to registries
         run: |
           echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
-          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login dhi.io -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin  
           echo "${{ secrets.GHCR_PAT }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
       
       - name: Create SHA-based tags
