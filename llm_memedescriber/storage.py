@@ -48,6 +48,41 @@ def _detect_hw_encoder() -> Optional[str]:
     return None
 
 
+def _detect_hw_decoder() -> Optional[str]:
+    """Detect available hardware video decoder for frame extraction.
+
+    Returns:
+        - 'cuda' for NVIDIA GPUs (nvdec)
+        - 'qsv' for Intel Quick Sync
+        - 'vaapi' for generic DRM/VAAPI (AMD, Intel integrated)
+        - None if no hardware decoder available
+    """
+    try:
+        result = subprocess.run(
+            ['ffmpeg', '-hwaccels'],
+            capture_output=True,
+            timeout=5,
+            text=True,
+            check=False
+        )
+        output = result.stdout + result.stderr
+
+        # Check in order of preference (NVIDIA > Intel QSV > VAAPI)
+        if 'cuda' in output:
+            logger.info("GPU decoder detected: cuda (NVIDIA)")
+            return 'cuda'
+        elif 'qsv' in output:
+            logger.info("GPU decoder detected: qsv (Intel Quick Sync)")
+            return 'qsv'
+        elif 'vaapi' in output and os.path.exists('/dev/dri/renderD128'):
+            logger.info("GPU decoder detected: vaapi (DRM/VAAPI)")
+            return 'vaapi'
+    except Exception as e:
+        logger.debug(f"GPU decoder detection failed: {e}")
+
+    return None
+
+
 class WebDavStorage:
     def __init__(self, base_url: str, auth: Optional[tuple] = None):
         self.client = Client(base_url, auth=auth)
@@ -155,82 +190,132 @@ class WebDavStorage:
                 raise FileNotFoundError(f"File not found: {remote}") from exc
             raise IOError(f"Failed to delete {remote}: {exc}") from exc
     def extract_video_frame(self, video_path: str, timestamp: float = VIDEO_FRAME_TIMESTAMP) -> bytes:
-        """Extract frame from video file and return as JPEG bytes.
-        
+        """Extract frame from video file and return as JPEG bytes with GPU acceleration if available.
+
         Args:
             video_path: Path to video file on WebDAV
             timestamp: Timestamp in seconds to extract frame from (default from VIDEO_FRAME_TIMESTAMP)
                       Falls back to first frame (0s) if video is shorter than requested timestamp
-            
+
         Returns:
             JPEG image bytes
-            
+
         Raises:
             FileNotFoundError: If video file not found
             IOError: If ffmpeg processing fails
         """
         try:
             video_data = self.download_file(video_path)
-            
+
             with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp_video:
                 tmp_video.write(video_data)
                 tmp_video_path = tmp_video.name
-            
+
             with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp_frame:
                 tmp_frame_path = tmp_frame.name
-            
+
             try:
-                cmd = [
-                    'ffmpeg',
-                    '-i', tmp_video_path,
-                    '-ss', str(timestamp),
-                    '-vframes', '1',
-                    '-f', 'image2',
-                    '-q:v', str(PREVIEW_JPEG_QUALITY_VIDEO),
-                    '-y',
-                    tmp_frame_path
-                ]
-                
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    timeout=VIDEO_EXTRACTION_TIMEOUT,
-                    check=False
-                )
-                
+                # Detect GPU decoder for hardware acceleration
+                hw_decoder = _detect_hw_decoder()
+
+                # Build base FFmpeg command with GPU acceleration if available
+                def build_cmd(use_gpu: bool = False, ts: float = timestamp) -> list:
+                    cmd = ['ffmpeg']
+
+                    # Add hardware acceleration if requested and available
+                    if use_gpu and hw_decoder:
+                        if hw_decoder == 'cuda':
+                            cmd.extend(['-hwaccel', 'cuda'])
+                        elif hw_decoder == 'qsv':
+                            cmd.extend(['-hwaccel', 'qsv'])
+                        elif hw_decoder == 'vaapi':
+                            cmd.extend(['-hwaccel', 'vaapi', '-hwaccel_device', '/dev/dri/renderD128'])
+
+                    cmd.extend([
+                        '-i', tmp_video_path,
+                        '-ss', str(ts),
+                        '-vframes', '1',
+                        '-f', 'image2',
+                        '-q:v', str(PREVIEW_JPEG_QUALITY_VIDEO),
+                        '-y',
+                        tmp_frame_path
+                    ])
+                    return cmd
+
+                # Try with GPU acceleration first
+                result = None
+                if hw_decoder:
+                    logger.info(f"Extracting frame with GPU acceleration ({hw_decoder}) for {video_path}")
+                    cmd = build_cmd(use_gpu=True, ts=timestamp)
+                    result = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        timeout=VIDEO_EXTRACTION_TIMEOUT,
+                        check=False
+                    )
+
+                    # If GPU fails, fall back to CPU
+                    if result.returncode != 0:
+                        error_msg = result.stderr.decode('utf-8', errors='ignore')
+                        if 'hwaccel' in error_msg.lower():
+                            logger.warning(f"GPU decoding failed for {video_path}, falling back to CPU")
+                            result = None  # Reset to try CPU
+
+                # Try with CPU if GPU not available or failed
+                if result is None:
+                    logger.info(f"Extracting frame with CPU for {video_path}")
+                    cmd = build_cmd(use_gpu=False, ts=timestamp)
+                    result = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        timeout=VIDEO_EXTRACTION_TIMEOUT,
+                        check=False
+                    )
+
                 if result.returncode != 0:
                     error_msg = result.stderr.decode('utf-8', errors='ignore')
                     if 'Immediate exit requested' in error_msg or 'Invalid' in error_msg:
                         logger.info(f"Could not extract frame at {timestamp}s (video too short?), extracting first frame instead for {video_path}")
-                        cmd_fallback = [
-                            'ffmpeg',
-                            '-i', tmp_video_path,
-                            '-vframes', '1',
-                            '-f', 'image2',
-                            '-q:v', str(PREVIEW_JPEG_QUALITY_VIDEO),
-                            '-y',
-                            tmp_frame_path
-                        ]
-                        result = subprocess.run(
-                            cmd_fallback,
-                            capture_output=True,
-                            timeout=VIDEO_EXTRACTION_TIMEOUT,
-                            check=False
-                        )
+
+                        # Retry at timestamp 0 (first frame)
+                        result = None
+                        if hw_decoder:
+                            cmd = build_cmd(use_gpu=True, ts=0.0)
+                            result = subprocess.run(
+                                cmd,
+                                capture_output=True,
+                                timeout=VIDEO_EXTRACTION_TIMEOUT,
+                                check=False
+                            )
+                            if result.returncode != 0:
+                                error_msg = result.stderr.decode('utf-8', errors='ignore')
+                                if 'hwaccel' in error_msg.lower():
+                                    logger.warning(f"GPU decoding failed for first frame, falling back to CPU")
+                                    result = None
+
+                        if result is None:
+                            cmd = build_cmd(use_gpu=False, ts=0.0)
+                            result = subprocess.run(
+                                cmd,
+                                capture_output=True,
+                                timeout=VIDEO_EXTRACTION_TIMEOUT,
+                                check=False
+                            )
+
                         if result.returncode != 0:
                             error_msg = result.stderr.decode('utf-8', errors='ignore')
                             raise IOError(f"FFmpeg failed to extract even first frame: {error_msg}")
                     else:
                         raise IOError(f"FFmpeg failed to extract frame: {error_msg}")
-                
+
                 with open(tmp_frame_path, 'rb') as f:
                     frame_data = f.read()
-                
+
                 if not frame_data:
                     raise IOError("FFmpeg produced no output")
-                
+
                 return frame_data
-                
+
             finally:
                 try:
                     os.unlink(tmp_video_path)
@@ -240,7 +325,7 @@ class WebDavStorage:
                     os.unlink(tmp_frame_path)
                 except Exception:
                     pass
-                    
+
         except FileNotFoundError:
             raise
         except subprocess.TimeoutExpired:
