@@ -192,7 +192,7 @@
 
 {% block extra_scripts %}
 <script src="/static/app.js?v=8"></script>
-<script>
+<script nonce="{{ csp_nonce }}">
 let generateTokenModal = null;
 let tokenDisplayModal = null;
 let revokeConfirmModal = null;

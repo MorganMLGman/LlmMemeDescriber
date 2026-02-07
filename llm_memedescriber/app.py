@@ -407,6 +407,13 @@ app.add_middleware(
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
     """Add security headers to all responses."""
+    import secrets
+    import base64
+    
+    # Generate a random nonce for inline scripts
+    nonce = base64.b64encode(secrets.token_bytes(16)).decode('utf-8')
+    request.state.csp_nonce = nonce
+    
     response = await call_next(request)
     # Prevent MIME type sniffing
     response.headers["X-Content-Type-Options"] = "nosniff"
@@ -415,8 +422,8 @@ async def add_security_headers(request: Request, call_next):
     # Enable browser XSS protection
     response.headers["X-XSS-Protection"] = "1; mode=block"
     # Content Security Policy - restrict resource loading
-    # Allow Bootstrap from CDN (cdn.jsdelivr.net) and Cloudflare analytics
-    response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data:; font-src 'self'; connect-src 'self' https://cdn.jsdelivr.net; frame-ancestors 'none'"
+    # Use nonce-based CSP instead of 'unsafe-inline' to prevent XSS attacks
+    response.headers["Content-Security-Policy"] = f"default-src 'self'; script-src 'self' 'nonce-{nonce}' https://cdn.jsdelivr.net https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data:; font-src 'self'; connect-src 'self' https://cdn.jsdelivr.net; frame-ancestors 'none'"
     # Referrer policy - control referrer information
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     # Permissions policy - disable dangerous features
@@ -702,7 +709,8 @@ def login_page(request: Request, settings: Settings = Depends(get_settings)):
     return templates.TemplateResponse("login.html", {
         "request": request,
         "basic_auth": settings.basic_auth,
-        "oidc_enabled": settings.oidc_enabled
+        "oidc_enabled": settings.oidc_enabled,
+        "csp_nonce": getattr(request.state, 'csp_nonce', '')
     })
 
 
@@ -713,6 +721,7 @@ class BasicAuthLoginRequest(BaseModel):
 
 
 @app.post("/auth/basic-login", tags=["auth"])
+@limiter.limit("10/minute")
 async def basic_auth_login(
     request: Request,
     login_data: BasicAuthLoginRequest,
@@ -810,7 +819,7 @@ def index(request: Request, settings: Settings = Depends(get_settings), user_inf
     """Serve the main meme gallery page. Redirects to login if not authenticated (unless public_mode)."""
     if not settings.public_mode and not user_info:
         return RedirectResponse(url="/login", status_code=302)
-    return templates.TemplateResponse("index.html", {"request": request})
+    return templates.TemplateResponse("index.html", {"request": request, "csp_nonce": getattr(request.state, 'csp_nonce', '')})
 
 
 @app.get("/duplicates", response_class=HTMLResponse, tags=["ui"])
@@ -818,13 +827,13 @@ def duplicates_page(request: Request, settings: Settings = Depends(get_settings)
     """Serve the duplicates UI page. Requires authentication (unless public_mode)."""
     if not settings.public_mode and not user_info:
         return RedirectResponse(url="/login", status_code=302)
-    return templates.TemplateResponse("duplicates.html", {"request": request})
+    return templates.TemplateResponse("duplicates.html", {"request": request, "csp_nonce": getattr(request.state, 'csp_nonce', '')})
 
 
 @app.get("/pending", response_class=HTMLResponse, tags=["ui"])
 def pending_page(request: Request):
     """Serve the pending memes UI page."""
-    return templates.TemplateResponse("pending.html", {"request": request})
+    return templates.TemplateResponse("pending.html", {"request": request, "csp_nonce": getattr(request.state, 'csp_nonce', '')})
 
 
 @app.get("/tokens", response_class=HTMLResponse, tags=["ui"])
@@ -832,7 +841,7 @@ def tokens_page(request: Request, user_info: Optional[Dict] = Depends(optional_a
     """Serve the API tokens management page. Requires authentication."""
     if not user_info:
         return RedirectResponse(url="/login", status_code=302)
-    return templates.TemplateResponse("tokens.html", {"request": request})
+    return templates.TemplateResponse("tokens.html", {"request": request, "csp_nonce": getattr(request.state, 'csp_nonce', '')})
 
 
 async def _stream_from_storage(storage, filename: str):
@@ -942,7 +951,7 @@ async def access_shared_meme(filename: str, token: str):
     
     if not verify_share_token_db(token, filename, app.state.engine):
         # Add a small delay to prevent timing attacks/brute force
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(2.0)
         raise HTTPException(status_code=403, detail="Invalid or expired share token")
     
     storage = getattr(app.state, 'app_instance', None) and getattr(app.state.app_instance, 'storage', None)
@@ -1011,6 +1020,16 @@ def revoke_share_token(token_id: int, request: Request, user_info: Dict = Depend
             
             logger.info(f"Share token for {filename} revoked by user {user_id}")
             
+            # Audit log
+            log_audit_action(
+                app.state.engine,
+                user_id=user_id,
+                action="REVOKE_SHARE_TOKEN",
+                resource=filename,
+                details={"token_id": token_id},
+                ip_address=request.client.host if request.client else None
+            )
+            
             return {"status": "deleted", "token_id": token_id}
     except HTTPException:
         raise
@@ -1027,9 +1046,19 @@ def health_check():
 
 
 @app.get("/memes", tags=["memes"])
-def list_memes(limit: int = DEFAULT_LIST_LIMIT, offset: int = DEFAULT_OFFSET, status: Optional[str] = None, sort: str = "-created_at", user_info: Dict = Depends(require_auth)):
+def list_memes(limit: int = DEFAULT_LIST_LIMIT, offset: int = DEFAULT_OFFSET, status: Optional[str] = None, sort: str = "-created_at", user_info: Dict = Depends(require_auth), request: Request = None):
     """List memes with optional filtering and sorting (excludes removed). REQUIRES AUTHENTICATION."""
     logger.debug(f"list_memes called: limit={limit}, offset={offset}, status={status}, sort={sort}")
+    
+    # Audit log
+    log_audit_action(
+        app.state.engine,
+        user_id=user_info.get('sub', 'unknown'),
+        action="LIST_MEMES",
+        resource=None,
+        details={"limit": limit, "offset": offset, "status": status, "sort": sort},
+        ip_address=request.client.host if request and request.client else None
+    )
     
     try:
         with session_scope(app.state.engine) as session:
@@ -1109,9 +1138,14 @@ def trigger_sync(request: Request, user_info: Dict = Depends(require_auth)):
             raise HTTPException(status_code=503, detail="Application not fully initialized")
 
         # Audit log
-        username = user_info.get('preferred_username', 'unknown')
-        client_ip = request.client.host if request.client else 'unknown'
-        logger.info("Manual sync triggered by user: %s (IP: %s)", username, client_ip)
+        log_audit_action(
+            app.state.engine,
+            user_id=user_info.get('sub', 'unknown'),
+            action="MANUAL_SYNC",
+            resource=None,
+            details={},
+            ip_address=request.client.host if request.client else None
+        )
 
         result = app.state.app_instance.sync_and_process()
 
@@ -1367,7 +1401,7 @@ def get_meme_detail(filename: str, user_info: Dict = Depends(require_auth)):
 
 
 @app.post("/memes/{filename}/force-description", tags=["memes"])
-def force_description_generation(filename: str):
+def force_description_generation(filename: str, request: Request, user_info: Dict = Depends(require_auth)):
     """Force generation of description for a meme, bypassing attempt limits.
     
     Resets attempts counter and triggers immediate generation.
@@ -1393,6 +1427,16 @@ def force_description_generation(filename: str):
             session.add(m)
             session.commit()
             logger.info("Reset attempts for %s; forcing description generation", filename)
+            
+            # Audit log
+            log_audit_action(
+                app.state.engine,
+                user_id=user_info.get('sub', 'unknown'),
+                action="FORCE_DESCRIPTION_GENERATION",
+                resource=filename,
+                details={},
+                ip_address=request.client.host if request.client else None
+            )
         
         result = app.state.app_instance.generate_description(filename)
         
@@ -1634,6 +1678,17 @@ def save_prompt(request: Request, request_body: dict, user_info: Dict = Depends(
         prompt_path.parent.mkdir(parents=True, exist_ok=True)
         prompt_path.write_text(request_body["prompt"], encoding="utf-8")
         logger.info("Custom prompt saved successfully by user %s", user_info.get('sub'))
+        
+        # Audit log
+        log_audit_action(
+            app.state.engine,
+            user_id=user_info.get('sub', 'unknown'),
+            action="UPDATE_PROMPT",
+            resource="prompt.txt",
+            details={"length": len(request_body["prompt"])},
+            ip_address=request.client.host if request.client else None
+        )
+        
         return {"status": "saved", "source": "custom"}
     except Exception as exc:
         logger.exception("Failed to save prompt: %s", exc)
@@ -1727,6 +1782,17 @@ async def recalculate_meme_phash(filename: str, request: Request, user_info: Dic
                 result = await compute_and_persist_phash(filename, storage, app.state.engine, timestamp=1.0)
                 if result:
                     logger.info(f"Successfully recalculated phash for {filename} by user {user_info.get('sub')}")
+                    
+                    # Audit log
+                    log_audit_action(
+                        app.state.engine,
+                        user_id=user_info.get('sub', 'unknown'),
+                        action="RECALCULATE_PHASH",
+                        resource=filename,
+                        details={"phash": result},
+                        ip_address=request.client.host if request.client else None
+                    )
+                    
                     return {
                         "status": "ok",
                         "message": "Phash calculated successfully",
@@ -1774,6 +1840,16 @@ def mark_meme_not_duplicate(filename: str, user_info: Dict = Depends(require_aut
                     raise HTTPException(status_code=404, detail="Meme not found")
                 meme = session.exec(select(Meme).where(Meme.filename == filename)).first()
                 logger.info(f"Marked {filename} as not duplicate by user {user_info.get('sub')}")
+                
+                # Audit log
+                log_audit_action(
+                    app.state.engine,
+                    user_id=user_info.get('sub', 'unknown'),
+                    action="MARK_NOT_DUPLICATE",
+                    resource=filename,
+                    details={},
+                    ip_address=None
+                )
                 if meme:
                     session.refresh(meme)
                     return {"status": "ok", "message": "Meme marked as not duplicate", "meme": meme.model_dump()}
@@ -2085,6 +2161,7 @@ def login(request: Request):
 async def callback(request: Request, code: Optional[str] = None, state: Optional[str] = None, error: Optional[str] = None, error_description: Optional[str] = None):
     """OIDC callback - exchange code for token and create session."""
     auth_context = get_auth_context()
+    client_ip = request.client.host if request.client else None
     
     if not auth_context.enabled or not auth_context.oidc_client:
         raise HTTPException(status_code=503, detail="OIDC authentication not enabled")
@@ -2092,19 +2169,56 @@ async def callback(request: Request, code: Optional[str] = None, state: Optional
     # Check for OIDC errors from Authelia
     if error:
         logger.error(f"OIDC error from Authelia: {error} - {error_description}")
+        # Audit log failed authentication
+        log_audit_action(
+            app.state.engine,
+            user_id="unknown",
+            action="OIDC_CALLBACK_ERROR",
+            resource=None,
+            details={"error": error, "error_description": error_description},
+            ip_address=client_ip
+        )
         raise HTTPException(status_code=400, detail=f"Authentication failed: {error} - {error_description}")
     
     # Check for code parameter
     if not code:
         logger.error(f"Missing authorization code in callback. Query params: {dict(request.query_params)}")
+        # Audit log missing code
+        log_audit_action(
+            app.state.engine,
+            user_id="unknown",
+            action="OIDC_CALLBACK_MISSING_CODE",
+            resource=None,
+            details={},
+            ip_address=client_ip
+        )
         raise HTTPException(status_code=400, detail="Missing authorization code from OIDC provider")
     
     if not state:
         logger.error("Missing state parameter in callback")
+        # Audit log missing state
+        log_audit_action(
+            app.state.engine,
+            user_id="unknown",
+            action="OIDC_CALLBACK_MISSING_STATE",
+            resource=None,
+            details={},
+            ip_address=client_ip
+        )
         raise HTTPException(status_code=400, detail="Missing state parameter")
 
     # Verify OAuth state (retrieves from Redis if configured, otherwise in-memory)
     if not auth_context.session_manager.verify_oauth_state(state):
+        logger.warning(f"Invalid or expired state parameter from IP: {client_ip}")
+        # Audit log invalid state
+        log_audit_action(
+            app.state.engine,
+            user_id="unknown",
+            action="OIDC_CALLBACK_INVALID_STATE",
+            resource=None,
+            details={},
+            ip_address=client_ip
+        )
         raise HTTPException(status_code=400, detail="Invalid or expired state parameter")
     
     try:
@@ -2113,9 +2227,27 @@ async def callback(request: Request, code: Optional[str] = None, state: Optional
         user_info = await auth_context.oidc_client.get_userinfo(token['access_token'])
         
         user_id = user_info.get('sub')
+        
+        # Session fixation protection: revoke any pre-login session
+        old_session_id = request.cookies.get('session_id')
+        if old_session_id:
+            auth_context.session_manager.revoke_session(old_session_id)
+            logger.debug(f"Revoked old session before login for user {user_id}")
+        
+        # Create new authenticated session
         session_id = auth_context.session_manager.create_session(user_id, user_info)
         
         logger.info(f"User logged in: {user_id}")
+        
+        # Audit log successful login
+        log_audit_action(
+            app.state.engine,
+            user_id=user_id,
+            action="OIDC_LOGIN_SUCCESS",
+            resource=None,
+            details={"username": user_info.get('preferred_username', 'unknown')},
+            ip_address=client_ip
+        )
         
         response = RedirectResponse(url='/', status_code=302)
         response.set_cookie(
@@ -2130,6 +2262,15 @@ async def callback(request: Request, code: Optional[str] = None, state: Optional
     
     except Exception as e:
         logger.error(f"OIDC callback failed: {e}")
+        # Audit log failed callback
+        log_audit_action(
+            app.state.engine,
+            user_id="unknown",
+            action="OIDC_CALLBACK_FAILED",
+            resource=None,
+            details={"error": str(e)},
+            ip_address=client_ip
+        )
         raise HTTPException(status_code=500, detail="Authentication failed")
 
 
@@ -2152,7 +2293,18 @@ def logout(request: Request):
         logger.debug(f"Session revoked: {session_id}")
 
     if user_info:
-        logger.info(f"User logged out: {user_info.get('sub', 'unknown')}")
+        user_id = user_info.get('sub', 'unknown')
+        logger.info(f"User logged out: {user_id}")
+        
+        # Audit log
+        log_audit_action(
+            app.state.engine,
+            user_id=user_id,
+            action="LOGOUT",
+            resource=None,
+            details={},
+            ip_address=request.client.host if request.client else None
+        )
     else:
         logger.debug("Logout request received (no active session)")
 

@@ -55,7 +55,7 @@
 
 {% block extra_scripts %}
 <script src="/static/app.js?v=4"></script>
-<script>
+<script nonce="{{ csp_nonce }}">
     document.addEventListener('DOMContentLoaded', function() {
         const container = document.getElementById('duplicatesPageInner');
         container.innerHTML = '<div class="spinner-border" role="status"><span class="visually-hidden">Loading...</span></div>';

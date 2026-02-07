@@ -15,7 +15,7 @@ class Meme(SQLModel, table=True):
     attempts: int = Field(default=0)
     last_error: Optional[str] = None
     last_attempt_at: Optional[datetime.datetime] = None
-    created_at: datetime.datetime = Field(default_factory=lambda: datetime.datetime.now(datetime.timezone.utc))
+    created_at: datetime.datetime = Field(default_factory=lambda: datetime.datetime.now(datetime.timezone.utc), index=True)
     updated_at: datetime.datetime = Field(default_factory=lambda: datetime.datetime.now(datetime.timezone.utc))
     
     phash: Optional[str] = Field(default=None, index=True)
@@ -60,7 +60,7 @@ class UserToken(SQLModel, table=True):
     user_id: str = Field(index=True)
     name: str
     token_hash: str
-    created_at: datetime.datetime = Field(default_factory=lambda: datetime.datetime.now(datetime.timezone.utc))
+    created_at: datetime.datetime = Field(default_factory=lambda: datetime.datetime.now(datetime.timezone.utc), index=True)
     last_used_at: Optional[datetime.datetime] = None
     expires_at: Optional[datetime.datetime] = None
     revoked: bool = Field(default=False, index=True)

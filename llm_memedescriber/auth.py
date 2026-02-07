@@ -29,7 +29,7 @@ from .config import load_settings
 logger = logging.getLogger(__name__)
 
 # Argon2id parameters for password/token hashing (strong production config)
-ARGON2_TIME_COST = 4          # 4 iterations
+ARGON2_TIME_COST = 8          # 8 iterations
 ARGON2_MEMORY_COST = 262144   # 256 MB (4x default)
 ARGON2_PARALLELISM = 8        # 8 threads (2x default)
 ARGON2_HASH_LEN = 32          # 32 bytes (2x default)

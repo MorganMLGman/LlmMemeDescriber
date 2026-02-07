@@ -184,7 +184,7 @@
         </div>
     </div>
 
-    <script>
+    <script nonce="{{ csp_nonce }}">
         const isBasicAuth = {{ 'true' if basic_auth else 'false' }};
 
         function showMessage(text, type = 'error') {
