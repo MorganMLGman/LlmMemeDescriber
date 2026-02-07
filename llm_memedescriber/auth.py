@@ -21,7 +21,7 @@ from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
 from authlib.integrations.httpx_client import AsyncOAuth2Client
 from jose import JWTError, jwt
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 from sqlmodel import Session, select
 
 from .config import load_settings
@@ -168,10 +168,13 @@ class OIDCClient:
 
 class JWTManager:
     """Manages JWT token generation and validation for API access."""
-    
-    def __init__(self, secret: str | None, expiry_days: int = 30):
-        # Handle both str and SecretStr
-        self.secret = secret.get_secret_value() if hasattr(secret, 'get_secret_value') else secret
+
+    def __init__(self, secret: str | SecretStr | None, expiry_days: int = 30):
+        # Handle both str and SecretStr - always convert to string
+        if isinstance(secret, SecretStr):
+            self.secret: str = secret.get_secret_value()
+        else:
+            self.secret: str = secret if secret else ""
         self.expiry_days = expiry_days
         self.algorithm = "HS256"
     
@@ -552,19 +555,27 @@ class OIDCAuthContext:
                 cls._instance.session_manager = SessionManager(settings.session_expiry_seconds)
                 logger.info("Using in-memory session storage (redis_url not configured)")
             
-            if settings.oidc_enabled:
-                if not all([settings.oidc_provider_url, settings.oidc_client_id,
-                           settings.oidc_client_secret, settings.oidc_redirect_uri,
-                           settings.jwt_secret]):
-                    logger.error("OIDC enabled but missing required settings")
+            # Initialize JWT manager for OIDC or Basic Auth
+            if settings.oidc_enabled or settings.basic_auth:
+                if not settings.jwt_secret:
+                    logger.error("JWT authentication enabled but jwt_secret is not set")
                 else:
-                    cls._instance.oidc_client = OIDCClient(settings, cls._instance.session_manager)
                     cls._instance.jwt_manager = JWTManager(
                         settings.jwt_secret,
                         settings.jwt_expiry_days
                     )
+                    if settings.basic_auth:
+                        logger.info("Basic Auth authentication enabled")
+
+            # Initialize OIDC client if OIDC is enabled
+            if settings.oidc_enabled:
+                if not all([settings.oidc_provider_url, settings.oidc_client_id,
+                           settings.oidc_client_secret, settings.oidc_redirect_uri]):
+                    logger.error("OIDC enabled but missing required settings")
+                else:
+                    cls._instance.oidc_client = OIDCClient(settings, cls._instance.session_manager)
                     logger.info("OIDC authentication enabled")
-        
+
         return cls._instance
 
 
@@ -596,13 +607,15 @@ def verify_basic_auth_user(username: str, password: str, engine) -> Optional[Dic
         now = datetime.now(timezone.utc)
 
         # Check if user is locked out
-        if user.locked_until and now < user.locked_until:
-            return None
-
-        # Unlock if lock period expired
-        if user.locked_until and now >= user.locked_until:
-            user.locked_until = None
-            user.failed_attempts = 0
+        # Make locked_until timezone-aware if it's naive (for comparison with now)
+        if user.locked_until:
+            locked_until = user.locked_until if user.locked_until.tzinfo else user.locked_until.replace(tzinfo=timezone.utc)
+            if now < locked_until:
+                return None
+            # Unlock if lock period expired (but keep failed_attempts for exponential backoff)
+            if now >= locked_until:
+                user.locked_until = None
+                # Don't reset failed_attempts - let it accumulate for exponential backoff
 
         try:
             ph = get_password_hasher()
@@ -626,9 +639,10 @@ def verify_basic_auth_user(username: str, password: str, engine) -> Optional[Dic
 
             # Apply lockout if max attempts exceeded
             if user.failed_attempts >= BASIC_AUTH_MAX_ATTEMPTS:
-                # Calculate lockout delay (exponential backoff, capped at 15 min)
+                # Calculate lockout delay: each failed attempt after initial lockout escalates the delay
+                # attempt 3 → 30s, attempt 4 → 1min, attempt 5 → 5min, attempt 6+ → 15min
                 lockout_index = min(
-                    (user.failed_attempts - BASIC_AUTH_MAX_ATTEMPTS) // BASIC_AUTH_MAX_ATTEMPTS,
+                    user.failed_attempts - BASIC_AUTH_MAX_ATTEMPTS,
                     len(BASIC_AUTH_LOCKOUT_DELAYS) - 1
                 )
                 delay_seconds = BASIC_AUTH_LOCKOUT_DELAYS[lockout_index]

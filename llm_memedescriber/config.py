@@ -113,6 +113,13 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def validate_jwt_secret(self):
+        """Require jwt_secret for OIDC and Basic Auth modes."""
+        if (self.oidc_enabled or self.basic_auth) and not self.jwt_secret:
+            raise ValueError("jwt_secret is required for OIDC and Basic Auth modes. Set JWT_SECRET env var or Docker secret.")
+        return self
+
+    @model_validator(mode="after")
     def validate_redis_config(self):
         """If redis_url is set, redis_password must be set."""
         if self.redis_url and not self.redis_password:

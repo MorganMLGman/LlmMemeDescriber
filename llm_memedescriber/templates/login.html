@@ -155,16 +155,11 @@
             <form id="basicAuthForm" onsubmit="handleBasicAuth(event)">
                 <div class="mb-3">
                     <label for="username" class="form-label">Username</label>
-                    <input type="text" class="form-control" id="username" name="username" required autofocus>
+                    <input type="text" class="form-control" id="username" name="username" required autofocus autocomplete="username">
                 </div>
                 <div class="mb-3">
                     <label for="password" class="form-label">Password</label>
-                    <input type="password" class="form-control" id="password" name="password" required>
-                </div>
-
-                <!-- Lockout indicator -->
-                <div id="lockoutWarning" class="alert alert-warning" style="display: none;">
-                    <strong>⚠️ Warning:</strong> <span id="lockoutMessage"></span>
+                    <input type="password" class="form-control" id="password" name="password" required autocomplete="current-password">
                 </div>
 
                 <button type="submit" class="btn-login" id="loginBtn">
@@ -198,60 +193,6 @@
             messageEl.className = `status-message ${type}`;
         }
 
-        function showLockout(attemptsLeft, retrySeconds) {
-            const warningEl = document.getElementById('lockoutWarning');
-            const messageEl = document.getElementById('lockoutMessage');
-            const loginBtn = document.getElementById('loginBtn');
-
-            if (retrySeconds > 0) {
-                // Locked out
-                const minutes = Math.floor(retrySeconds / 60);
-                const seconds = retrySeconds % 60;
-                const timeStr = minutes > 0
-                    ? `${minutes}m ${seconds}s`
-                    : `${seconds}s`;
-                messageEl.textContent = `Account locked. Try again in ${timeStr}.`;
-                warningEl.style.display = 'block';
-                loginBtn.disabled = true;
-
-                // Countdown timer
-                const countdown = setInterval(() => {
-                    retrySeconds--;
-                    if (retrySeconds <= 0) {
-                        clearInterval(countdown);
-                        warningEl.style.display = 'none';
-                        loginBtn.disabled = false;
-                        location.reload(); // Refresh to reset form
-                    } else {
-                        const m = Math.floor(retrySeconds / 60);
-                        const s = retrySeconds % 60;
-                        const t = m > 0 ? `${m}m ${s}s` : `${s}s`;
-                        messageEl.textContent = `Account locked. Try again in ${t}.`;
-                    }
-                }, 1000);
-            } else if (attemptsLeft < 3) {
-                // Warning about remaining attempts
-                messageEl.textContent = `${attemptsLeft} login attempt${attemptsLeft !== 1 ? 's' : ''} remaining.`;
-                warningEl.style.display = 'block';
-            } else {
-                warningEl.style.display = 'none';
-            }
-        }
-
-        async function checkLockoutStatus(username) {
-            if (!isBasicAuth || !username) return;
-
-            try {
-                const response = await fetch(`/api/auth/lockout-status?username=${encodeURIComponent(username)}`);
-                if (response.ok) {
-                    const data = await response.json();
-                    showLockout(data.attempts_left, data.retry_after_seconds);
-                }
-            } catch (error) {
-                console.error('Failed to check lockout status:', error);
-            }
-        }
-
         async function handleBasicAuth(event) {
             event.preventDefault();
             const btn = document.getElementById('loginBtn');
@@ -262,27 +203,37 @@
                 btn.disabled = true;
                 showMessage('Signing in...', 'loading');
 
-                // Basic Auth uses browser's built-in dialog, but we intercept for better UX
-                const response = await fetch('/', {
-                    method: 'GET',
+                const response = await fetch('/auth/basic-login', {
+                    method: 'POST',
                     headers: {
-                        'Authorization': 'Basic ' + btoa(username + ':' + password)
-                    }
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ username, password })
                 });
 
-                if (response.ok) {
-                    // Success - redirect to main page with auth header set
-                    showMessage('Login successful! Redirecting...', 'loading');
+                const data = await response.json();
 
-                    // Store credentials in browser (will be sent automatically)
-                    // Note: This relies on browser's Basic Auth caching
-                    window.location.href = '/';
-                } else if (response.status === 401) {
-                    showMessage('Invalid username or password', 'error');
-                    await checkLockoutStatus(username);
-                    btn.disabled = false;
+                if (response.ok) {
+                    showMessage('Login successful! Redirecting...', 'loading');
+                    setTimeout(() => {
+                        window.location.href = '/';
+                    }, 500);
                 } else {
-                    showMessage('Login failed. Please try again.', 'error');
+                    // Check if user is locked out
+                    try {
+                        const lockoutResp = await fetch(`/api/auth/lockout-status?username=${encodeURIComponent(username)}`);
+                        if (lockoutResp.ok) {
+                            const lockoutData = await lockoutResp.json();
+                            if (lockoutData.locked && lockoutData.retry_after_seconds > 0) {
+                                showLockoutMessage(lockoutData.retry_after_seconds);
+                                return;
+                            }
+                        }
+                    } catch (e) {
+                        console.error('Failed to check lockout status:', e);
+                    }
+
+                    showMessage(data.detail || 'Invalid username or password', 'error');
                     btn.disabled = false;
                 }
             } catch (error) {
@@ -292,8 +243,37 @@
             }
         }
 
+        function showLockoutMessage(seconds) {
+            const messageEl = document.getElementById('statusMessage');
+            let remaining = seconds;
+
+            const updateMessage = () => {
+                const minutes = Math.floor(remaining / 60);
+                const secs = remaining % 60;
+                const timeStr = minutes > 0
+                    ? `${minutes}m ${secs}s`
+                    : `${secs}s`;
+                messageEl.textContent = `Account locked. Try again in ${timeStr}`;
+                messageEl.className = 'status-message error';
+            };
+
+            updateMessage();
+
+            const countdown = setInterval(() => {
+                remaining--;
+                if (remaining <= 0) {
+                    clearInterval(countdown);
+                    messageEl.textContent = 'You can try logging in again now';
+                    messageEl.className = 'status-message loading';
+                    document.getElementById('loginBtn').disabled = false;
+                } else {
+                    updateMessage();
+                }
+            }, 1000);
+        }
+
         async function handleLogin() {
-            // OIDC login (existing code)
+            // OIDC login
             const btn = document.getElementById('loginBtn');
 
             try {
@@ -320,13 +300,6 @@
             showMessage(`Login failed: ${urlParams.get('error')}`, 'error');
         } else if (urlParams.has('message')) {
             showMessage(urlParams.get('message'), 'loading');
-        }
-
-        // Basic Auth: Check lockout on username blur
-        if (isBasicAuth) {
-            document.getElementById('username').addEventListener('blur', (e) => {
-                checkLockoutStatus(e.target.value);
-            });
         }
     </script>
 </body>

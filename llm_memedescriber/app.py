@@ -315,6 +315,7 @@ def is_api_request(request: Request) -> bool:
     return (
         request.url.path.startswith("/api") or
         request.url.path.startswith("/memes") or  # API-like endpoints
+        request.url.path.startswith("/auth") or  # Auth endpoints (login, logout, etc.)
         "application/json" in request.headers.get("accept", "")
     )
 
@@ -553,29 +554,34 @@ def require_auth(
     if settings.public_mode:
         return _validate_user_info({"sub": "public-user", "public": True})
 
-    # Basic Auth mode
+    # Basic Auth mode - check JWT cookie first, fallback to Basic Auth header
     if settings.basic_auth:
-        if not credentials:
-            raise HTTPException(
-                status_code=401,
-                detail="Basic authentication required",
-                headers={"WWW-Authenticate": "Basic"}
-            )
+        # Try JWT cookie first (from login form)
+        auth_token = request.cookies.get('auth_token')
+        if auth_token:
+            auth_context = get_auth_context()
+            if auth_context.jwt_manager:
+                payload = auth_context.jwt_manager.verify_token(auth_token)
+                if payload:
+                    user_info = {'sub': payload.get('sub'), 'name': payload.get('sub'), 'basic_auth': True}
+                    return _validate_user_info(user_info)
 
-        user_info = verify_basic_auth_user(
-            credentials.username,
-            credentials.password,
-            request.app.state.engine
+        # Fallback to HTTP Basic Auth header (for curl/API clients)
+        if credentials:
+            user_info = verify_basic_auth_user(
+                credentials.username,
+                credentials.password,
+                request.app.state.engine
+            )
+            if user_info:
+                return _validate_user_info(user_info)
+
+        # No valid authentication found
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required",
+            headers={"WWW-Authenticate": "Basic"}
         )
-
-        if not user_info:
-            raise HTTPException(
-                status_code=401,
-                detail="Invalid credentials",
-                headers={"WWW-Authenticate": "Basic"}
-            )
-
-        return _validate_user_info(user_info)
 
     # OIDC mode - session cookie and JWT token
     auth_context = get_auth_context()
@@ -606,8 +612,11 @@ def require_auth(
 
 
 def optional_auth(request: Request) -> Optional[Dict[str, Any]]:
-    """Dependency for optional authentication."""
-    return get_user_from_request(request)
+    """Dependency for optional authentication. Returns None if not authenticated instead of raising exception."""
+    try:
+        return get_user_from_request(request)
+    except HTTPException:
+        return None
 
 
 class UpdateMemeRequest(BaseModel):
@@ -697,6 +706,62 @@ def login_page(request: Request, settings: Settings = Depends(get_settings)):
     })
 
 
+class BasicAuthLoginRequest(BaseModel):
+    """Request body for Basic Auth login."""
+    username: str
+    password: str
+
+
+@app.post("/auth/basic-login", tags=["auth"])
+async def basic_auth_login(
+    request: Request,
+    login_data: BasicAuthLoginRequest,
+    settings: Settings = Depends(get_settings)
+):
+    """Authenticate with Basic Auth credentials and issue JWT session cookie."""
+    try:
+        if not settings.basic_auth:
+            raise HTTPException(status_code=404, detail="Basic Auth not enabled")
+
+        # Verify credentials
+        user_info = verify_basic_auth_user(
+            login_data.username,
+            login_data.password,
+            request.app.state.engine
+        )
+
+        if not user_info:
+            logger.warning(f"Failed login attempt for user: {login_data.username}")
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+
+        # Create JWT token
+        auth_context = get_auth_context()
+        if not auth_context.jwt_manager:
+            raise HTTPException(status_code=500, detail="JWT not configured")
+
+        token = auth_context.jwt_manager.create_token(user_info['sub'])
+
+        # Create response and set HTTP-only cookie
+        response = JSONResponse({"status": "ok", "message": "Login successful"})
+        response.set_cookie(
+            key="auth_token",
+            value=token,
+            path="/",
+            httponly=True,
+            secure=not settings.debug_mode,  # Require HTTPS in production
+            samesite="lax",
+            max_age=settings.jwt_expiry_days * 86400
+        )
+        logger.info(f"Basic Auth login successful for user: {user_info['sub']}")
+
+        return response
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error in basic_auth_login: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/auth/lockout-status", tags=["auth"])
 async def get_lockout_status(username: str, settings: Settings = Depends(get_settings)):
     """Get lockout status for Basic Auth user (public endpoint)."""
@@ -720,14 +785,16 @@ async def get_lockout_status(username: str, settings: Settings = Depends(get_set
 
         now = datetime.datetime.now(datetime.timezone.utc)
 
-        # Check if locked
-        if user.locked_until and now < user.locked_until:
-            retry_seconds = int((user.locked_until - now).total_seconds())
-            return {
-                "locked": True,
-                "attempts_left": 0,
-                "retry_after_seconds": retry_seconds
-            }
+        # Check if locked (handle timezone-naive locked_until from database)
+        if user.locked_until:
+            locked_until = user.locked_until if user.locked_until.tzinfo else user.locked_until.replace(tzinfo=datetime.timezone.utc)
+            if now < locked_until:
+                retry_seconds = int((locked_until - now).total_seconds())
+                return {
+                    "locked": True,
+                    "attempts_left": 0,
+                    "retry_after_seconds": retry_seconds
+                }
 
         # Not locked
         attempts_left = max(0, BASIC_AUTH_MAX_ATTEMPTS - user.failed_attempts)
@@ -1951,25 +2018,34 @@ def get_auth_context() -> OIDCAuthContext:
 
 def get_user_from_request(request: Request) -> Optional[Dict[str, Any]]:
     """Extract user info from session cookie or bearer token.
-    
+
     For bearer tokens, validates on EVERY call:
     - JWT signature/expiration check
     - Token not revoked check
     - Token not expired check (in database)
-    
+
     This ensures token validity is checked at every request.
     """
     from fastapi import Depends as FastAPIDependsClass
-    
+
     auth_context = get_auth_context()
-    
-    # Check session cookie first
+
+    # Check OIDC session cookie first
     session_id = request.cookies.get('session_id')
     if session_id:
         session = auth_context.session_manager.get_session(session_id)
         if session:
             return session.get('user_info')
-    
+
+    # Check Basic Auth JWT cookie (auth_token)
+    auth_token = request.cookies.get('auth_token')
+    if auth_token and auth_context.jwt_manager:
+        payload = auth_context.jwt_manager.verify_token(auth_token)
+        if payload:
+            return {'sub': payload.get('sub'), 'name': payload.get('sub'), 'basic_auth': True}
+        else:
+            logger.debug("JWT token verification failed (expired or invalid)")
+
     # Check bearer token (validates on every call)
     auth_header = request.headers.get('Authorization')
     if auth_header and auth_header.startswith('Bearer '):
@@ -1983,7 +2059,7 @@ def get_user_from_request(request: Request) -> Optional[Dict[str, Any]]:
                 user_info = verify_api_token_not_revoked(token, request.app.state.engine)
                 if user_info:
                     return user_info
-    
+
     return None
 
 
@@ -2062,14 +2138,27 @@ async def callback(request: Request, code: Optional[str] = None, state: Optional
 def logout(request: Request):
     """Logout user by revoking session."""
     auth_context = get_auth_context()
-    
+
+    # Try to get user info before logging out
+    user_info = None
+    try:
+        user_info = get_user_from_request(request)
+    except:
+        pass
+
     session_id = request.cookies.get('session_id')
     if session_id:
         auth_context.session_manager.revoke_session(session_id)
         logger.debug(f"Session revoked: {session_id}")
-    
-    response = RedirectResponse(url='/', status_code=302)
+
+    if user_info:
+        logger.info(f"User logged out: {user_info.get('sub', 'unknown')}")
+    else:
+        logger.debug("Logout request received (no active session)")
+
+    response = RedirectResponse(url='/login', status_code=302)
     response.delete_cookie('session_id')
+    response.delete_cookie('auth_token')  # Also clear Basic Auth cookie
     return response
 
 

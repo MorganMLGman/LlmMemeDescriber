@@ -22,8 +22,14 @@ def create_user():
 
     engine = init_db()
 
-    # Get username
-    username = input("Username: ").strip()
+    # Get username (interactive only)
+    try:
+        username = input("Username: ").strip()
+    except EOFError:
+        print("\nERROR: Interactive terminal required.")
+        print("Usage: docker exec -it <container> python -m llm_memedescriber.cli create-user")
+        sys.exit(1)
+
     if not username:
         print("ERROR: Username cannot be empty.")
         sys.exit(1)
@@ -36,9 +42,14 @@ def create_user():
             print(f"ERROR: User '{username}' already exists.")
             sys.exit(1)
 
-    # Get password (hidden input)
-    password = getpass.getpass("Password: ")
-    password_confirm = getpass.getpass("Confirm password: ")
+    # Get password (interactive only)
+    try:
+        password = getpass.getpass("Password: ")
+        password_confirm = getpass.getpass("Confirm password: ")
+    except EOFError:
+        print("\nERROR: Interactive terminal required.")
+        print("Usage: docker exec -it <container> python -m llm_memedescriber.cli create-user")
+        sys.exit(1)
 
     if password != password_confirm:
         print("ERROR: Passwords do not match.")
@@ -107,7 +118,14 @@ def delete_user():
 
     engine = init_db()
 
-    username = input("Username to delete: ").strip()
+    # Get username (interactive only)
+    try:
+        username = input("Username to delete: ").strip()
+    except EOFError:
+        print("\nERROR: Interactive terminal required.")
+        print("Usage: docker exec -it <container> python -m llm_memedescriber.cli delete-user")
+        sys.exit(1)
+
     if not username:
         print("ERROR: Username cannot be empty.")
         sys.exit(1)
@@ -120,7 +138,14 @@ def delete_user():
             print(f"ERROR: User '{username}' not found.")
             sys.exit(1)
 
-        confirm = input(f"Are you sure you want to delete '{username}'? (yes/no): ").strip().lower()
+        # Get confirmation (interactive only)
+        try:
+            confirm = input(f"Are you sure you want to delete '{username}'? (yes/no): ").strip().lower()
+        except EOFError:
+            print("\nERROR: Interactive terminal required.")
+            print("Usage: docker exec -it <container> python -m llm_memedescriber.cli delete-user")
+            sys.exit(1)
+
         if confirm != 'yes':
             print("Cancelled.")
             sys.exit(0)

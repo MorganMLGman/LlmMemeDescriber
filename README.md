@@ -63,6 +63,70 @@ Main runtime options are provided as environment variables:
 
 For a complete list of all configuration options and Docker secrets setup, see `docker-compose.example.yml`.
 
+## Authentication 🔐
+
+The application supports three mutually exclusive authentication modes:
+
+### 1. Public Mode (Default)
+No authentication required. All endpoints are publicly accessible.
+```bash
+PUBLIC_MODE=true
+```
+
+### 2. OIDC Authentication
+OpenID Connect authentication via external provider (e.g., Authelia, Keycloak).
+```bash
+OIDC_ENABLED=true
+OIDC_PROVIDER_URL=https://auth.example.com
+OIDC_CLIENT_ID=your-client-id
+OIDC_CLIENT_SECRET=your-secret
+OIDC_REDIRECT_URI=https://your-app.com/auth/callback
+JWT_SECRET=random-secret-key
+CSRF_SECRET=another-random-key
+```
+
+### 3. Basic Auth (HTTP Basic Authentication)
+Simple username/password authentication for self-hosted deployments.
+
+**Enable Basic Auth:**
+```bash
+BASIC_AUTH=true
+JWT_SECRET=random-jwt-secret-key
+CSRF_SECRET=random-csrf-secret-key
+PUBLIC_MODE=false
+OIDC_ENABLED=false
+```
+
+**Managing Users via CLI:**
+
+All CLI commands require interactive mode (use `-it` flag):
+```bash
+# Create user
+docker exec -it llm-meme-describer python -m llm_memedescriber.cli create-user
+
+# List all users
+docker exec llm-meme-describer python -m llm_memedescriber.cli list-users
+
+# Delete user
+docker exec -it llm-meme-describer python -m llm_memedescriber.cli delete-user
+```
+
+**Security Features:**
+- Passwords hashed with Argon2id (256MB memory, 8 threads, 4 iterations)
+- Rate limiting: 3 failed attempts → exponential lockout (30s, 1m, 5m, 15m)
+- Session-based authentication with HTTP-only JWT cookies
+- Custom login form with automatic session management
+- All traffic over HTTPS only
+
+**Testing Authentication:**
+```bash
+# Test with curl
+curl -u username:password https://your-app.com/api/memes
+
+# Using browser (automatic Basic Auth prompt)
+# Navigate to https://your-app.com and enter credentials
+```
+
 ### SSL/TLS Configuration
 
 The application uses **HTTPS exclusively** on port `8443`.
