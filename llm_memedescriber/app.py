@@ -407,13 +407,6 @@ app.add_middleware(
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
     """Add security headers to all responses."""
-    import secrets
-    import base64
-    
-    # Generate a random nonce for inline scripts
-    nonce = base64.b64encode(secrets.token_bytes(16)).decode('utf-8')
-    request.state.csp_nonce = nonce
-    
     response = await call_next(request)
     # Prevent MIME type sniffing
     response.headers["X-Content-Type-Options"] = "nosniff"
@@ -422,9 +415,9 @@ async def add_security_headers(request: Request, call_next):
     # Enable browser XSS protection
     response.headers["X-XSS-Protection"] = "1; mode=block"
     # Content Security Policy - restrict resource loading
-    # Use nonce-based CSP for scripts and 'unsafe-hashes' for event handlers
-    # Note: 'unsafe-hashes' allows event handlers but still prevents script injection via attributes
-    response.headers["Content-Security-Policy"] = f"default-src 'self'; script-src 'self' 'nonce-{nonce}' 'unsafe-hashes' https://cdn.jsdelivr.net https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data:; font-src 'self'; connect-src 'self' https://cdn.jsdelivr.net; frame-ancestors 'none'"
+    # Note: 'unsafe-inline' is necessary due to extensive use of inline event handlers in templates.
+    # TODO: Refactor event handlers from HTML attributes to JavaScript event listeners for better CSP
+    response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data:; font-src 'self'; connect-src 'self' https://cdn.jsdelivr.net; frame-ancestors 'none'"
     # Referrer policy - control referrer information
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     # Permissions policy - disable dangerous features
@@ -710,8 +703,7 @@ def login_page(request: Request, settings: Settings = Depends(get_settings)):
     return templates.TemplateResponse("login.html", {
         "request": request,
         "basic_auth": settings.basic_auth,
-        "oidc_enabled": settings.oidc_enabled,
-        "csp_nonce": getattr(request.state, 'csp_nonce', '')
+        "oidc_enabled": settings.oidc_enabled
     })
 
 
@@ -820,7 +812,7 @@ def index(request: Request, settings: Settings = Depends(get_settings), user_inf
     """Serve the main meme gallery page. Redirects to login if not authenticated (unless public_mode)."""
     if not settings.public_mode and not user_info:
         return RedirectResponse(url="/login", status_code=302)
-    return templates.TemplateResponse("index.html", {"request": request, "csp_nonce": getattr(request.state, 'csp_nonce', '')})
+    return templates.TemplateResponse("index.html", {"request": request})
 
 
 @app.get("/duplicates", response_class=HTMLResponse, tags=["ui"])
@@ -828,13 +820,13 @@ def duplicates_page(request: Request, settings: Settings = Depends(get_settings)
     """Serve the duplicates UI page. Requires authentication (unless public_mode)."""
     if not settings.public_mode and not user_info:
         return RedirectResponse(url="/login", status_code=302)
-    return templates.TemplateResponse("duplicates.html", {"request": request, "csp_nonce": getattr(request.state, 'csp_nonce', '')})
+    return templates.TemplateResponse("duplicates.html", {"request": request})
 
 
 @app.get("/pending", response_class=HTMLResponse, tags=["ui"])
 def pending_page(request: Request):
     """Serve the pending memes UI page."""
-    return templates.TemplateResponse("pending.html", {"request": request, "csp_nonce": getattr(request.state, 'csp_nonce', '')})
+    return templates.TemplateResponse("pending.html", {"request": request})
 
 
 @app.get("/tokens", response_class=HTMLResponse, tags=["ui"])
@@ -842,7 +834,7 @@ def tokens_page(request: Request, user_info: Optional[Dict] = Depends(optional_a
     """Serve the API tokens management page. Requires authentication."""
     if not user_info:
         return RedirectResponse(url="/login", status_code=302)
-    return templates.TemplateResponse("tokens.html", {"request": request, "csp_nonce": getattr(request.state, 'csp_nonce', '')})
+    return templates.TemplateResponse("tokens.html", {"request": request})
 
 
 async def _stream_from_storage(storage, filename: str):
