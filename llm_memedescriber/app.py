@@ -422,8 +422,9 @@ async def add_security_headers(request: Request, call_next):
     # Enable browser XSS protection
     response.headers["X-XSS-Protection"] = "1; mode=block"
     # Content Security Policy - restrict resource loading
-    # Use nonce-based CSP instead of 'unsafe-inline' to prevent XSS attacks
-    response.headers["Content-Security-Policy"] = f"default-src 'self'; script-src 'self' 'nonce-{nonce}' https://cdn.jsdelivr.net https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data:; font-src 'self'; connect-src 'self' https://cdn.jsdelivr.net; frame-ancestors 'none'"
+    # Use nonce-based CSP for scripts and 'unsafe-hashes' for event handlers
+    # Note: 'unsafe-hashes' allows event handlers but still prevents script injection via attributes
+    response.headers["Content-Security-Policy"] = f"default-src 'self'; script-src 'self' 'nonce-{nonce}' 'unsafe-hashes' https://cdn.jsdelivr.net https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data:; font-src 'self'; connect-src 'self' https://cdn.jsdelivr.net; frame-ancestors 'none'"
     # Referrer policy - control referrer information
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     # Permissions policy - disable dangerous features
