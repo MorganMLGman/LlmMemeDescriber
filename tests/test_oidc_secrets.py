@@ -5,6 +5,7 @@ import io
 import os
 
 import pytest
+from pydantic import ValidationError
 
 from llm_memedescriber.config import Settings
 from tests._helpers import make_fake_open, setup_oidc_secrets_monkeypatch, create_oidc_settings
@@ -189,7 +190,8 @@ class TestOIDCSecretsNoneHandling:
         assert s.oidc_client_secret is None
 
     def test_jwt_secret_none_if_not_provided(self, monkeypatch):
-        """JWT secret can be None if not provided and no Docker secret."""
+        """JWT secret is required for OIDC mode and cannot be None."""
         monkeypatch.setattr(os.path, "isfile", lambda p: False)
-        s = create_oidc_settings({'jwt_secret': None})
-        assert s.jwt_secret is None
+        with pytest.raises(ValidationError) as exc:
+            create_oidc_settings({'jwt_secret': None})
+        assert "jwt_secret is required for OIDC" in str(exc.value)

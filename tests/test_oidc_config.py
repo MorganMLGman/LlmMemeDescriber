@@ -72,8 +72,8 @@ class TestOIDCMutualExclusion:
                 oidc_redirect_uri="https://app.example.com/callback",
                 jwt_secret="jwt-secret-key",
             )
-        # Should fail because basic_auth is not implemented
-        assert "not yet implemented" in str(exc.value)
+        # Should fail because only one authentication mode can be enabled
+        assert "Only one authentication mode" in str(exc.value)
 
 
 class TestOIDCJWTConfiguration:
