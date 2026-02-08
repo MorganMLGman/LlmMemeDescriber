@@ -80,7 +80,7 @@ def test_run_interval_parses_valid_string():
 
 
 def test_secret_read_unicode_error_fallback(monkeypatch):
-    secret_path = "/run/secrets/google_genai_api_key"
+    secret_path = "/run/secrets/gemini_api_key"
     monkeypatch.setattr(os.path, "isfile", lambda p: os.path.normpath(p) == os.path.normpath(secret_path))
 
     class BadReader:
@@ -93,13 +93,13 @@ def test_secret_read_unicode_error_fallback(monkeypatch):
         return builtins.open(path, mode, encoding=encoding, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "open", fake_open)
-    s = Settings(public_mode=True, google_genai_api_key="env-value")
-    assert s.google_genai_api_key.get_secret_value() == "env-value"
+    s = Settings(public_mode=True, gemini_api_key="env-value")
+    assert s.gemini_api_key.get_secret_value() == "env-value"
 
 
 def test_upper_secret_empty_prefers_lower(monkeypatch):
-    upper_path = "/run/secrets/GOOGLE_GENAI_API_KEY"
-    lower_path = "/run/secrets/google_genai_api_key"
+    upper_path = "/run/secrets/GEMINI_API_KEY"
+    lower_path = "/run/secrets/gemini_api_key"
 
     def isfile(p):
         return os.path.normpath(p) in (os.path.normpath(upper_path), os.path.normpath(lower_path))
@@ -115,8 +115,8 @@ def test_upper_secret_empty_prefers_lower(monkeypatch):
     monkeypatch.setattr(os.path, "isfile", isfile)
     monkeypatch.setattr(builtins, "open", fake_open)
 
-    s = Settings(public_mode=True, google_genai_api_key="env-value")
-    assert s.google_genai_api_key.get_secret_value() == "lower-secret"
+    s = Settings(public_mode=True, gemini_api_key="env-value")
+    assert s.gemini_api_key.get_secret_value() == "lower-secret"
 
 
 def test_env_empty_string_preserved(monkeypatch):

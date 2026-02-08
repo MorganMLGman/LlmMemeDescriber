@@ -1,13 +1,11 @@
 import asyncio
 import datetime
 import email.utils
-import json
 import logging
-import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from google.genai import types
 from sqlmodel import select
@@ -21,7 +19,10 @@ from .storage import WebDavStorage
 from .storage_workers import StorageWorkerPool
 from .storage_helpers import compute_and_persist_phash
 from .preview_helpers import cleanup_orphaned_cache
-from .genai_client import get_client
+from .llm import get_client, clear_client
+from .llm.types import MediaContent, DescriptionRequest
+from .llm.exceptions import RateLimitError, UnsupportedMediaError, LLMProviderError
+from .llm.providers.config import GeminiConfig, OpenAIConfig, AnthropicConfig
 from .db import init_db
 
 logger = logging.getLogger(__name__)
@@ -74,12 +75,32 @@ class App:
     def __init__(self, settings, storage: Any, genai_client = None, engine=None, interval_seconds: int = 60):
         self.settings = settings
         self.storage = storage
-        
+
         if genai_client is not None:
             self.genai_client = genai_client
         else:
             try:
-                self.genai_client = get_client(getattr(settings, 'google_genai_api_key', None))
+                # Get provider configuration from settings
+                provider = getattr(settings, 'llm_provider', 'gemini')
+                api_key_attr = f'{provider}_api_key'
+                model_attr = f'{provider}_model'
+
+                api_key = getattr(settings, api_key_attr, None)
+                if api_key:
+                    api_key = api_key.get_secret_value()
+
+                model = getattr(settings, model_attr, 'gemini-3-flash-preview')
+
+                # Get provider-specific config
+                config = None
+                if provider == 'gemini':
+                    config = GeminiConfig()
+                elif provider == 'openai':
+                    config = OpenAIConfig()
+                elif provider == 'anthropic':
+                    config = AnthropicConfig()
+
+                self.genai_client = get_client(provider, api_key, model, config)
             except Exception:
                 self.genai_client = None
         self.engine = engine
@@ -357,81 +378,74 @@ class App:
             return {'success': False, 'error': str(exc)}
 
     def generate_description(self, filename: str) -> Dict[str, Any]:
-        """Generate a description for `filename` using the instance genai client and webdav client.
-        
+        """Generate a description for `filename` using the instance LLM client and storage.
+
         Returns dict with description if successful, empty dict otherwise.
         Updates DB with error info and increments attempts counter.
         """
-        error_info = ""
+        # Download file from storage
         try:
             file_bytes = self.storage.download_file(filename)
         except Exception as exc:
             error_info = str(exc)
-            logger.error("Error reading file %s from WebDAV: %s", filename, exc)
+            logger.error("Error reading file %s from storage: %s", filename, exc)
             self._update_meme_attempt(filename, error=error_info)
             return {}
 
-        mime_type, media_res = self._detect_media(filename)
+        # Detect MIME type for validation
+        mime_type, _ = self._detect_media(filename)
 
+        # Check if LLM client is configured
         if not self.genai_client:
-            logger.warning("GenAI client is not configured; skipping generation for %s", filename)
+            logger.warning("LLM client is not configured; skipping generation for %s", filename)
             return {}
+
+        # Check if provider supports this media type
+        if not self.genai_client.is_media_supported(mime_type):
+            logger.info("Provider doesn't support MIME type %s for %s", mime_type, filename)
+            self._update_meme_attempt(filename, error=f"unsupported_mime_{mime_type}", status='unsupported')
+            return {}
+
+        # Create description request
         try:
-            part = types.Part.from_bytes(data=file_bytes, mime_type=mime_type, media_resolution=media_res)
-            response = self.genai_client.models.generate_content(
-                model=self.settings.google_genai_model,
-                contents=[part, PROMPT],
-                config=types.GenerateContentConfig(
-                    safety_settings=[
-                        types.SafetySetting(
-                            category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
-                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
-                        ),
-                        types.SafetySetting(
-                            category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
-                        ),
-                        types.SafetySetting(
-                            category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
-                        ),
-                        types.SafetySetting(
-                            category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
-                        ),
-                    ]
-                )
+            request = DescriptionRequest(
+                media=MediaContent(
+                    data=file_bytes,
+                    mime_type=mime_type,
+                    filename=filename
+                ),
+                prompt=PROMPT
             )
-            
-        except Exception as exc:
-            error_info = str(exc)
-            logger.error("GenAI request failed for %s: %s", filename, exc)
-            
-            is_unsupported = 'Unsupported MIME type' in error_info
-            is_rate_limited = '429' in error_info or 'rate limit' in error_info.lower()
-            
-            status = 'unsupported' if is_unsupported else None
-            if is_unsupported:
-                logger.info("Marked %s as unsupported MIME type; will not retry", filename)
-            self._update_meme_attempt(filename, error=error_info, status=status)
-            
-            if is_rate_limited:
-                return {'rate_limited': True, 'error': 'Rate limit exceeded'}
+
+            # Generate description using provider
+            result = self.genai_client.generate_description(request)
+
+            if result:
+                self._update_meme_attempt(filename, error="")
+                return result
+            else:
+                self._update_meme_attempt(filename, error="no_json_extracted")
+                return {}
+
+        except RateLimitError as exc:
+            logger.warning(f"Rate limited for {filename}: {exc}")
+            self._update_meme_attempt(filename, error=str(exc))
+            return {'rate_limited': True, 'error': 'Rate limit exceeded'}
+
+        except UnsupportedMediaError as exc:
+            logger.info(f"Unsupported media {filename}: {exc}")
+            self._update_meme_attempt(filename, error=str(exc), status='unsupported')
             return {}
 
-        
-        for txt in self._text_candidates_from_response(response):
-            if not txt:
-                continue
-            parsed = self._extract_json_from_text(txt)
-            if parsed is not None:
-                logger.debug("Generated JSON for %s", filename)
-                self._update_meme_attempt(filename, error="")
-                return parsed
+        except LLMProviderError as exc:
+            logger.error(f"Provider error for {filename}: {exc}")
+            self._update_meme_attempt(filename, error=str(exc))
+            return {}
 
-        logger.warning("Failed to extract JSON description for %s", filename)
-        self._update_meme_attempt(filename, error="no_json_extracted")
-        return {}
+        except Exception as exc:
+            logger.exception(f"Unexpected error generating description for {filename}: {exc}")
+            self._update_meme_attempt(filename, error=str(exc))
+            return {}
 
 
     def sync_and_process(self) -> Dict[str, Any]:
@@ -813,6 +827,11 @@ class App:
 
     @staticmethod
     def _detect_media(filename: str) -> Tuple[str, types.MediaResolution]:
+        """Detect MIME type and media resolution from filename extension.
+
+        Note: Media resolution is kept for compatibility but is now handled
+        by individual providers in their configurations.
+        """
         ext = str(filename).lower().split('.')[-1] if '.' in filename else ''
         if ext in IMAGE_EXTENSIONS:
             mime_type = "image/jpeg" if ext in {"jpg", "jpeg"} else f"image/{ext}"
@@ -821,63 +840,6 @@ class App:
             mime_type = "video/mp4" if ext == "mp4" else f"video/{ext}"
             return mime_type, types.MediaResolution.MEDIA_RESOLUTION_MEDIUM
         return "application/octet-stream", types.MediaResolution.MEDIA_RESOLUTION_HIGH
-
-    @staticmethod
-    def _extract_json_from_text(text: str) -> Optional[Dict[str, Any]]:
-        m = re.search(r"```json\s*(\{.*?\})\s*```", text, flags=re.DOTALL | re.IGNORECASE)
-        if not m:
-            m = re.search(r"```\s*(\{.*?\})\s*```", text, flags=re.DOTALL)
-        if not m:
-            m = re.search(r"(\{.*\})", text, flags=re.DOTALL)
-        if not m:
-            return None
-        candidate = m.group(1)
-        try:
-            return json.loads(candidate)
-        except Exception:
-            try:
-                cleaned = re.sub(r",\s*([}\]])", r"\1", candidate)
-                return json.loads(cleaned)
-            except Exception:
-                return None
-
-    @staticmethod
-    def _text_candidates_from_response(response: Any) -> List[str]:
-        texts: List[str] = []
-        try:
-            if hasattr(response, "outputs") and response.outputs:
-                for out in response.outputs:
-                    if hasattr(out, "content") and out.content:
-                        for c in out.content:
-                            if isinstance(c, str):
-                                texts.append(c)
-                            elif isinstance(c, dict) and c.get("text"):
-                                texts.append(c.get("text"))
-                            elif hasattr(c, "text"):
-                                texts.append(getattr(c, "text"))
-            if hasattr(response, "output") and response.output:
-                for out in response.output:
-                    if hasattr(out, "content") and out.content:
-                        for c in out.content:
-                            if isinstance(c, str):
-                                texts.append(c)
-                            elif isinstance(c, dict) and c.get("text"):
-                                texts.append(c.get("text"))
-                            elif hasattr(c, "text"):
-                                texts.append(getattr(c, "text"))
-            if hasattr(response, "content") and response.content:
-                if isinstance(response.content, str):
-                    texts.append(response.content)
-                elif isinstance(response.content, list):
-                    for c in response.content:
-                        if isinstance(c, str):
-                            texts.append(c)
-                        elif isinstance(c, dict) and c.get("text"):
-                            texts.append(c.get("text"))
-        except Exception as e:
-            logger.debug("Failed to extract text candidates from response: %s", e)
-        texts.append(str(response))
-        return texts
 
 
 if __name__ == "__main__":

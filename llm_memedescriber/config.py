@@ -17,8 +17,20 @@ class Settings(BaseSettings):
     )
     
     logging_level: str = "INFO"
-    google_genai_api_key: SecretStr | None = None
-    google_genai_model: str = "gemini-3-flash-preview"
+
+    # LLM Provider Selection
+    llm_provider: str = "gemini"  # Options: gemini, openai, anthropic
+
+    # Provider-specific API keys
+    gemini_api_key: SecretStr | None = None
+    openai_api_key: SecretStr | None = None
+    anthropic_api_key: SecretStr | None = None
+
+    # Provider-specific models
+    gemini_model: str = "gemini-3-flash-preview"
+    openai_model: str = "gpt-4o"
+    anthropic_model: str = "claude-3-5-sonnet-20241022"
+
     webdav_url: str | None = None
     webdav_username: SecretStr | None = None
     webdav_password: SecretStr | None = None
@@ -58,6 +70,15 @@ class Settings(BaseSettings):
     # Redis session storage (optional, falls back to in-memory if not configured)
     redis_url: str | None = None  # e.g., "redis://redis:6379/0"
     redis_password: SecretStr | None = None  # Required if redis_url is set
+
+    @field_validator("llm_provider")
+    @classmethod
+    def validate_provider(cls, v):
+        """Validate provider is supported."""
+        valid = ['gemini', 'openai', 'anthropic']
+        if v.lower() not in valid:
+            raise ValueError(f"llm_provider must be one of: {valid}")
+        return v.lower()
 
     @field_validator("run_interval")
     @classmethod
@@ -126,6 +147,18 @@ class Settings(BaseSettings):
             raise ValueError("redis_password is required when redis_url is configured")
         return self
 
+    @model_validator(mode="after")
+    def validate_provider_api_key(self):
+        """Warn if no API key is configured for the selected provider."""
+        provider = self.llm_provider.lower()
+        api_key = getattr(self, f'{provider}_api_key', None)
+
+        if not api_key:
+            logger.warning(f"No API key configured for provider '{provider}'. "
+                         f"Set {provider.upper()}_API_KEY environment variable.")
+
+        return self
+
     @field_validator("oidc_enabled", mode="before")
     @classmethod
     def validate_oidc_config(cls, v, info):
@@ -159,7 +192,7 @@ class Settings(BaseSettings):
             logger.info("  Redirect URI: %s", self.oidc_redirect_uri)
             logger.info("  Scopes: %s", self.oidc_scopes)
 
-    @field_validator("google_genai_api_key", "webdav_url", "webdav_username", "webdav_password", "oidc_client_secret", "jwt_secret", "csrf_secret", mode="before")
+    @field_validator("gemini_api_key", "openai_api_key", "anthropic_api_key", "webdav_url", "webdav_username", "webdav_password", "oidc_client_secret", "jwt_secret", "csrf_secret", mode="before")
     @classmethod
     def _prefer_docker_secret(cls, v, info):
         """

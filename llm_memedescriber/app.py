@@ -29,7 +29,8 @@ from .db_helpers import log_audit_action
 from .main import App
 from .storage import WebDavStorage, initialize_gpu_detection
 from .storage_workers import StorageWorkerPool
-from .genai_client import get_client
+from .llm import get_client
+from .llm.providers.config import GeminiConfig, OpenAIConfig, AnthropicConfig
 from .ssl_helpers import validate_certificate_files
 from .search import rebuild_index, add_meme_to_index, search_memes as whoosh_search
 from .deduplication import (
@@ -143,9 +144,26 @@ async def lifespan(app_instance: FastAPI):
         storage = StorageWorkerPool(base_storage, max_workers=storage_workers, max_concurrent=storage_concurrency)
 
     genai_client = None
-    if getattr(settings, 'google_genai_api_key', None):
-        api_key = settings.google_genai_api_key.get_secret_value()
-        genai_client = get_client(api_key)
+    # Get provider configuration from settings
+    provider = getattr(settings, 'llm_provider', 'gemini')
+    api_key_attr = f'{provider}_api_key'
+    model_attr = f'{provider}_model'
+
+    api_key_obj = getattr(settings, api_key_attr, None)
+    if api_key_obj:
+        api_key = api_key_obj.get_secret_value()
+        model = getattr(settings, model_attr, 'gemini-3-flash-preview')
+
+        # Get provider-specific config
+        config = None
+        if provider == 'gemini':
+            config = GeminiConfig()
+        elif provider == 'openai':
+            config = OpenAIConfig()
+        elif provider == 'anthropic':
+            config = AnthropicConfig()
+
+        genai_client = get_client(provider, api_key, model, config)
 
     interval = 60
     if getattr(settings, 'run_interval', None):
