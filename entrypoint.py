@@ -13,7 +13,6 @@ def ensure_ssl_certificates():
     from llm_memedescriber.ssl_helpers import validate_certificate_files
     cert_path, key_path = validate_certificate_files(None, None)
     print(f"[startup] SSL certificates ready: {cert_path}")
-    # Export cert paths for uvicorn to use
     os.environ["SSL_CERT_PATH"] = cert_path
     os.environ["SSL_KEY_PATH"] = key_path
     return True
@@ -41,7 +40,6 @@ def main():
 
   print(f"[startup] Running as: uid={uid} gid={gid}")
 
-  # Check /data is writable
   test_path = "/data/.llm_mount_test"
   try:
     with open(test_path, "w") as f:
@@ -51,7 +49,6 @@ def main():
     print("[startup] ERROR: /data is not writable. Aborting.")
     sys.exit(1)
 
-  # Ensure SSL certificates exist before starting uvicorn
   if not ensure_ssl_certificates():
     sys.exit(1)
 
@@ -60,10 +57,21 @@ def main():
     sys.exit(1)
 
   cmd = sys.argv[1:]
-  print("[startup] Launching: ", " ".join(cmd))
 
-  # Replace current process with the requested command
-  os.execvp(cmd[0], cmd)
+  expanded_cmd = []
+  for arg in cmd:
+    if arg.startswith("--ssl-certfile="):
+      cert_path = os.environ.get("SSL_CERT_PATH", "/data/certs/server.crt")
+      expanded_cmd.append(f"--ssl-certfile={cert_path}")
+    elif arg.startswith("--ssl-keyfile="):
+      key_path = os.environ.get("SSL_KEY_PATH", "/data/certs/server.key")
+      expanded_cmd.append(f"--ssl-keyfile={key_path}")
+    else:
+      expanded_cmd.append(arg)
+
+  print("[startup] Launching: ", " ".join(expanded_cmd))
+
+  os.execvp(expanded_cmd[0], expanded_cmd)
 
 
 if __name__ == "__main__":
