@@ -17,6 +17,13 @@ PREVIEW_JPEG_QUALITY_VIDEO = 8
 VIDEO_FRAME_TIMESTAMP = 1.0
 VIDEO_EXTRACTION_TIMEOUT = 30
 
+# Transcoding settings
+TRANSCODE_VIDEO_CODEC = 'libx264'
+TRANSCODE_AUDIO_CODEC = 'aac'
+TRANSCODE_CRF = 23  # Constant Rate Factor (18-28, lower=higher quality, 20=high quality for small files)
+TRANSCODE_PRESET = 'fast'  # Encoding speed (fast/medium/slow)
+TRANSCODE_TIMEOUT = 180  # 3 minutes maximum (GPU should be much faster, CPU fallback gets more time for larger files)
+
 MAX_FILENAME_LENGTH = 255
 MIN_SEARCH_QUERY_LENGTH = 2
 
@@ -40,6 +47,7 @@ DEFAULT_PREVIEW_WORKERS = 8
 DEFAULT_STORAGE_WORKERS = 6
 DEFAULT_STORAGE_CONCURRENCY = 2
 
+CERT_REGENERATION_THRESHOLD_DAYS = 30
 
 def _get_extension(filename: str) -> str:
     """Extract file extension safely.

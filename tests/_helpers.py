@@ -1,8 +1,14 @@
 """Shared test helpers for image and DB utilities used across tests."""
 from contextlib import contextmanager
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 import pytest
 from sqlmodel import SQLModel, create_engine, Session
+from cryptography import x509
+from cryptography.x509.oid import NameOID
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.backends import default_backend
 
 
 DATA_DIR = Path(__file__).parent / "data"
@@ -201,10 +207,8 @@ class FakeClient:
     def remove(self, path):
         if self.remove_fail_exc is not None:
             raise self.remove_fail_exc
-        # emulate removal; if path not present, raise FileNotFoundError
         if path not in self.mapping and path not in self.file_contents:
             raise FileNotFoundError('not found')
-        # remove from file_contents if present
         self.file_contents.pop(path, None)
         self.mapping.pop(path, None)
         return True
@@ -292,6 +296,58 @@ def make_fake_open(secret_path: str, secret_content: str):
     return fake_open
 
 
+def setup_oidc_secrets_monkeypatch(monkeypatch, secrets_dict):
+    """Setup monkeypatch for multiple OIDC secrets.
+    
+    Args:
+        monkeypatch: pytest monkeypatch fixture
+        secrets_dict: Dict mapping secret paths to their content
+                     e.g., {'/run/secrets/oidc_client_secret': 'secret123', ...}
+    """
+    import builtins, io, os
+    real_open = builtins.open
+    
+    def isfile(p):
+        return os.path.normpath(p) in [os.path.normpath(path) for path in secrets_dict.keys()]
+    
+    def fake_open(path, mode='r', encoding=None, *args, **kwargs):
+        norm = os.path.normpath(path)
+        for secret_path, content in secrets_dict.items():
+            if norm == os.path.normpath(secret_path):
+                return io.StringIO(content)
+        return real_open(path, mode, encoding=encoding, *args, **kwargs)
+    
+    monkeypatch.setattr(os.path, "isfile", isfile)
+    monkeypatch.setattr(builtins, "open", fake_open)
+
+
+def create_oidc_settings(override_dict=None):
+    """Create a Settings instance with standard OIDC configuration.
+
+    Args:
+        override_dict: Optional dict to override default OIDC settings
+
+    Returns:
+        Settings instance with OIDC enabled and default values
+    """
+    from llm_memedescriber.config import Settings
+
+    defaults = {
+        'oidc_enabled': True,
+        'oidc_provider_url': 'https://auth.example.com',
+        'oidc_client_id': 'client123',
+        'oidc_client_secret': 'env-client-secret',
+        'oidc_redirect_uri': 'https://app.example.com/callback',
+        'jwt_secret': 'env-jwt-secret',
+        'csrf_secret': 'test-csrf-secret',  # Required for CSRF protection when auth is enabled
+    }
+
+    if override_dict:
+        defaults.update(override_dict)
+
+    return Settings(**defaults)
+
+
 def create_memes(session, items, model=None):
     """Create multiple model instances from dicts; defaults to Meme if model not provided."""
     if model is None:
@@ -307,3 +363,71 @@ def set_caplog_level(caplog, level, logger=None):
         caplog.set_level(level, logger=logger)
     else:
         caplog.set_level(level)
+
+def create_test_cert(
+    cert_path: str,
+    key_path: str,
+    days_valid: int = 365,
+    self_signed: bool = True,
+    issuer_cn: str | None = None,
+) -> tuple[str, str]:
+    """Helper to create a test certificate.
+    
+    Args:
+        cert_path: Path where certificate should be written
+        key_path: Path where private key should be written
+        days_valid: Number of days certificate is valid (negative for expired)
+        self_signed: Whether certificate is self-signed
+        issuer_cn: Common name for issuer (if not self-signed)
+    
+    Returns:
+        Tuple of (cert_path, key_path)
+    """
+    private_key = rsa.generate_private_key(
+        public_exponent=65537, key_size=2048, backend=default_backend()
+    )
+
+    subject = x509.Name(
+        [
+            x509.NameAttribute(NameOID.COUNTRY_NAME, "US"),
+            x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, "Test"),
+            x509.NameAttribute(NameOID.LOCALITY_NAME, "Test"),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Test"),
+            x509.NameAttribute(NameOID.COMMON_NAME, "test.example.com"),
+        ]
+    )
+
+    issuer = subject if self_signed else x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, issuer_cn or "CA")])
+
+    if days_valid < 0:
+        not_valid_before = datetime.now(timezone.utc) + timedelta(days=days_valid * 2)
+        not_valid_after = datetime.now(timezone.utc) + timedelta(days=days_valid)
+    else:
+        not_valid_before = datetime.now(timezone.utc)
+        not_valid_after = datetime.now(timezone.utc) + timedelta(days=days_valid)
+
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(private_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(not_valid_before)
+        .not_valid_after(not_valid_after)
+        .sign(private_key, hashes.SHA256(), default_backend())
+    )
+
+    Path(cert_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(cert_path, "wb") as f:
+        f.write(cert.public_bytes(serialization.Encoding.PEM))
+
+    with open(key_path, "wb") as f:
+        f.write(
+            private_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.TraditionalOpenSSL,
+                encryption_algorithm=serialization.NoEncryption(),
+            )
+        )
+
+    return cert_path, key_path

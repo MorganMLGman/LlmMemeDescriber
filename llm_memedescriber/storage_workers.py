@@ -9,6 +9,13 @@ from .constants import DEFAULT_STORAGE_WORKERS
 
 logger = logging.getLogger(__name__)
 
+# Import timeout exceptions for better error handling
+try:
+    import httpx
+    HAS_HTTPX = True
+except ImportError:
+    HAS_HTTPX = False
+
 
 class StorageWorkerPool:
     """Wrap a blocking storage adapter (like WebDavStorage) and run its blocking
@@ -31,6 +38,13 @@ class StorageWorkerPool:
         self._semaphore.acquire()
         try:
             return fn(*args, **kwargs)
+        except (TimeoutError, ConnectionError) as e:
+            logger.warning("Storage operation timeout/connection error: %s", str(e))
+            raise
+        except Exception as e:
+            if HAS_HTTPX and isinstance(e, (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.TimeoutException)):
+                logger.warning("HTTP timeout during storage operation: %s", str(e))
+            raise
         finally:
             try:
                 self._semaphore.release()
@@ -79,6 +93,29 @@ class StorageWorkerPool:
     async def async_download_file(self, *args, timeout: Optional[float] = None, **kwargs):
         return await self.async_run(self._storage.download_file, *args, timeout=timeout, **kwargs)
 
+    async def async_stream_file(self, path: str, chunk_size: int = 2**22):
+        """Async generator streaming file chunks. Yields file_size first, then bytes."""
+        loop = asyncio.get_running_loop()
+        gen = None
+        _sentinel = object()
+
+        def _next_chunk(generator):
+            try:
+                return next(generator)
+            except StopIteration:
+                return _sentinel
+
+        try:
+            gen = self._storage.stream_file(path, chunk_size=chunk_size)
+            while True:
+                chunk = await loop.run_in_executor(self._executor, _next_chunk, gen)
+                if chunk is _sentinel:
+                    break
+                yield chunk
+        finally:
+            if gen is not None:
+                await loop.run_in_executor(self._executor, gen.close)
+
     def upload_fileobj(self, *args, timeout: Optional[float] = None, **kwargs):
         return self.run(self._storage.upload_fileobj, *args, timeout=timeout, **kwargs)
 
@@ -96,6 +133,16 @@ class StorageWorkerPool:
 
     async def async_extract_video_frame(self, *args, timeout: Optional[float] = None, **kwargs):
         return await self.async_run(self._storage.extract_video_frame, *args, timeout=timeout, **kwargs)
+
+    def transcode_mkv_to_mp4(self, *args, timeout: Optional[float] = None, **kwargs):
+        from .constants import TRANSCODE_TIMEOUT
+        return self.run(self._storage.transcode_mkv_to_mp4, *args,
+                        timeout=timeout or TRANSCODE_TIMEOUT, **kwargs)
+
+    async def async_transcode_mkv_to_mp4(self, *args, timeout: Optional[float] = None, **kwargs):
+        from .constants import TRANSCODE_TIMEOUT
+        return await self.async_run(self._storage.transcode_mkv_to_mp4, *args,
+                                    timeout=timeout or TRANSCODE_TIMEOUT, **kwargs)
 
     def open(self, path: str, mode: str = 'rb'):
         """Provide a file-like object for callers that expect `open`.

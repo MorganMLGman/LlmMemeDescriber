@@ -4,12 +4,17 @@ services:
     container_name: llm-meme-describer
     user: "1000:1000"
     ports:
-      - "8000:8000"
+      - "8443:8443"
     
     # Volume mounts
     volumes:
       # Main data directory for caching and database
       - ./data:/data
+
+    # GPU device passthrough (Intel iGPU)
+    devices:
+      - /dev/dri/card0:/dev/dri/card0      # Primary GPU device
+      - /dev/dri/renderD128:/dev/dri/renderD128  # Render node for VAAPI
 
     # Environment variables
     environment:
@@ -40,6 +45,18 @@ services:
       # Default: UTC
       TIMEZONE: "UTC"
       
+      # === SSL/TLS Configuration (OPTIONAL) ===
+      # If no certificates provided, self-signed certificates are auto-generated in /data/certs/
+      # This is safe for development and when deployed behind a reverse proxy (e.g., Cloudflare)
+      # 
+      # For production with provided certificates (via secrets or files):
+      # SSL_CERT_FILE: "/run/secrets/ssl_cert_file"  # Certificate (PEM format)
+      # SSL_KEY_FILE: "/run/secrets/ssl_key_file"    # Private key (PEM format)
+      # SSL_HOSTNAME: "example.com"                   # CN for self-signed cert generation
+      #
+      # The app listens on https://0.0.0.0:8443 (HTTPS only)
+      # Access via: https://localhost:8443 (localhost) or https://your-domain.com (behind proxy)
+      
       # === Google Generative AI Configuration ===
       # Model to use for analysis
       # Default: gemini-3-flash-preview
@@ -57,6 +74,16 @@ services:
       # Default: true
       AUTO_START_WORKER: "true"
       
+      # === Redis Session Management (OPTIONAL) ===
+      # Enable persistent session storage with Redis
+      # If not set, sessions are stored in-memory (lost on container restart)
+      # Requires Redis service to be running
+      # Format: redis://redis:6379/0 (redis is the service hostname in docker-compose)
+      # Default: not set (uses in-memory sessions)
+      # REDIS_URL: "redis://redis:6379/0"
+      # Redis password (REQUIRED if REDIS_URL is set)
+      # REDIS_PASSWORD: "<your_redis_password>"
+      
       # === Advanced Configuration ===
       # Number of concurrent storage workers
       # Default: 4
@@ -73,17 +100,56 @@ services:
       - google_genai_api_key
       - webdav_username
       - webdav_password
+      # Optional: SSL certificate secrets (for production deployments)
+      # Uncomment if providing your own certificates:
+      # - ssl_cert_file
+      # - ssl_key_file
+    
+    # Restart policy
+    restart: unless-stopped
+    
+    # Network configuration (optional)
+    networks:
+      - meme-network
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "/healthcheck.py"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  redis:
+    image: redis:8-alpine
+    container_name: llm-meme-describer-redis
+
+    # Redis password must match REDIS_PASSWORD env var in app service
+    command: redis-server --requirepass ${REDIS_PASSWORD}
+    
+    # Volume for data persistence
+    volumes:
+      - ./redis-data:/data
+    
+    # Network configuration
+    networks:
+      - meme-network
     
     # Restart policy
     restart: unless-stopped
     
     # Health check
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "redis-cli", "ping"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 30s
+      start_period: 10s
+
+# Networks
+networks:
+  meme-network:
+    driver: bridge
 
 # Secret definitions
 secrets:
@@ -95,3 +161,10 @@ secrets:
   
   webdav_password:
     file: ./secrets/webdav_password
+  
+  # Optional: SSL certificate secrets for production deployments
+  # If using your own certificates, uncomment and update paths:
+  # ssl_cert_file:
+  #   file: ./certs/server.crt
+  # ssl_key_file:
+  #   file: ./certs/server.key

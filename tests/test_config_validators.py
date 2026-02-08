@@ -20,7 +20,7 @@ def test_max_generation_attempts_zero_raises():
 
 
 def test_max_generation_attempts_string_is_int():
-    s = Settings(max_generation_attempts="5")
+    s = Settings(public_mode=True, max_generation_attempts="5")
     assert isinstance(s.max_generation_attempts, int)
     assert s.max_generation_attempts == 5
 
@@ -30,8 +30,8 @@ def test_webdav_secrets_prefer_secret_over_env(monkeypatch):
     monkeypatch.setattr(os.path, "isfile", lambda p: os.path.normpath(p) == os.path.normpath(secret_path))
     monkeypatch.setattr(builtins, "open", make_fake_open(secret_path, "super-secret\n"))
 
-    s = Settings(webdav_password="env-pass")
-    assert s.webdav_password == "super-secret"
+    s = Settings(public_mode=True, webdav_password="env-pass")
+    assert s.webdav_password.get_secret_value() == "super-secret"
 
 
 def test_load_settings_exits_on_validation_error(monkeypatch, caplog_set_level, caplog):
@@ -49,7 +49,7 @@ def test_max_generation_attempts_non_numeric_raises():
 
 
 def test_max_generation_attempts_float_string_is_accepted_and_cast():
-    s = Settings(max_generation_attempts="1.0")
+    s = Settings(public_mode=True, max_generation_attempts="1.0")
     assert isinstance(s.max_generation_attempts, int)
     assert s.max_generation_attempts == 1
 
@@ -75,7 +75,7 @@ def test_run_interval_rejects_none():
     assert "None" in str(exc.value)
 
 def test_run_interval_parses_valid_string():
-    s = Settings(run_interval="10m")
+    s = Settings(public_mode=True, run_interval="10m")
     assert s.run_interval == "10m"
 
 
@@ -93,8 +93,8 @@ def test_secret_read_unicode_error_fallback(monkeypatch):
         return builtins.open(path, mode, encoding=encoding, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "open", fake_open)
-    s = Settings(google_genai_api_key="env-value")
-    assert s.google_genai_api_key == "env-value"
+    s = Settings(public_mode=True, google_genai_api_key="env-value")
+    assert s.google_genai_api_key.get_secret_value() == "env-value"
 
 
 def test_upper_secret_empty_prefers_lower(monkeypatch):
@@ -115,14 +115,14 @@ def test_upper_secret_empty_prefers_lower(monkeypatch):
     monkeypatch.setattr(os.path, "isfile", isfile)
     monkeypatch.setattr(builtins, "open", fake_open)
 
-    s = Settings(google_genai_api_key="env-value")
-    assert s.google_genai_api_key == "lower-secret"
+    s = Settings(public_mode=True, google_genai_api_key="env-value")
+    assert s.google_genai_api_key.get_secret_value() == "lower-secret"
 
 
 def test_env_empty_string_preserved(monkeypatch):
     monkeypatch.setattr(os.path, "isfile", lambda p: False)
-    s = Settings(webdav_password="")
-    assert s.webdav_password == ""
+    s = Settings(public_mode=True, webdav_password="")
+    assert s.webdav_password.get_secret_value() == ""
 
 
 def test_config_raises_when_run_interval_none(monkeypatch):

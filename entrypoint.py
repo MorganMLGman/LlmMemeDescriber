@@ -7,6 +7,18 @@ import os
 import sys
 
 
+def ensure_ssl_certificates():
+  """Generate SSL certificates if they don't exist."""
+  try:
+    from llm_memedescriber.ssl_helpers import validate_certificate_files
+    cert_path, key_path = validate_certificate_files(None, None)
+    print(f"[startup] SSL certificates ready: {cert_path}")
+    return True
+  except Exception as exc:
+    print(f"[startup] ERROR: Failed to initialize SSL certificates: {exc}", file=sys.stderr)
+    return False
+
+
 def main():
   venv_bin = "/app/.venv/bin"
   if os.path.isdir(venv_bin):
@@ -34,6 +46,10 @@ def main():
     os.remove(test_path)
   except Exception:
     print("[startup] ERROR: /data is not writable. Aborting.")
+    sys.exit(1)
+
+  # Ensure SSL certificates exist before starting uvicorn
+  if not ensure_ssl_certificates():
     sys.exit(1)
 
   if len(sys.argv) <= 1:

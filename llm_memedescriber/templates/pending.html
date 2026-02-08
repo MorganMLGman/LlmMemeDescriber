@@ -3,11 +3,15 @@
 {% block title %}Pending Memes — Meme Describer{% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="/static/style.css?v=3">
+<link rel="stylesheet" href="/static/style.css?v=5">
 {% endblock %}
 
 {% block navbar_controls %}
 <a class="btn btn-sm btn-outline-light" href="/">← Back</a>
+{% endblock %}
+
+{% block navbar_controls_mobile %}
+<button class="btn btn-outline-primary w-100" onclick="window.location.href='/'">← Back</button>
 {% endblock %}
 
 {% block content %}

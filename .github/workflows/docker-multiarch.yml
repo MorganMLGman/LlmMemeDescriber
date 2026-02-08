@@ -54,6 +54,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
+      - name: Determine app version and replace placeholder
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            VERSION="sha-${GITHUB_SHA:0:7}"
+          else
+            VERSION=${GITHUB_REF#refs/tags/v}
+          fi
+          echo "APP_VERSION=$VERSION" >> $GITHUB_ENV
+          sed -i "s/APP_VERSION_PLACEHOLDER/$VERSION/g" llm_memedescriber/templates/base.html
+          echo "✅ Replaced APP_VERSION_PLACEHOLDER with $VERSION"
+      
       - name: Set up QEMU
         if: matrix.arch == 'arm64'
         uses: docker/setup-qemu-action@v2
@@ -66,7 +77,6 @@ jobs:
       - name: Login to registries
         run: |
           echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
-          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login dhi.io -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
           echo "${{ secrets.GHCR_PAT }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
       
       - name: Generate metadata
@@ -118,7 +128,6 @@ jobs:
       - name: Login to registries
         run: |
           echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
-          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login dhi.io -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin  
           echo "${{ secrets.GHCR_PAT }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
       
       - name: Generate tags
@@ -184,7 +193,6 @@ jobs:
       - name: Login to registries
         run: |
           echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
-          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login dhi.io -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin  
           echo "${{ secrets.GHCR_PAT }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
       
       - name: Create SHA-based tags
@@ -206,3 +214,116 @@ jobs:
           done
           
           echo "✅ SHA-based manifests created successfully"
+
+  notify:
+    name: Send Telegram Notification
+    needs: [publish, publish-dispatch]
+    runs-on: ubuntu-latest
+    if: always() && (needs.publish.result == 'success' || needs.publish-dispatch.result == 'success')
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Generate notification message
+        id: message
+        run: |
+          REPO_OWNER=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')
+          DOCKERHUB_USER=$(echo '${{ secrets.DOCKERHUB_USERNAME }}' | tr '[:upper:]' '[:lower:]')
+          
+          if [[ "${{ github.event_name }}" == "push" && "${{ startsWith(github.ref, 'refs/tags/v') }}" == "true" ]]; then
+            VERSION=${GITHUB_REF#refs/tags/v}
+            cat > /tmp/message.txt << 'EOF'
+          ✅ **Build Success: LLM Meme Describer v$VERSION**
+          
+          📦 **Available Tags:**
+          
+          🐳 **Docker Hub:**
+          • `$DOCKERHUB_USER/${{ env.IMAGE_NAME }}:$VERSION`
+          • `$DOCKERHUB_USER/${{ env.IMAGE_NAME }}:latest`
+          
+          🐳 **GHCR:**
+          • `ghcr.io/$REPO_OWNER/${{ env.IMAGE_NAME }}:$VERSION`
+          • `ghcr.io/$REPO_OWNER/${{ env.IMAGE_NAME }}:latest`
+          
+          🔗 [View Workflow Run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          EOF
+            sed -i "s|\$VERSION|$VERSION|g" /tmp/message.txt
+            sed -i "s|\$DOCKERHUB_USER|$DOCKERHUB_USER|g" /tmp/message.txt
+            sed -i "s|\$REPO_OWNER|$REPO_OWNER|g" /tmp/message.txt
+          else
+            SHORT_SHA=${GITHUB_SHA:0:7}
+            cat > /tmp/message.txt << 'EOF'
+          ✅ **Build Success: LLM Meme Describer (SHA-$SHORT_SHA)**
+          
+          📦 **Available Images:**
+          
+          🐳 **Docker Hub:** `$DOCKERHUB_USER/${{ env.IMAGE_NAME }}:sha-$SHORT_SHA`
+          🐳 **GHCR:** `ghcr.io/$REPO_OWNER/${{ env.IMAGE_NAME }}:sha-$SHORT_SHA`
+          
+          🔗 [View Workflow Run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          EOF
+            sed -i "s|\$SHORT_SHA|$SHORT_SHA|g" /tmp/message.txt
+            sed -i "s|\$DOCKERHUB_USER|$DOCKERHUB_USER|g" /tmp/message.txt
+            sed -i "s|\$REPO_OWNER|$REPO_OWNER|g" /tmp/message.txt
+          fi
+          
+          echo "message<<EOF" >> $GITHUB_OUTPUT
+          cat /tmp/message.txt >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+      
+      - name: Send Telegram notification
+        uses: appleboy/telegram-action@master
+        with:
+          to: ${{ secrets.TELEGRAM_TO }}
+          token: ${{ secrets.TELEGRAM_TOKEN }}
+          message: ${{ steps.message.outputs.message }}
+          format: markdown
+
+  notify-failure:
+    name: Send Failure Notification
+    needs: [test, build, publish, publish-dispatch]
+    runs-on: ubuntu-latest
+    if: always() && (needs.test.result == 'failure' || needs.build.result == 'failure' || needs.publish.result == 'failure' || needs.publish-dispatch.result == 'failure')
+    
+    steps:
+      - name: Generate failure message
+        id: message
+        run: |
+          if [[ "${{ github.event_name }}" == "push" && "${{ startsWith(github.ref, 'refs/tags/v') }}" == "true" ]]; then
+            VERSION=${GITHUB_REF#refs/tags/v}
+            TRIGGER="Release v$VERSION"
+          else
+            SHORT_SHA=${GITHUB_SHA:0:7}
+            TRIGGER="Commit $SHORT_SHA"
+          fi
+          
+          FAILED_JOBS=""
+          [[ "${{ needs.test.result }}" == "failure" ]] && FAILED_JOBS="$FAILED_JOBS\n• Tests"
+          [[ "${{ needs.build.result }}" == "failure" ]] && FAILED_JOBS="$FAILED_JOBS\n• Build"
+          [[ "${{ needs.publish.result }}" == "failure" ]] && FAILED_JOBS="$FAILED_JOBS\n• Publish"
+          [[ "${{ needs.publish-dispatch.result }}" == "failure" ]] && FAILED_JOBS="$FAILED_JOBS\n• Publish (Dispatch)"
+          
+          cat > /tmp/message.txt << EOF
+          ❌ **Build Failed: LLM Meme Describer**
+          
+          🔴 **Trigger:** $TRIGGER
+          
+          **Failed Jobs:**$FAILED_JOBS
+          
+          🔗 [View Workflow Run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          
+          👤 **Author:** ${{ github.actor }}
+          📝 **Commit:** \`${GITHUB_SHA:0:7}\`
+          EOF
+          
+          echo "message<<EOF" >> $GITHUB_OUTPUT
+          cat /tmp/message.txt >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+      
+      - name: Send Telegram notification
+        uses: appleboy/telegram-action@master
+        with:
+          to: ${{ secrets.TELEGRAM_TO }}
+          token: ${{ secrets.TELEGRAM_TOKEN }}
+          message: ${{ steps.message.outputs.message }}
+          format: markdown

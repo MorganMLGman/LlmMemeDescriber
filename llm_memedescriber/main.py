@@ -1,18 +1,19 @@
 import asyncio
 import datetime
+import email.utils
 import json
 import logging
 import re
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
 from google.genai import types
 from sqlmodel import select
 from .db_helpers import session_scope
 
-from .config import parse_interval, load_settings
+from .config import parse_interval, load_settings, configure_logging
 from .constants import *
 from .models import Meme, DuplicateGroup as DBDuplicateGroup, MemeDuplicateGroup as DBDupeLink
 from .deduplication import find_duplicate_groups, calculate_phash
@@ -20,8 +21,11 @@ from .storage import WebDavStorage
 from .storage_workers import StorageWorkerPool
 from .storage_helpers import compute_and_persist_phash
 from .preview_helpers import cleanup_orphaned_cache
+from .genai_client import get_client
+from .db import init_db
 
 logger = logging.getLogger(__name__)
+
 
 def _load_prompt() -> str:
     try:
@@ -35,18 +39,16 @@ PROMPT = _load_prompt()
 
 def main():
     settings = load_settings()
-    from .config import configure_logging
     configure_logging(settings)
     global logger
     logger = logging.getLogger(__name__)
 
     logger.info("Settings loaded")
 
-    from .storage import WebDavStorage
-    from .db import init_db
-    
     base_url = settings.webdav_url.rstrip('/')
-    base_storage = WebDavStorage(base_url, auth=(settings.webdav_username, settings.webdav_password))
+    username = settings.webdav_username.get_secret_value() if settings.webdav_username else None
+    password = settings.webdav_password.get_secret_value() if settings.webdav_password else None
+    base_storage = WebDavStorage(base_url, auth=(username, password))
     try:
         storage_workers = int(getattr(settings, 'storage_workers', DEFAULT_STORAGE_WORKERS) or DEFAULT_STORAGE_WORKERS)
     except Exception:
@@ -77,7 +79,6 @@ class App:
             self.genai_client = genai_client
         else:
             try:
-                from .genai_client import get_client
                 self.genai_client = get_client(getattr(settings, 'google_genai_api_key', None))
             except Exception:
                 self.genai_client = None
@@ -90,6 +91,38 @@ class App:
         self._shutdown_done: bool = False
         self._sync_lock = threading.Lock()
         self._sync_in_progress: bool = False
+        self._current_operation: Optional[str] = None  # Current operation name (syncing, transcoding, etc)
+        self._operation_progress: Dict[str, Any] = {}  # Progress details for current operation
+        self._operation_lock = threading.Lock()  # Lock for operation status access
+
+    def set_operation_status(self, operation: Optional[str], progress: Optional[Dict[str, Any]] = None) -> None:
+        """Set current operation status for progress tracking.
+
+        Args:
+            operation: Current operation name ('syncing', 'transcoding', 'completed', or None)
+            progress: Progress details dict (e.g., {'transcoded': 3, 'total': 10})
+        """
+        with self._operation_lock:
+            self._current_operation = operation
+            self._operation_progress = progress or {}
+
+    def get_operation_status(self) -> Dict[str, Any]:
+        """Get current operation status.
+
+        Returns:
+            Dict with 'operation' (str or None) and 'progress' (dict) keys
+        """
+        with self._operation_lock:
+            return {
+                'operation': self._current_operation,
+                'progress': self._operation_progress.copy()
+            }
+
+    def clear_operation_status(self) -> None:
+        """Clear operation status."""
+        with self._operation_lock:
+            self._current_operation = None
+            self._operation_progress = {}
 
     def start(self):
         """Start the worker thread (non-blocking)."""
@@ -129,6 +162,8 @@ class App:
                 logger.debug("Sync: added=%d, removed=%d, unfilled=%d", summary['added'], summary['removed'], summary['unfilled'])
                 if summary.get('saved') or summary.get('failed'):
                     logger.info("Generated: saved=%d, failed=%d, unsupported=%d", summary.get('saved'), summary.get('failed'), summary.get('unsupported'))
+            except (TimeoutError, ConnectionError) as e:
+                logger.warning("Storage connection timeout/error (will retry on next cycle): %s", str(e))
             except Exception:
                 logger.exception("Worker error")
             if self.stop_event.wait(self.interval_seconds):
@@ -166,14 +201,59 @@ class App:
         logger.exception("DB operation failed after %d attempts: %s", max_retries, last_exc)
         return False
 
+    def _update_meme_attempt(
+        self,
+        filename: str,
+        error: Optional[str] = None,
+        status: Optional[str] = None
+    ) -> None:
+        """Update meme record with attempt counter, timestamp, and error info.
+        
+        Args:
+            filename: The meme filename
+            error: Error message to set (None to keep existing, empty string to clear)
+            status: Optional status to set (e.g., 'unsupported')
+        """
+        try:
+            with session_scope(self.engine) as session:
+                m = session.exec(select(Meme).where(Meme.filename == filename)).first()
+                if m:
+                    m.attempts = (m.attempts or 0) + 1
+                    m.last_attempt_at = datetime.datetime.now(datetime.timezone.utc)
+                    if error is not None:
+                        m.last_error = error
+                    if status is not None:
+                        m.status = status
+                    session.add(m)
+                    session.commit()
+        except Exception:
+            logger.exception("Failed to update meme attempt for %s", filename)
+
     def _process_single_meme(self, name: str) -> Dict[str, Any]:
-        """Process a single meme: generate description and save to DB only.
+        """Process a single meme: transcode if MKV, generate description and save to DB only.
         Returns dict with 'saved', 'unsupported', 'rate_limited', or 'failed' keys, and 'desc' with description.
         """
         if not is_supported(name):
             logger.debug("Skipping %s: file type not supported", name)
             return {'unsupported': True}
-        
+
+        # Check if file is MKV and needs transcoding
+        if name.lower().endswith('.mkv'):
+            try:
+                transcode_result = self._transcode_and_replace_mkv(name)
+                if not transcode_result['success']:
+                    logger.error("Failed to transcode %s: %s", name, transcode_result.get('error'))
+                    return {'failed': True}
+
+                # Update name to new MP4 filename for description generation
+                name = transcode_result['new_filename']
+                logger.info("Transcoded to %s, proceeding with description generation", name)
+
+            except Exception as exc:
+                logger.exception("Exception during MKV transcoding for %s: %s", name, exc)
+                self._update_meme_attempt(name, error=f"Transcode failed: {str(exc)}")
+                return {'failed': True}
+
         try:
             desc = self.generate_description(name)
             
@@ -215,6 +295,68 @@ class App:
             logger.exception("Failed to process meme %s: %s", name, exc)
             return {'failed': True}
 
+    def _transcode_and_replace_mkv(self, mkv_filename: str) -> Dict[str, Any]:
+        """Transcode MKV to MP4, upload to WebDAV, delete MKV, update database.
+
+        Returns:
+            Dict with 'success' (bool), 'new_filename' (str), and 'error' (str) keys
+        """
+        try:
+            logger.info("Starting MKV transcoding workflow for %s", mkv_filename)
+
+            # Step 1: Transcode MKV to MP4
+            mp4_bytes, new_filename = self.storage.transcode_mkv_to_mp4(mkv_filename)
+            logger.info("Transcoded %s to %s (%d bytes)", mkv_filename, new_filename, len(mp4_bytes))
+
+            # Step 2: Upload MP4 to WebDAV
+            self.storage.upload_fileobj(new_filename, mp4_bytes, overwrite=True)
+            logger.info("Uploaded MP4: %s", new_filename)
+
+            # Step 3: Update database filename (.mkv → .mp4)
+            def update_db_filename():
+                with session_scope(self.engine) as session:
+                    m = session.exec(select(Meme).where(Meme.filename == mkv_filename)).first()
+                    if not m:
+                        raise Exception(f"Database record not found for {mkv_filename}")
+
+                    # Check if MP4 record already exists (due to duplicate processing or manual upload)
+                    existing_mp4 = session.exec(select(Meme).where(Meme.filename == new_filename)).first()
+
+                    if existing_mp4:
+                        # MP4 already in DB - delete the MKV record, keep MP4
+                        logger.info(f"MP4 {new_filename} already exists in DB - deleting duplicate MKV record")
+                        session.delete(m)
+                    else:
+                        # Update MKV record with new MP4 filename
+                        m.filename = new_filename
+                        if m.source_url:
+                            m.source_url = m.source_url.replace(mkv_filename, new_filename)
+                        m.updated_at = datetime.datetime.now(datetime.timezone.utc)
+                        session.add(m)
+
+                    session.commit()
+
+            if not self._db_operation_with_retry(update_db_filename, max_retries=3):
+                logger.error("Failed to update database filename")
+                return {'success': False, 'error': "Database update failed"}
+
+            logger.info("Updated database: %s -> %s", mkv_filename, new_filename)
+
+            # Step 4: Delete original MKV from WebDAV
+            try:
+                self.storage.delete_file(mkv_filename)
+                logger.info("Deleted original MKV: %s", mkv_filename)
+            except Exception as delete_exc:
+                logger.warning("Failed to delete MKV %s: %s", mkv_filename, delete_exc)
+                # Non-critical - MP4 is already uploaded and DB updated
+
+            return {'success': True, 'new_filename': new_filename}
+
+        except Exception as exc:
+            logger.exception("Transcoding workflow failed for %s: %s", mkv_filename, exc)
+            self._update_meme_attempt(mkv_filename, error=f"Transcode failed: {str(exc)}")
+            return {'success': False, 'error': str(exc)}
+
     def generate_description(self, filename: str) -> Dict[str, Any]:
         """Generate a description for `filename` using the instance genai client and webdav client.
         
@@ -227,18 +369,7 @@ class App:
         except Exception as exc:
             error_info = str(exc)
             logger.error("Error reading file %s from WebDAV: %s", filename, exc)
-            
-            try:
-                with session_scope(self.engine) as session:
-                    m = session.exec(select(Meme).where(Meme.filename == filename)).first()
-                    if m:
-                        m.attempts = (m.attempts or 0) + 1
-                        m.last_attempt_at = datetime.datetime.now(datetime.timezone.utc)
-                        m.last_error = error_info
-                        session.add(m)
-                        session.commit()
-            except Exception:
-                pass
+            self._update_meme_attempt(filename, error=error_info)
             return {}
 
         mime_type, media_res = self._detect_media(filename)
@@ -280,20 +411,10 @@ class App:
             is_unsupported = 'Unsupported MIME type' in error_info
             is_rate_limited = '429' in error_info or 'rate limit' in error_info.lower()
             
-            try:
-                with session_scope(self.engine) as session:
-                    m = session.exec(select(Meme).where(Meme.filename == filename)).first()
-                    if m:
-                        m.attempts = (m.attempts or 0) + 1
-                        m.last_attempt_at = datetime.datetime.now(datetime.timezone.utc)
-                        m.last_error = error_info
-                        if is_unsupported:
-                            m.status = 'unsupported'
-                            logger.info("Marked %s as unsupported MIME type; will not retry", filename)
-                        session.add(m)
-                        session.commit()
-            except Exception:
-                pass
+            status = 'unsupported' if is_unsupported else None
+            if is_unsupported:
+                logger.info("Marked %s as unsupported MIME type; will not retry", filename)
+            self._update_meme_attempt(filename, error=error_info, status=status)
             
             if is_rate_limited:
                 return {'rate_limited': True, 'error': 'Rate limit exceeded'}
@@ -306,56 +427,148 @@ class App:
             parsed = self._extract_json_from_text(txt)
             if parsed is not None:
                 logger.debug("Generated JSON for %s", filename)
-                
-                try:
-                    with session_scope(self.engine) as session:
-                        m = session.exec(select(Meme).where(Meme.filename == filename)).first()
-                        if m:
-                            m.attempts = (m.attempts or 0) + 1
-                            m.last_attempt_at = datetime.datetime.now(datetime.timezone.utc)
-                            m.last_error = None
-                            session.add(m)
-                            session.commit()
-                except Exception:
-                    pass
+                self._update_meme_attempt(filename, error="")
                 return parsed
 
         logger.warning("Failed to extract JSON description for %s", filename)
-        
-        try:
-            with session_scope(self.engine) as session:
-                m = session.exec(select(Meme).where(Meme.filename == filename)).first()
-                if m:
-                    m.attempts = (m.attempts or 0) + 1
-                    m.last_attempt_at = datetime.datetime.now(datetime.timezone.utc)
-                    m.last_error = "no_json_extracted"
-                    session.add(m)
-                    session.commit()
-        except Exception:
-            pass
+        self._update_meme_attempt(filename, error="no_json_extracted")
         return {}
-    
 
 
-    def sync_and_process(self) -> Dict[str, int]:
-        """Run a single sync and generate descriptions for unfilled files using instance clients."""
-        
+    def sync_and_process(self) -> Dict[str, Any]:
+        """Run a single sync and generate descriptions for unfilled files, then transcode existing MKVs."""
+
         if not self._sync_lock.acquire(blocking=False):
             logger.warning("Previous sync job still in progress; skipping this cycle")
             return {
                 'added': 0, 'removed': 0, 'unfilled': 0,
                 'saved': 0, 'failed': 0, 'unsupported': 0
             }
-        
+
         try:
-            return self._sync_and_process_impl()
+            # Set status to syncing
+            self.set_operation_status('syncing', {'phase': 'WebDAV sync'})
+            logger.info("Starting manual sync and process...")
+
+            # Run main sync workflow
+            sync_result = self._sync_and_process_impl()
+
+            # After main sync, transcode existing MKVs
+            self.set_operation_status('transcoding', {'phase': 'Scanning for MKVs'})
+            logger.info("Main sync complete, now scanning for existing MKVs to transcode")
+            transcode_result = self.transcode_existing_mkvs()
+
+            # Combine results
+            combined_result = {**sync_result, 'mkv_transcoding': transcode_result}
+            self.set_operation_status('completed', {'result': combined_result})
+            logger.info("Sync and MKV transcoding workflow complete")
+            return combined_result
         finally:
             self._sync_lock.release()
+            # Clear status after a delay to allow final poll
+            threading.Timer(5.0, self.clear_operation_status).start()
+
+    def transcode_existing_mkvs(self) -> Dict[str, Any]:
+        """Scan database for existing MKV files and transcode them to MP4.
+
+        This handles already-processed MKV files that were added before transcoding
+        was implemented. Runs as part of manual sync operation.
+
+        Returns:
+            Dict with 'total_found', 'transcoded', 'failed', 'skipped' counts
+        """
+        try:
+            logger.info("Scanning for existing MKV files to transcode")
+
+            # Query database for all MKV files
+            def get_mkv_files():
+                with session_scope(self.engine) as session:
+                    # Get all memes and filter for .mkv extension in Python (case-insensitive)
+                    all_memes = session.exec(select(Meme)).all()
+                    return [m.filename for m in all_memes if m.filename.lower().endswith('.mkv')]
+
+            mkv_files = get_mkv_files() if self._db_operation_with_retry(get_mkv_files) else []
+
+            if not mkv_files:
+                logger.info("No MKV files found to transcode")
+                return {'total_found': 0, 'transcoded': 0, 'failed': 0, 'skipped': 0}
+
+            logger.info("Found %d MKV files to transcode", len(mkv_files))
+
+            # Set initial progress
+            self.set_operation_status('transcoding', {
+                'phase': 'Transcoding MKVs',
+                'transcoded': 0,
+                'total': len(mkv_files)
+            })
+
+            # Transcode each MKV in parallel using thread pool
+            results = []
+            completed = 0
+            with ThreadPoolExecutor(max_workers=BATCH_PROCESS_WORKERS) as executor:
+                futures = {executor.submit(self._transcode_and_replace_mkv, mkv): mkv
+                          for mkv in mkv_files}
+
+                for future in as_completed(futures):
+                    mkv_name = futures[future]
+                    try:
+                        result = future.result(timeout=TRANSCODE_TIMEOUT + 30)  # Extra buffer
+                        results.append(result)
+                        completed += 1
+
+                        # Update progress
+                        self.set_operation_status('transcoding', {
+                            'phase': 'Transcoding MKVs',
+                            'transcoded': completed,
+                            'total': len(mkv_files),
+                            'current_file': mkv_name if completed < len(mkv_files) else None
+                        })
+                    except Exception as exc:
+                        logger.exception("Exception transcoding %s: %s", mkv_name, exc)
+                        results.append({'success': False, 'error': str(exc)})
+                        completed += 1
+                        self.set_operation_status('transcoding', {
+                            'phase': 'Transcoding MKVs',
+                            'transcoded': completed,
+                            'total': len(mkv_files)
+                        })
+
+            # Calculate statistics
+            transcoded = sum(1 for r in results if r.get('success'))
+            failed = sum(1 for r in results if not r.get('success'))
+
+            logger.info("Transcoding complete: %d succeeded, %d failed out of %d total",
+                       transcoded, failed, len(mkv_files))
+
+            return {
+                'total_found': len(mkv_files),
+                'transcoded': transcoded,
+                'failed': failed,
+                'skipped': 0
+            }
+
+        except Exception as exc:
+            logger.exception("Failed to transcode existing MKVs: %s", exc)
+            return {
+                'total_found': 0,
+                'transcoded': 0,
+                'failed': 0,
+                'skipped': 0,
+                'error': str(exc)
+            }
 
     def _sync_and_process_impl(self) -> Dict[str, int]:
         """Implementation of sync and process (called with lock held)."""
         
-        existing = {}  # Start with empty dict, only use DB from now on
+        # Load existing memes from database
+        existing = {}
+        try:
+            with session_scope(self.engine) as session:
+                memes = session.exec(select(Meme).where(Meme.status != 'removed')).all()
+                for meme in memes:
+                    existing[meme.filename] = {}
+        except Exception as e:
+            logger.warning("Failed to load existing memes from database: %s", e)
 
         entries = self.storage.list_files('/', recursive=False)
         server_names = {e['name'] for e in entries if not e['is_dir'] and is_supported(e['name'])}
@@ -420,6 +633,8 @@ class App:
 
         try:
             entry_map = {e['name']: e for e in entries if not e.get('is_dir')}
+            newly_added_memes = []  # Track newly added memes for phash calculation
+            
             with session_scope(self.engine) as session:
                 names_to_check = list(server_names.union(set(to_remove)))
                 existing_map = {}
@@ -441,17 +656,17 @@ class App:
                                         m.created_at = date_str
                                     else:
                                         try:
-                                            import email.utils as _eu
-                                            dt = _eu.parsedate_to_datetime(date_str)
+                                            dt = email.utils.parsedate_to_datetime(date_str)
                                             m.created_at = dt
                                         except Exception:
                                             try:
                                                 m.created_at = datetime.datetime.fromisoformat(date_str)
-                                            except Exception:
-                                                pass
-                        except Exception:
-                            pass
+                                            except Exception as e:
+                                                logger.debug("Failed to parse date %s: %s", date_str, e)
+                        except Exception as e:
+                            logger.debug("Failed to update meme metadata: %s", e)
                         session.add(m)
+                        newly_added_memes.append(name)
                 
                 for name in to_remove:
                     existing_m = existing_map.get(name)
@@ -459,6 +674,27 @@ class App:
                         existing_m.status = 'removed'
                         session.add(existing_m)
                 session.commit()
+            
+            # Calculate phash for newly added memes
+            if newly_added_memes:
+                logger.info("Calculating phash for %d newly added memes", len(newly_added_memes))
+                for name in newly_added_memes:
+                    try:
+                        try:
+                            loop = asyncio.get_running_loop()
+                            # If there's a running loop, schedule as task (shouldn't happen here but defensive)
+                            logger.debug("Running loop detected, skipping phash calculation for %s", name)
+                        except RuntimeError:
+                            # No running loop, safe to use asyncio.run()
+                            phash_result = asyncio.run(compute_and_persist_phash(name, self.storage, self.engine, timestamp=1.0))
+                            if phash_result:
+                                logger.debug("Calculated phash for %s: %s", name, phash_result)
+                            else:
+                                logger.debug("Failed to calculate phash for %s (likely unsupported format)", name)
+                    except (TimeoutError, ConnectionError) as e:
+                        logger.debug("Storage timeout/connection error calculating phash for %s: %s", name, str(e))
+                    except Exception as e:
+                        logger.debug("Error calculating phash for %s: %s", name, e)
         except Exception:
             logger.exception("Failed to persist listing changes to DB")
 
@@ -576,7 +812,6 @@ class App:
         
         return result
 
-
     @staticmethod
     def _detect_media(filename: str) -> Tuple[str, types.MediaResolution]:
         ext = str(filename).lower().split('.')[-1] if '.' in filename else ''
@@ -640,8 +875,8 @@ class App:
                             texts.append(c)
                         elif isinstance(c, dict) and c.get("text"):
                             texts.append(c.get("text"))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to extract text candidates from response: %s", e)
         texts.append(str(response))
         return texts
 

@@ -1,28 +1,63 @@
 import datetime
-import logging
 import sys
+import logging
 import os
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from typing import Optional
 
-from pydantic import field_validator, ValidationError
 from pydantic_settings import BaseSettings
-import logging
+from pydantic import field_validator, model_validator, ValidationError, ConfigDict, SecretStr
 
 logger = logging.getLogger(__name__)
 
-
 class Settings(BaseSettings):
+    model_config = ConfigDict(
+        env_ignore_empty=False,
+        case_sensitive=False
+    )
+    
     logging_level: str = "INFO"
-    google_genai_api_key: str | None = None
+    google_genai_api_key: SecretStr | None = None
     google_genai_model: str = "gemini-3-flash-preview"
     webdav_url: str | None = None
-    webdav_username: str | None = None
-    webdav_password: str | None = None
+    webdav_username: SecretStr | None = None
+    webdav_password: SecretStr | None = None
     webdav_path: str | None = None
     run_interval: str = "15min"
     timezone: str = "UTC"
     max_generation_attempts: int = 3
     auto_start_worker: bool = True
+    
+    ssl_cert_file: str | None = None
+    ssl_key_file: str | None = None
+    ssl_hostname: str = "localhost"
+    
+    # CORS settings
+    cors_origins: str = ""  # Comma-separated allowed origins, e.g. "https://example.com,https://app.example.com"
+
+    # Security settings
+    csrf_secret: SecretStr | None = None  # Required for CSRF protection; set via CSRF_SECRET env var or Docker secret
+    debug_mode: bool = False  # Set to False in production to enforce HTTPS
+    
+    # Authentication modes (mutually exclusive - only one can be True)
+    public_mode: bool = False  # No authentication, all endpoints public
+    oidc_enabled: bool = False  # OIDC authentication via external provider
+    basic_auth: bool = False  # Basic HTTP authentication (future)
+    oidc_provider_url: str | None = None
+    oidc_client_id: str | None = None
+    oidc_client_secret: SecretStr | None = None
+    oidc_redirect_uri: str | None = None
+    oidc_scopes: str = "openid profile email"
+    oidc_verify_ssl: bool = True  # Verify OIDC provider SSL certificate (default: True)
+    oidc_ca_bundle_path: str | None = None  # Path to CA bundle for OIDC provider verification (optional)
+    
+    jwt_secret: SecretStr | None = None
+    jwt_expiry_days: int = 30
+    session_expiry_seconds: int = 86400
+    
+    # Redis session storage (optional, falls back to in-memory if not configured)
+    redis_url: str | None = None  # e.g., "redis://redis:6379/0"
+    redis_password: SecretStr | None = None  # Required if redis_url is set
 
     @field_validator("run_interval")
     @classmethod
@@ -44,7 +79,87 @@ class Settings(BaseSettings):
             raise ValueError("max_generation_attempts must be <= 10")
         return int(v)
 
-    @field_validator("google_genai_api_key", "webdav_url", "webdav_username", "webdav_password", mode="before")
+    @field_validator("jwt_expiry_days")
+    @classmethod
+    def validate_jwt_expiry(cls, v):
+        if int(v) < 1:
+            raise ValueError("jwt_expiry_days must be >= 1")
+        if int(v) > 365:
+            raise ValueError("jwt_expiry_days must be <= 365")
+        return int(v)
+
+    @model_validator(mode="after")
+    def validate_auth_modes(self):
+        """Ensure exactly one authentication mode is enabled."""
+        modes_enabled = sum([
+            self.public_mode,
+            self.oidc_enabled,
+            self.basic_auth
+        ])
+
+        if modes_enabled == 0:
+            raise ValueError("At least one authentication mode must be enabled: public_mode, oidc_enabled, or basic_auth")
+
+        if modes_enabled > 1:
+            raise ValueError("Only one authentication mode can be enabled: public_mode, oidc_enabled, or basic_auth")
+
+        return self
+    
+    @model_validator(mode="after")
+    def validate_csrf_secret(self):
+        """Require csrf_secret when authentication is enabled."""
+        if not self.public_mode and not self.csrf_secret:
+            raise ValueError("csrf_secret is required when authentication is enabled. Set CSRF_SECRET env var or Docker secret.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_jwt_secret(self):
+        """Require jwt_secret for OIDC and Basic Auth modes."""
+        if (self.oidc_enabled or self.basic_auth) and not self.jwt_secret:
+            raise ValueError("jwt_secret is required for OIDC and Basic Auth modes. Set JWT_SECRET env var or Docker secret.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_redis_config(self):
+        """If redis_url is set, redis_password must be set."""
+        if self.redis_url and not self.redis_password:
+            raise ValueError("redis_password is required when redis_url is configured")
+        return self
+
+    @field_validator("oidc_enabled", mode="before")
+    @classmethod
+    def validate_oidc_config(cls, v, info):
+        """If OIDC is enabled, verify all required settings are present."""
+        if not v:
+            return v
+        
+        return v
+    
+    def model_post_init(self, __context):
+        """Check OIDC configuration after all fields are loaded."""
+        if not self.oidc_enabled:
+            return
+        
+        required_fields = [
+            ('oidc_provider_url', self.oidc_provider_url),
+            ('oidc_client_id', self.oidc_client_id),
+            ('oidc_client_secret', self.oidc_client_secret),
+            ('oidc_redirect_uri', self.oidc_redirect_uri),
+            ('jwt_secret', self.jwt_secret)
+        ]
+        
+        missing = [name for name, value in required_fields if not value]
+        
+        if missing:
+            logger.warning("OIDC enabled but missing settings: %s", missing)
+        else:
+            logger.info("OIDC Configuration:")
+            logger.info("  Provider URL: %s", self.oidc_provider_url)
+            logger.info("  Client ID: %s...", str(self.oidc_client_id)[:30])
+            logger.info("  Redirect URI: %s", self.oidc_redirect_uri)
+            logger.info("  Scopes: %s", self.oidc_scopes)
+
+    @field_validator("google_genai_api_key", "webdav_url", "webdav_username", "webdav_password", "oidc_client_secret", "jwt_secret", "csrf_secret", mode="before")
     @classmethod
     def _prefer_docker_secret(cls, v, info):
         """
@@ -69,12 +184,46 @@ class Settings(BaseSettings):
             return secret
         return v
 
+    @field_validator("ssl_cert_file", "ssl_key_file", mode="before")
+    @classmethod
+    def _ignore_system_default_ssl_paths(cls, v, info):
+        """
+        Ignore system default SSL certificate paths that may be set in the environment.
+        Only use SSL certificates if explicitly provided by the user.
+        
+        System defaults like /etc/ssl/certs/ca-certificates.crt should be treated as "not set".
+        """
+        if not v:
+            return None
+        
+        system_defaults = {
+            "/etc/ssl/certs/ca-certificates.crt",  # Debian/Ubuntu
+            "/etc/pki/tls/certs/ca-bundle.crt",    # CentOS/RHEL
+            "/etc/ssl/certs/ca-bundle.crt",        # OpenSUSE
+            "/etc/ssl/ca-bundle.pem",               # OpenSUSE
+        }
+        
+        if v in system_defaults:
+            logger.debug("Ignoring system default SSL path for %s: %s", info.field_name, v)
+            return None
+        
+        return v
+
+
+_settings_cache: Optional[Settings] = None
 
 def load_settings() -> Settings:
+    """Load settings from environment. Settings are cached after first load to avoid repeated initialization logging."""
+    global _settings_cache
+    
+    if _settings_cache is not None:
+        return _settings_cache
+    
     try:
-        return Settings()
+        settings = Settings()
+        _settings_cache = settings
+        return settings
     except ValidationError as e:
-        logger = logging.getLogger(__name__)
         logger.error("Configuration error:")
         for err in e.errors():
             logger.error(" - %s: %s", err.get('loc'), err.get('msg'))

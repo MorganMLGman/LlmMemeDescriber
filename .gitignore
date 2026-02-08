@@ -79,3 +79,4 @@ docker-compose.override.yml
 /opt/venv/
 
 *db/
+.claude/
