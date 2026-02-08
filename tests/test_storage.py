@@ -233,9 +233,11 @@ def test_extract_video_frame_success(monkeypatch):
     s = WebDavStorage('http://example')
     monkeypatch.setattr(WebDavStorage, 'download_file', lambda self, p: b'video-data')
     def fake_run(cmd, *args, **kwargs):
-        tmp_frame = cmd[-1]
-        with open(tmp_frame, 'wb') as f:
-            f.write(b'jpeg-data')
+        # Only create output file for actual ffmpeg extraction commands (contains -y)
+        if '-y' in cmd and len(cmd) > 0:
+            tmp_frame = cmd[-1]
+            with open(tmp_frame, 'wb') as f:
+                f.write(b'jpeg-data')
         class R:
             returncode = 0
             stderr = b''
@@ -256,9 +258,11 @@ def test_extract_video_frame_fallback_on_short_video(monkeypatch):
                 stderr = b'Immediate exit requested'
             return R()
         else:
-            tmp_frame = cmd[-1]
-            with open(tmp_frame, 'wb') as f:
-                f.write(b'jpeg-fallback')
+            # Only create output file for actual ffmpeg extraction commands (contains -y)
+            if '-y' in cmd and len(cmd) > 0:
+                tmp_frame = cmd[-1]
+                with open(tmp_frame, 'wb') as f:
+                    f.write(b'jpeg-fallback')
             class R:
                 returncode = 0
                 stderr = b''
@@ -341,9 +345,11 @@ def test_extract_video_frame_unlink_exceptions_are_swallowed(monkeypatch):
     s = WebDavStorage('http://example')
     monkeypatch.setattr(WebDavStorage, 'download_file', lambda self, p: b'video-data')
     def fake_run(cmd, *args, **kwargs):
-        tmp_frame = cmd[-1]
-        with open(tmp_frame, 'wb') as f:
-            f.write(b'jpeg-ok')
+        # Only create output file for actual ffmpeg extraction commands (contains -y)
+        if '-y' in cmd and len(cmd) > 0:
+            tmp_frame = cmd[-1]
+            with open(tmp_frame, 'wb') as f:
+                f.write(b'jpeg-ok')
         class R:
             returncode = 0
             stderr = b''
