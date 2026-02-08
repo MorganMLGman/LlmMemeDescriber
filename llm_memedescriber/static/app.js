@@ -133,7 +133,7 @@ function showLogoutButton() {
             const logoutBtnDefault = document.getElementById('logoutBtnMobileDefault');
             const tokensBtnDefault = document.getElementById('tokensBtnMobileDefault');
             const isAuthenticated = response.status !== 401;
-            
+
             if (logoutBtn) {
                 logoutBtn.style.display = isAuthenticated ? 'inline-block' : 'none';
             }
@@ -151,6 +151,40 @@ function showLogoutButton() {
             }
             if (tokensBtnDefault) {
                 tokensBtnDefault.style.display = isAuthenticated ? 'block' : 'none';
+            }
+
+            // If authenticated, fetch and display username
+            if (isAuthenticated) {
+                fetch('/auth/user')
+                    .then(userResponse => userResponse.json())
+                    .then(userData => {
+                        let username = userData.name || userData.user_id || 'User';
+                        // If username is all lowercase, convert to uppercase
+                        if (username === username.toLowerCase() && username !== username.toUpperCase()) {
+                            username = username.toUpperCase();
+                        }
+                        if (logoutBtn) {
+                            logoutBtn.textContent = username;
+                            logoutBtn.setAttribute('data-logout-text', 'LOGOUT');
+                            logoutBtn.addEventListener('mouseenter', function() {
+                                this.textContent = this.getAttribute('data-logout-text');
+                            });
+                            logoutBtn.addEventListener('mouseleave', function() {
+                                this.textContent = username;
+                            });
+                        }
+                        if (logoutBtnMobile) {
+                            logoutBtnMobile.textContent = username;
+                            logoutBtnMobile.setAttribute('data-logout-text', 'LOGOUT');
+                            logoutBtnMobile.addEventListener('mouseenter', function() {
+                                this.textContent = this.getAttribute('data-logout-text');
+                            });
+                            logoutBtnMobile.addEventListener('mouseleave', function() {
+                                this.textContent = username;
+                            });
+                        }
+                    })
+                    .catch(err => console.log('Could not fetch user info:', err));
             }
         })
         .catch(() => {

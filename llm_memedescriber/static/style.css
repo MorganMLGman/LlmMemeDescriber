@@ -685,6 +685,25 @@ p {
     visibility: visible;
 }
 
+#logoutBtn,
+#logoutBtnMobile {
+    min-width: 120px;
+    transition: all 0.3s ease;
+    text-align: center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+#logoutBtn:hover,
+#logoutBtnMobile:hover {
+    --bs-btn-color: #fff;
+    --bs-btn-border-color: #dc3545;
+    --bs-btn-hover-color: #fff;
+    --bs-btn-hover-border-color: #dc3545;
+    --bs-btn-hover-bg: #dc3545;
+}
+
 @media (max-width: 768px) {
     #scrollToTopBtn {
         bottom: 3rem;
