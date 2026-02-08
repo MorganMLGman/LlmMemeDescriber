@@ -1518,6 +1518,114 @@ def force_description_generation(filename: str, request: Request, user_info: Dic
         raise HTTPException(status_code=500, detail=f"Force generation failed: {str(e)}")
 
 
+@app.post("/memes/{filename}/reprocess", tags=["memes"])
+def reprocess_meme(filename: str, request: Request, user_info: Dict = Depends(require_auth)):
+    """Reprocess a meme by clearing all metadata fields and regenerating them from scratch.
+
+    Clears category, description, keywords, and text_in_image, then triggers complete regeneration.
+    """
+    try:
+        filename = sanitize_filename(filename)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if not hasattr(app.state, 'app_instance') or app.state.app_instance is None:
+        raise HTTPException(status_code=503, detail="Application not fully initialized")
+
+    try:
+        with session_scope(app.state.engine) as session:
+            m = get_meme_by_filename(session, filename)
+            if not m:
+                raise HTTPException(status_code=404, detail="Meme not found")
+
+            # Clear all metadata fields
+            m.category = None
+            m.description = None
+            m.keywords = None
+            m.text_in_image = None
+
+            # Reset processing state
+            m.attempts = 0
+            m.last_error = None
+            m.status = 'pending'
+            m.updated_at = datetime.datetime.now(datetime.timezone.utc)
+            session.add(m)
+            session.commit()
+            logger.info("Cleared metadata and reset attempts for %s; reprocessing meme", filename)
+
+            # Audit log
+            log_audit_action(
+                app.state.engine,
+                user_id=user_info.get('sub', 'unknown'),
+                username=get_username_from_user_info(user_info),
+                action="REPROCESS_MEME",
+                resource=filename,
+                details={},
+                ip_address=request.client.host if request.client else None
+            )
+
+        result = app.state.app_instance.generate_description(filename)
+
+        if result.get('rate_limited'):
+            with session_scope(app.state.engine) as session:
+                m = get_meme_by_filename(session, filename)
+                if m:
+                    m.attempts = (m.attempts or 0) + 1
+                    m.last_error = "rate_limited"
+                    m.updated_at = datetime.datetime.now(datetime.timezone.utc)
+                    session.add(m)
+                    session.commit()
+
+            raise HTTPException(status_code=429, detail="Rate limit exceeded; will retry on next sync cycle")
+
+        if result and not result.get('rate_limited'):
+            try:
+                with session_scope(app.state.engine) as session:
+                    m = get_meme_by_filename(session, filename)
+                    if m:
+                        m.category = result.get('kategoria')
+                        m.description = result.get('opis')
+                        kw = result.get('keywordy')
+                        if isinstance(kw, list):
+                            m.keywords = ','.join(kw)
+                        elif isinstance(kw, str):
+                            m.keywords = kw
+                        m.text_in_image = result.get('tekst')
+                        m.status = 'filled'
+                        m.updated_at = datetime.datetime.now(datetime.timezone.utc)
+                        session.add(m)
+                        session.commit()
+                        session.refresh(m)
+                        logger.info("Saved reprocessed meme data for %s", filename)
+
+                        try:
+                            add_meme_to_index(m)
+                        except Exception:
+                            logger.exception("Failed to update search index for %s", filename)
+
+                        meme_dict = m.model_dump()
+                        meme_dict['processed'] = m.status == 'filled'
+                        return meme_dict
+            except Exception as e:
+                logger.exception("Failed to save reprocessed meme data for %s: %s", filename, e)
+                raise HTTPException(status_code=500, detail=f"Failed to save reprocessed data: {str(e)}")
+
+        with session_scope(app.state.engine) as session:
+            m = get_meme_by_filename(session, filename)
+            if m:
+                meme_dict = m.model_dump()
+                meme_dict['processed'] = m.status == 'filled'
+                meme_dict['reprocess_attempted'] = True
+                return meme_dict
+
+        raise HTTPException(status_code=500, detail="Failed to reprocess meme")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error during meme reprocessing for %s: %s", filename, e)
+        raise HTTPException(status_code=500, detail=f"Reprocessing failed: {str(e)}")
+
+
 @app.patch("/memes/{filename}", tags=["memes"])
 def update_meme(filename: str, request_body: UpdateMemeRequest, http_request: Request, user_info: Dict = Depends(require_auth)):
     """Update meme metadata (category, keywords, description). REQUIRES AUTHENTICATION and CSRF token. Only provided fields are updated."""

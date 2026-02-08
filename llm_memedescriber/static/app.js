@@ -886,6 +886,75 @@ async function retryDescriptionGeneration() {
     }
 }
 
+async function reprocessMeme() {
+    if (!currentMemeId) return;
+
+    try {
+        // Get CSRF token
+        const csrfResponse = await fetch('/api/csrf-token');
+        const csrfData = await csrfResponse.json();
+        const csrfToken = csrfData.csrf_token;
+
+        // Show loading spinner, hide preview
+        const previewDiv = document.getElementById('memePreview');
+        const spinnerDiv = document.getElementById('generationLoadingSpinner');
+        const imageEl = document.getElementById('memeImage');
+        const videoEl = document.getElementById('memeVideo');
+        const reprocessBtn = document.getElementById('reprocessBtn');
+
+        previewDiv.style.display = 'none';
+        spinnerDiv.style.display = 'block';
+        imageEl.style.display = 'none';
+        videoEl.style.display = 'none';
+        reprocessBtn.disabled = true;
+
+        const response = await fetch(`/memes/${encodeURIComponent(currentMemeId)}/reprocess`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-Token': csrfToken
+            }
+        });
+
+        // Hide spinner
+        spinnerDiv.style.display = 'none';
+        reprocessBtn.disabled = false;
+
+        if (response.status === 429) {
+            previewDiv.style.display = 'block';
+            showError('Rate limit reached. Processing will retry automatically on the next sync cycle.');
+            return;
+        }
+
+        if (!response.ok) {
+            previewDiv.style.display = 'block';
+            const errorData = await response.json();
+            showError(`Error (${response.status}): ${errorData.detail || 'Failed to reprocess meme'}`);
+            return;
+        }
+
+        const updatedMeme = await response.json();
+
+        // If reprocessing was successful, reload the meme data in the modal
+        if (updatedMeme.status === 'filled') {
+            showSuccess('Meme reprocessed successfully! Updating modal...');
+            await new Promise(resolve => setTimeout(resolve, 500));
+            // Refresh the modal with the updated data
+            await viewMeme(currentMemeId);
+        } else {
+            previewDiv.style.display = 'block';
+            showError('Reprocessing did not produce complete results. Please check the sync logs.');
+        }
+    } catch (error) {
+        console.error('Error reprocessing meme:', error);
+        // Show preview again on error
+        document.getElementById('generationLoadingSpinner').style.display = 'none';
+        document.getElementById('memePreview').style.display = 'block';
+        document.getElementById('reprocessBtn').disabled = false;
+        showError(`Error: ${error.message}`);
+    }
+}
+
 async function saveMeme() {
     if (!currentMemeId) return;
     
