@@ -43,6 +43,8 @@ ENV LIBVA_DRIVER_NAME=iHD
 ENV PATH=/app/.venv/bin:$PATH
 
 COPY llm_memedescriber /app/llm_memedescriber
+COPY alembic /app/alembic
+COPY alembic.ini /app/
 COPY PROMPT.txt /app/
 COPY --chmod=0755 entrypoint.py /app/entrypoint.py
 COPY --chmod=0755 healthcheck.py /app/healthcheck.py

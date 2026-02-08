@@ -807,6 +807,11 @@ async def get_lockout_status(username: str, settings: Settings = Depends(get_set
         }
 
 
+def get_username_from_user_info(user_info: Dict) -> Optional[str]:
+    """Extract username from OIDC user_info."""
+    return user_info.get('preferred_username') or user_info.get('name') or user_info.get('email')
+
+
 @app.get("/", response_class=HTMLResponse, tags=["ui"])
 def index(request: Request, settings: Settings = Depends(get_settings), user_info: Optional[Dict] = Depends(optional_auth)):
     """Serve the main meme gallery page. Redirects to login if not authenticated (unless public_mode)."""
@@ -917,6 +922,7 @@ def generate_share_link(request: Request, filename: str, user_info: Dict = Depen
             log_audit_action(
                 app.state.engine,
                 user_id=user_info.get('sub', 'unknown'),
+                username=get_username_from_user_info(user_info),
                 action="CREATE_SHARE_LINK",
                 resource=filename,
                 resource_type="file",
@@ -1017,6 +1023,7 @@ def revoke_share_token(token_id: int, request: Request, user_info: Dict = Depend
             log_audit_action(
                 app.state.engine,
                 user_id=user_id,
+                username=get_username_from_user_info(user_info),
                 action="REVOKE_SHARE_TOKEN",
                 resource=filename,
                 details={"token_id": token_id},
@@ -1047,6 +1054,7 @@ def list_memes(limit: int = DEFAULT_LIST_LIMIT, offset: int = DEFAULT_OFFSET, st
     log_audit_action(
         app.state.engine,
         user_id=user_info.get('sub', 'unknown'),
+        username=get_username_from_user_info(user_info),
         action="LIST_MEMES",
         resource=None,
         details={"limit": limit, "offset": offset, "status": status, "sort": sort},
@@ -1134,6 +1142,7 @@ def trigger_sync(request: Request, user_info: Dict = Depends(require_auth)):
         log_audit_action(
             app.state.engine,
             user_id=user_info.get('sub', 'unknown'),
+            username=get_username_from_user_info(user_info),
             action="MANUAL_SYNC",
             resource=None,
             details={},
@@ -1425,6 +1434,7 @@ def force_description_generation(filename: str, request: Request, user_info: Dic
             log_audit_action(
                 app.state.engine,
                 user_id=user_info.get('sub', 'unknown'),
+                username=get_username_from_user_info(user_info),
                 action="FORCE_DESCRIPTION_GENERATION",
                 resource=filename,
                 details={},
@@ -1524,6 +1534,7 @@ def update_meme(filename: str, request_body: UpdateMemeRequest, http_request: Re
         log_audit_action(
             app.state.engine,
             user_id=user_info.get('sub', 'unknown'),
+            username=get_username_from_user_info(user_info),
             action="PATCH_MEME",
             resource=filename,
             resource_type="meme",
@@ -1576,6 +1587,7 @@ async def remove_meme(filename: str, request: Request, user_info: Dict = Depends
                 log_audit_action(
                     app.state.engine,
                     user_id=user_info.get('sub', 'unknown'),
+                    username=get_username_from_user_info(user_info),
                     action="DELETE_MEME",
                     resource=filename,
                     resource_type="meme",
@@ -1676,6 +1688,7 @@ def save_prompt(request: Request, request_body: dict, user_info: Dict = Depends(
         log_audit_action(
             app.state.engine,
             user_id=user_info.get('sub', 'unknown'),
+            username=get_username_from_user_info(user_info),
             action="UPDATE_PROMPT",
             resource="prompt.txt",
             details={"length": len(request_body["prompt"])},
@@ -1780,6 +1793,7 @@ async def recalculate_meme_phash(filename: str, request: Request, user_info: Dic
                     log_audit_action(
                         app.state.engine,
                         user_id=user_info.get('sub', 'unknown'),
+                        username=get_username_from_user_info(user_info),
                         action="RECALCULATE_PHASH",
                         resource=filename,
                         details={"phash": result},
@@ -1838,6 +1852,7 @@ def mark_meme_not_duplicate(filename: str, user_info: Dict = Depends(require_aut
                 log_audit_action(
                     app.state.engine,
                     user_id=user_info.get('sub', 'unknown'),
+                    username=get_username_from_user_info(user_info),
                     action="MARK_NOT_DUPLICATE",
                     resource=filename,
                     details={},
@@ -1941,6 +1956,7 @@ def merge_duplicate_memes(request: Request, merge_request: MergeDuplicatesReques
             log_audit_action(
                 app.state.engine,
                 user_id=user_info.get('sub', 'unknown'),
+                username=get_username_from_user_info(user_info),
                 action="MERGE_DUPLICATES",
                 resource=merge_request.primary_filename,
                 resource_type="meme_group",
@@ -2058,6 +2074,7 @@ def delete_duplicate_group(request: Request, merge_request: MergeDuplicatesReque
             log_audit_action(
                 app.state.engine,
                 user_id=user_info.get('sub', 'unknown'),
+                username=get_username_from_user_info(user_info),
                 action="DELETE_DUPLICATE_GROUP",
                 resource=merge_request.primary_filename,
                 resource_type="meme_group",
@@ -2166,6 +2183,7 @@ async def callback(request: Request, code: Optional[str] = None, state: Optional
         log_audit_action(
             app.state.engine,
             user_id="unknown",
+            username=None,
             action="OIDC_CALLBACK_ERROR",
             resource=None,
             details={"error": error, "error_description": error_description},
@@ -2180,6 +2198,7 @@ async def callback(request: Request, code: Optional[str] = None, state: Optional
         log_audit_action(
             app.state.engine,
             user_id="unknown",
+            username=None,
             action="OIDC_CALLBACK_MISSING_CODE",
             resource=None,
             details={},
@@ -2193,6 +2212,7 @@ async def callback(request: Request, code: Optional[str] = None, state: Optional
         log_audit_action(
             app.state.engine,
             user_id="unknown",
+            username=None,
             action="OIDC_CALLBACK_MISSING_STATE",
             resource=None,
             details={},
@@ -2207,6 +2227,7 @@ async def callback(request: Request, code: Optional[str] = None, state: Optional
         log_audit_action(
             app.state.engine,
             user_id="unknown",
+            username=None,
             action="OIDC_CALLBACK_INVALID_STATE",
             resource=None,
             details={},
@@ -2236,6 +2257,7 @@ async def callback(request: Request, code: Optional[str] = None, state: Optional
         log_audit_action(
             app.state.engine,
             user_id=user_id,
+            username=get_username_from_user_info(user_info),
             action="OIDC_LOGIN_SUCCESS",
             resource=None,
             details={"username": user_info.get('preferred_username', 'unknown')},
@@ -2259,6 +2281,7 @@ async def callback(request: Request, code: Optional[str] = None, state: Optional
         log_audit_action(
             app.state.engine,
             user_id="unknown",
+            username=None,
             action="OIDC_CALLBACK_FAILED",
             resource=None,
             details={"error": str(e)},
@@ -2293,6 +2316,7 @@ def logout(request: Request):
         log_audit_action(
             app.state.engine,
             user_id=user_id,
+            username=get_username_from_user_info(user_info) if user_info else None,
             action="LOGOUT",
             resource=None,
             details={},
@@ -2406,6 +2430,7 @@ def generate_api_token(request_body: TokenGenerateRequest, request: Request):
             log_audit_action(
                 app.state.engine,
                 user_id=user_id,
+                username=get_username_from_user_info(user_info),
                 action="CREATE_API_TOKEN",
                 resource=str(user_token.id),
                 resource_type="token",
@@ -2494,6 +2519,7 @@ def revoke_api_token(token_id: int, request: Request):
             log_audit_action(
                 app.state.engine,
                 user_id=user_id,
+                username=get_username_from_user_info(user_info),
                 action="REVOKE_API_TOKEN",
                 resource=str(token_id),
                 resource_type="token",
@@ -2540,6 +2566,7 @@ def delete_api_token(token_id: int, request: Request):
             log_audit_action(
                 app.state.engine,
                 user_id=user_id,
+                username=get_username_from_user_info(user_info),
                 action="DELETE_API_TOKEN",
                 resource=str(token_id),
                 resource_type="token",

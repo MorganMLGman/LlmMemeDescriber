@@ -128,9 +128,10 @@ class UserInfo(SQLModel):
 class AuditLog(SQLModel, table=True):
     """Audit log for sensitive actions (DELETE, PATCH, POST state-changing operations)."""
     id: Optional[int] = Field(default=None, primary_key=True)
-    user_id: str = Field(index=True)  # User who performed the action
+    user_id: str = Field(index=True)  # User who performed the action (OIDC sub or username)
+    username: Optional[str] = Field(default=None, index=True)  # Human-readable username from OIDC preferred_username
     action: str = Field(index=True)  # e.g., "DELETE_MEME", "MERGE_DUPLICATES", "PATCH_MEME"
-    resource: str = Field(index=True)  # e.g., filename, group_id, etc.
+    resource: Optional[str] = Field(default=None, index=True)  # e.g., filename, group_id, etc. (optional for actions without specific resource)
     resource_type: str = Field(default="meme")  # Type of resource (meme, group, token, etc.)
     details: Optional[str] = None  # Additional context (JSON string)
     timestamp: datetime.datetime = Field(default_factory=lambda: datetime.datetime.now(datetime.timezone.utc), index=True)
