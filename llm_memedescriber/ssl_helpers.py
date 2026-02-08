@@ -261,7 +261,6 @@ def validate_certificate_files(cert_path: str | None, key_path: str | None) -> t
         except Exception as exc:
             raise ValueError(f"Cannot read certificate files: {exc}") from exc
         
-        is_self_signed = _is_self_signed_cert(cert_path)
         expiration = _get_certificate_expiration(cert_path)
         
         if expiration:

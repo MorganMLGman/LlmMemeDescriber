@@ -5,7 +5,7 @@ creation/cleanup of `sqlmodel.Session` instances so callers don't repeat
 `with Session(engine) as session:` everywhere.
 """
 from contextlib import contextmanager
-from typing import Iterator, Optional, Any, Union
+from typing import Iterator, Optional, Union
 import datetime
 import json
 

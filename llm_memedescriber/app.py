@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException, Request, Depends
-from fastapi.responses import HTMLResponse, StreamingResponse, FileResponse, RedirectResponse, JSONResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse, JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.exceptions import RequestValidationError
@@ -45,17 +45,14 @@ from .dup_helpers import get_group_members, get_groups_for_filename
 from .models import Meme, DuplicateGroup as DBDuplicateGroup, MemeDuplicateGroup as DBDupeLink, UserToken, TokenResponse, TokenInfo, UserInfo, FileShareToken, ShareTokenInfo
 from sqlalchemy import desc
 from .storage_helpers import compute_and_persist_phash
-from .preview_helpers import generate_preview, async_generate_preview, restore_preview_cache, save_preview_cache, cleanup_orphaned_cache
+from .preview_helpers import async_generate_preview, restore_preview_cache, save_preview_cache, cleanup_orphaned_cache
 from sqlmodel import select
 from .db_helpers import session_scope
 import datetime
-from sqlalchemy import text
 from .auth import OIDCAuthContext, hash_token, generate_state_token, verify_api_token_not_revoked, verify_share_token_db, verify_basic_auth_user, BASIC_AUTH_MAX_ATTEMPTS
 
 logger = logging.getLogger(__name__)
 
-
-# Global settings instance for dependency injection
 _settings_instance: Optional[Any] = None
 
 def get_settings() -> Any:
@@ -2300,8 +2297,9 @@ def logout(request: Request):
     user_info = None
     try:
         user_info = get_user_from_request(request)
-    except:
-        pass
+    except Exception:
+        # Best-effort: proceed with logout even if user info cannot be retrieved
+        logger.exception("Failed to get user info during logout")
 
     session_id = request.cookies.get('session_id')
     if session_id:

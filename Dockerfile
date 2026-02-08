@@ -55,4 +55,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD ["/app/.venv/bin/python", "/app/healthcheck.py"]
 
 ENTRYPOINT ["/app/.venv/bin/python", "/app/entrypoint.py"]
-CMD ["python", "-m", "uvicorn", "llm_memedescriber.app:app", "--host", "0.0.0.0", "--port", "8443", "--ssl-certfile=/data/certs/server.crt", "--ssl-keyfile=/data/certs/server.key", "--log-level", "info", "--no-access-log"]
+CMD ["python", "-m", "uvicorn", "llm_memedescriber.app:app", "--host", "0.0.0.0", "--port", "8443", "--ssl-certfile=${SSL_CERT_PATH:-/data/certs/server.crt}", "--ssl-keyfile=${SSL_KEY_PATH:-/data/certs/server.key}", "--log-level", "info", "--no-access-log"]

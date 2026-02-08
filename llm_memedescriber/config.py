@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     debug_mode: bool = False  # Set to False in production to enforce HTTPS
     
     # Authentication modes (mutually exclusive - only one can be True)
-    public_mode: bool = False  # No authentication, all endpoints public
+    public_mode: bool = True  # No authentication, all endpoints public (default)
     oidc_enabled: bool = False  # OIDC authentication via external provider
     basic_auth: bool = False  # Basic HTTP authentication (future)
     oidc_provider_url: str | None = None

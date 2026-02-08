@@ -13,10 +13,10 @@ from google.genai import types
 from sqlmodel import select
 from .db_helpers import session_scope
 
-from .config import parse_interval, load_settings, configure_logging
+from .config import load_settings, configure_logging
 from .constants import *
 from .models import Meme, DuplicateGroup as DBDuplicateGroup, MemeDuplicateGroup as DBDupeLink
-from .deduplication import find_duplicate_groups, calculate_phash
+from .deduplication import find_duplicate_groups
 from .storage import WebDavStorage
 from .storage_workers import StorageWorkerPool
 from .storage_helpers import compute_and_persist_phash
@@ -170,23 +170,22 @@ class App:
                 break
 
 
-    def _db_operation_with_retry(self, operation, max_retries: int = MAX_DB_RETRY_ATTEMPTS, initial_backoff: float = INITIAL_DB_BACKOFF) -> bool:
+    def _db_operation_with_retry(self, operation, max_retries: int = MAX_DB_RETRY_ATTEMPTS, initial_backoff: float = INITIAL_DB_BACKOFF):
         """Execute a DB operation with exponential backoff retry for SQLite locked errors.
-        
+
         operation: callable that performs DB operation, should raise Exception on failure
         max_retries: maximum number of retry attempts (including initial)
         initial_backoff: initial backoff in seconds
-        
-        Returns True if successful, False otherwise.
+
+        Returns the result of operation() if successful, None otherwise.
         """
         last_exc = None
         for attempt in range(max_retries):
             try:
-                operation()
-                return True
+                return operation()
             except Exception as exc:
                 last_exc = exc
-                
+
                 exc_str = str(exc).lower()
                 if 'locked' in exc_str or 'database is locked' in exc_str:
                     if attempt < max_retries - 1:
@@ -194,12 +193,12 @@ class App:
                         logger.debug("DB locked on attempt %d; retrying after %.2fs", attempt + 1, backoff)
                         time.sleep(backoff)
                         continue
-                
+
                 logger.exception("DB operation failed (non-locked error): %s", exc)
-                return False
-        
+                return None
+
         logger.exception("DB operation failed after %d attempts: %s", max_retries, last_exc)
-        return False
+        return None
 
     def _update_meme_attempt(
         self,
@@ -487,7 +486,7 @@ class App:
                     all_memes = session.exec(select(Meme)).all()
                     return [m.filename for m in all_memes if m.filename.lower().endswith('.mkv')]
 
-            mkv_files = get_mkv_files() if self._db_operation_with_retry(get_mkv_files) else []
+            mkv_files = self._db_operation_with_retry(get_mkv_files) or []
 
             if not mkv_files:
                 logger.info("No MKV files found to transcode")
@@ -681,8 +680,8 @@ class App:
                 for name in newly_added_memes:
                     try:
                         try:
-                            loop = asyncio.get_running_loop()
-                            # If there's a running loop, schedule as task (shouldn't happen here but defensive)
+                            asyncio.get_running_loop()
+                            # If there's a running loop, skip phash calculation (shouldn't happen here but defensive)
                             logger.debug("Running loop detected, skipping phash calculation for %s", name)
                         except RuntimeError:
                             # No running loop, safe to use asyncio.run()

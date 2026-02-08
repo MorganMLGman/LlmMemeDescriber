@@ -1582,8 +1582,8 @@ async function savePrompt() {
         if (!response.ok) {
             throw new Error('Failed to save prompt');
         }
-        
-        const data = await response.json();
+
+        await response.json();
         alert('Prompt saved successfully!');
         document.getElementById('promptSource').textContent = 'Custom Prompt';
         document.getElementById('promptSource').className = 'badge bg-warning';

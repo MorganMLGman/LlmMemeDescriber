@@ -310,12 +310,12 @@ function displayTokens(tokens) {
                 
                 <div class="token-actions">
                     ${!token.revoked && !isExpired ? `
-                        <button class="btn btn-sm btn-warning" onclick="showRevokeConfirm(${token.id}, '${escapeHtml(token.name)}')">
+                        <button class="btn btn-sm btn-warning" onclick="showRevokeConfirm(${token.id}, ${JSON.stringify(token.name)})">
                             ⛔ Revoke
                         </button>
                     ` : ''}
                     ${token.revoked || isExpired ? `
-                        <button class="btn btn-sm btn-danger" onclick="showDeleteConfirm(${token.id}, '${escapeHtml(token.name)}')">
+                        <button class="btn btn-sm btn-danger" onclick="showDeleteConfirm(${token.id}, ${JSON.stringify(token.name)})">
                             🗑️ Delete
                         </button>
                     ` : ''}
@@ -344,8 +344,8 @@ function displayShareTokens(tokens) {
         <div class="card token-card active mb-3">
             <div class="card-body">
                 <div class="token-card-header">
-                    <h6 class="token-name text-truncate" title="${escapeHtml(token.filename)}">
-                        <a href="#" onclick="openMemeSimplePreview('${escapeHtml(token.filename)}'); return false;" class="text-decoration-none text-dark">
+                    <h6 class="token-name text-truncate" title="${escapeAttribute(token.filename)}">
+                        <a href="#" onclick="openMemeSimplePreview(${JSON.stringify(token.filename)}); return false;" class="text-decoration-none text-dark">
                             ${escapeHtml(token.filename)} 🔗
                         </a>
                     </h6>
@@ -367,7 +367,7 @@ function displayShareTokens(tokens) {
                 </div>
                 
                 <div class="token-actions">
-                    <button class="btn btn-sm btn-danger" onclick="showRevokeShareConfirm(${token.id}, '${escapeHtml(token.filename)}')">
+                    <button class="btn btn-sm btn-danger" onclick="showRevokeShareConfirm(${token.id}, ${JSON.stringify(token.filename)})">
                         ⛔ Revoke Link
                     </button>
                 </div>
@@ -575,24 +575,37 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+function escapeAttribute(text) {
+    // Escapes text for use in HTML attributes (includes quotes)
+    return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
 function formatDate(dateString) {
     // Parse UTC ISO string (backend always stores UTC)
-    const utcDate = new Date(dateString);
-    
-    // Convert UTC to local timezone
-    // getTimezoneOffset() returns negative for UTC+ zones (e.g., -60 for UTC+1)
-    // To convert UTC to local: subtract the offset
-    const offsetMs = new Date().getTimezoneOffset() * 60 * 1000;
-    const localDate = new Date(utcDate.getTime() - offsetMs);
-    
-    const day = String(localDate.getDate()).padStart(2, '0');
-    const month = String(localDate.getMonth() + 1).padStart(2, '0');
-    const year = localDate.getFullYear();
-    const hours = String(localDate.getHours()).padStart(2, '0');
-    const minutes = String(localDate.getMinutes()).padStart(2, '0');
-    const seconds = String(localDate.getSeconds()).padStart(2, '0');
-    
-    return `${day}.${month}.${year}, ${hours}:${minutes}:${seconds}`;
+    const date = new Date(dateString);
+
+    // toLocaleString() automatically converts to local timezone
+    const options = {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+    };
+
+    const formatted = date.toLocaleString('en-CA', options);
+    // en-CA format is "YYYY-MM-DD, HH:MM:SS", convert to "DD.MM.YYYY, HH:MM:SS"
+    const [datePart, timePart] = formatted.split(', ');
+    const [year, month, day] = datePart.split('-');
+
+    return `${day}.${month}.${year}, ${timePart}`;
 }
 </script>
 {% endblock %}

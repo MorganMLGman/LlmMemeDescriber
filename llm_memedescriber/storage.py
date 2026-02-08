@@ -328,6 +328,7 @@ class WebDavStorage:
             try:
                 iter_stream.close()
             except Exception:
+                # Stream may already be closed or closing may fail; safe to ignore
                 pass
 
     def upload_fileobj(self, path: str, data: bytes, overwrite: bool = True) -> None:
@@ -633,6 +634,7 @@ class WebDavStorage:
                     try:
                         os.unlink(path)
                     except Exception:
+                        # File may not exist or could not be deleted; safe to ignore
                         pass
 
         except FileNotFoundError:

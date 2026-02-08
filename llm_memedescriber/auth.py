@@ -18,10 +18,10 @@ from typing import Optional, Dict, Any
 from urllib.parse import urlencode
 
 from argon2 import PasswordHasher
-from argon2.exceptions import InvalidHashError, VerifyMismatchError
+from argon2.exceptions import VerifyMismatchError
 from authlib.integrations.httpx_client import AsyncOAuth2Client
 from jose import JWTError, jwt
-from pydantic import BaseModel, SecretStr
+from pydantic import SecretStr
 from sqlmodel import Session, select
 
 from .config import load_settings
@@ -612,10 +612,7 @@ def verify_basic_auth_user(username: str, password: str, engine) -> Optional[Dic
             locked_until = user.locked_until if user.locked_until.tzinfo else user.locked_until.replace(tzinfo=timezone.utc)
             if now < locked_until:
                 return None
-            # Unlock if lock period expired (but keep failed_attempts for exponential backoff)
-            if now >= locked_until:
-                user.locked_until = None
-                # Don't reset failed_attempts - let it accumulate for exponential backoff
+            user.locked_until = None
 
         try:
             ph = get_password_hasher()

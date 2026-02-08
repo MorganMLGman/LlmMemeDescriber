@@ -8,11 +8,14 @@ import sys
 
 
 def ensure_ssl_certificates():
-  """Generate SSL certificates if they don't exist."""
+  """Generate SSL certificates if they don't exist and export paths as env vars."""
   try:
     from llm_memedescriber.ssl_helpers import validate_certificate_files
     cert_path, key_path = validate_certificate_files(None, None)
     print(f"[startup] SSL certificates ready: {cert_path}")
+    # Export cert paths for uvicorn to use
+    os.environ["SSL_CERT_PATH"] = cert_path
+    os.environ["SSL_KEY_PATH"] = key_path
     return True
   except Exception as exc:
     print(f"[startup] ERROR: Failed to initialize SSL certificates: {exc}", file=sys.stderr)
