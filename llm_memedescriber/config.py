@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import Optional
 
 from pydantic_settings import BaseSettings
-from pydantic import field_validator, model_validator, ValidationError, ConfigDict, SecretStr
+from pydantic import field_validator, model_validator, ValidationError, ConfigDict, SecretStr, computed_field
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +71,17 @@ class Settings(BaseSettings):
     # Redis session storage (optional, falls back to in-memory if not configured)
     redis_url: str | None = None  # e.g., "redis://redis:6379/0"
     redis_password: SecretStr | None = None  # Required if redis_url is set
+
+    @computed_field
+    @property
+    def allowed_groups_list(self) -> list[str] | None:
+        """Parse oidc_allowed_groups into a list. Returns None for 'all', empty list for '', or list of groups."""
+        if self.oidc_allowed_groups == "all":
+            return None  # None = allow all
+        elif self.oidc_allowed_groups == "":
+            return []  # Empty = deny all
+        else:
+            return [g.strip() for g in self.oidc_allowed_groups.split(",") if g.strip()]
 
     @field_validator("llm_provider")
     @classmethod
@@ -182,14 +193,6 @@ class Settings(BaseSettings):
     
     def model_post_init(self, __context):
         """Check OIDC configuration after all fields are loaded."""
-        # Parse OIDC allowed groups
-        if self.oidc_allowed_groups == "all":
-            self.allowed_groups_list = None  # None = allow all
-        elif self.oidc_allowed_groups == "":
-            self.allowed_groups_list = []  # Empty = deny all
-        else:
-            self.allowed_groups_list = [g.strip() for g in self.oidc_allowed_groups.split(",") if g.strip()]
-
         if not self.oidc_enabled:
             return
 

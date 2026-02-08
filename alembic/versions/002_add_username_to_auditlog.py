@@ -20,6 +20,25 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Add username column to auditlog table."""
+    # Check if auditlog table exists first
+    conn = op.get_bind()
+    result = conn.execute(sa.text(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='auditlog'"
+    ))
+    
+    if not result.fetchone():
+        # Table doesn't exist yet, nothing to migrate
+        return
+    
+    # Check if username column already exists
+    result = conn.execute(sa.text("PRAGMA table_info(auditlog)"))
+    columns = result.fetchall()
+    username_exists = any(col[1] == 'username' for col in columns)
+    
+    if username_exists:
+        # Column already exists, nothing to do
+        return
+    
     # Add username column
     op.execute(sa.text("ALTER TABLE auditlog ADD COLUMN username VARCHAR"))
     

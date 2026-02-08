@@ -61,7 +61,7 @@ def test_settings_accepts_valid_intervals():
 
 def test_settings_rejects_invalid_interval():
     with pytest.raises(ValidationError):
-        Settings(run_interval="5d")
+        Settings(public_mode=True, run_interval="5d")
 
 
 @pytest.mark.parametrize("input,expected", [

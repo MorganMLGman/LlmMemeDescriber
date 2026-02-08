@@ -333,6 +333,7 @@ def create_oidc_settings(override_dict=None):
     from llm_memedescriber.config import Settings
 
     defaults = {
+        'public_mode': False,  # Disable public mode when OIDC is enabled
         'oidc_enabled': True,
         'oidc_provider_url': 'https://auth.example.com',
         'oidc_client_id': 'client123',
