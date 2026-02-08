@@ -73,7 +73,6 @@ def main():
 
   os.execvp(expanded_cmd[0], expanded_cmd)
 
-
 if __name__ == "__main__":
   main()
 
