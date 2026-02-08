@@ -22,7 +22,7 @@ let syncStartTime = null;      // Timestamp when sync started
 async function initializeCSRFToken() {
     // Initialize CSRF token on page load for authenticated requests.
     try {
-        const response = await fetch('/api/csrf-token');
+        const response = await fetch('/api/csrf-token', { credentials: 'include' });
         if (response.ok) {
             const data = await response.json();
             csrfToken = data.csrf_token;
@@ -73,7 +73,7 @@ async function loadMemes() {
         console.log('API is responsive, initializing memes list...');
         
         try {
-            const statsResponse = await fetch('/api/stats');
+            const statsResponse = await fetch('/api/stats', { credentials: 'include' });
             if (statsResponse.ok) {
                 const statsData = await statsResponse.json();
                 maxGenerationAttempts = statsData.max_generation_attempts || 3;
@@ -155,7 +155,7 @@ function showLogoutButton() {
 
             // If authenticated, fetch and display username
             if (isAuthenticated) {
-                fetch('/auth/user')
+                fetch('/auth/user', { credentials: 'include' })
                     .then(userResponse => userResponse.json())
                     .then(userData => {
                         let username = userData.name || userData.user_id || 'User';
@@ -1704,6 +1704,7 @@ async function logout() {
         try {
             const response = await fetch('/auth/logout', {
                 method: 'POST',
+                credentials: 'include',
                 headers: getSecurityHeaders()
             });
             

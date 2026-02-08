@@ -8,7 +8,14 @@ import sys
 
 
 def ensure_ssl_certificates():
-  """Generate SSL certificates if they don't exist and export paths as env vars."""
+  """Generate SSL certificates if they don't exist and NO_TLS is not enabled."""
+  # Check if TLS is disabled
+  no_tls = os.getenv("NO_TLS", "false").lower() in ("true", "1", "yes")
+
+  if no_tls:
+    print("[startup] NO_TLS=true: Skipping SSL certificate generation (plain HTTP mode)")
+    return True
+
   try:
     from llm_memedescriber.ssl_helpers import validate_certificate_files
     cert_path, key_path = validate_certificate_files(None, None)
@@ -58,14 +65,30 @@ def main():
 
   cmd = sys.argv[1:]
 
+  no_tls = os.getenv("NO_TLS", "false").lower() in ("true", "1", "yes")
   expanded_cmd = []
+
   for arg in cmd:
-    if arg.startswith("--ssl-certfile="):
-      cert_path = os.environ.get("SSL_CERT_PATH", "/data/certs/server.crt")
-      expanded_cmd.append(f"--ssl-certfile={cert_path}")
-    elif arg.startswith("--ssl-keyfile="):
-      key_path = os.environ.get("SSL_KEY_PATH", "/data/certs/server.key")
-      expanded_cmd.append(f"--ssl-keyfile={key_path}")
+    if arg.startswith("--ssl-certfile=") or arg.startswith("--ssl-keyfile="):
+      if no_tls:
+        # Skip SSL flags in NO_TLS mode
+        print(f"[startup] NO_TLS=true: Skipping SSL argument: {arg}")
+        continue
+      else:
+        # Expand SSL paths from environment
+        if arg.startswith("--ssl-certfile="):
+          cert_path = os.environ.get("SSL_CERT_PATH", "/data/certs/server.crt")
+          expanded_cmd.append(f"--ssl-certfile={cert_path}")
+        elif arg.startswith("--ssl-keyfile="):
+          key_path = os.environ.get("SSL_KEY_PATH", "/data/certs/server.key")
+          expanded_cmd.append(f"--ssl-keyfile={key_path}")
+    elif arg.startswith("--port="):
+      if no_tls:
+        # Override port to 8080 in NO_TLS mode
+        expanded_cmd.append("--port=8080")
+        print("[startup] NO_TLS=true: Using port 8080 (HTTP)")
+      else:
+        expanded_cmd.append(arg)
     else:
       expanded_cmd.append(arg)
 

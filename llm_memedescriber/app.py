@@ -86,15 +86,21 @@ async def lifespan(app_instance: FastAPI):
     except Exception as e:
         logger.warning("GPU detection failed, will use CPU encoding/decoding: %s", e)
     
-    try:
-        cert_path, key_path = validate_certificate_files(
-            getattr(settings, 'ssl_cert_file', None),
-            getattr(settings, 'ssl_key_file', None)
-        )
-        logger.info("SSL certificates configured: %s", cert_path)
-    except Exception as exc:
-        logger.error("Failed to initialize SSL certificates: %s", exc)
-        raise
+    if settings.no_tls:
+        logger.info("NO_TLS mode enabled - running in plain HTTP mode (port 8080)")
+        logger.warning("⚠️  TLS is DISABLED. Only use this behind a TLS-terminating reverse proxy.")
+        if settings.ssl_cert_file or settings.ssl_key_file:
+            logger.warning("⚠️  SSL certificate settings ignored in NO_TLS mode")
+    else:
+        try:
+            cert_path, key_path = validate_certificate_files(
+                getattr(settings, 'ssl_cert_file', None),
+                getattr(settings, 'ssl_key_file', None)
+            )
+            logger.info("SSL certificates configured: %s", cert_path)
+        except Exception as exc:
+            logger.error("Failed to initialize SSL certificates: %s", exc)
+            raise
     
     try:
         logger.debug("Restoring preview cache from disk...")
@@ -402,9 +408,9 @@ if os.path.isdir(static_dir):
 # ======================== Middleware Setup ========================
 
 # HTTPS Redirect middleware - enforce HTTPS in production
-# Default to enforcing HTTPS unless DEBUG_MODE is explicitly set to True
-debug_mode_env = os.getenv("DEBUG_MODE", "false").lower() in ("true", "1", "yes")
-if not debug_mode_env:
+# Only enforce HTTPS redirect if TLS is enabled (NO_TLS=false)
+no_tls_env = os.getenv("NO_TLS", "false").lower() in ("true", "1", "yes")
+if not no_tls_env:
     app.add_middleware(HTTPSRedirectMiddleware)
 
 # CORS middleware - use explicit origins from settings (falls back to no origins allowed)
@@ -573,7 +579,9 @@ def require_auth(
     # Basic Auth mode - check JWT cookie first, fallback to Basic Auth header
     if settings.basic_auth:
         # Try JWT cookie first (from login form)
-        auth_token = request.cookies.get('auth_token')
+        # Use different cookie names for HTTP vs HTTPS mode
+        cookie_name = "auth_token_http" if settings.no_tls else "auth_token"
+        auth_token = request.cookies.get(cookie_name)
         if auth_token:
             auth_context = get_auth_context()
             if auth_context.jwt_manager:
@@ -603,7 +611,9 @@ def require_auth(
     auth_context = get_auth_context()
 
     # Check session cookie first
-    session_id = request.cookies.get('session_id')
+    # Use different cookie names for HTTP vs HTTPS mode
+    session_cookie_name = "session_id_http" if settings.no_tls else "session_id"
+    session_id = request.cookies.get(session_cookie_name)
     if session_id:
         session = auth_context.session_manager.get_session(session_id)
         if session:
@@ -759,17 +769,24 @@ async def basic_auth_login(
         token = auth_context.jwt_manager.create_token(user_info['sub'])
 
         # Create response and set HTTP-only cookie
+        # Use different cookie names for HTTP vs HTTPS to avoid browser security conflicts
+        cookie_name = "auth_token_http" if settings.no_tls else "auth_token"
         response = JSONResponse({"status": "ok", "message": "Login successful"})
-        response.set_cookie(
-            key="auth_token",
-            value=token,
-            path="/",
-            httponly=True,
-            secure=not settings.debug_mode,  # Require HTTPS in production
-            samesite="lax",
-            max_age=settings.jwt_expiry_days * 86400
-        )
+        # In NO_TLS mode, omit SameSite to avoid browser security restrictions on HTTP cookies
+        cookie_params = {
+            "key": cookie_name,
+            "value": token,
+            "path": "/",
+            "httponly": True,
+            "secure": not settings.no_tls,
+            "max_age": settings.jwt_expiry_days * 86400
+        }
+        if not settings.no_tls:
+            cookie_params["samesite"] = "lax"
+        response.set_cookie(**cookie_params)
         logger.info(f"Basic Auth login successful for user: {user_info['sub']}")
+        samesite_str = "lax" if not settings.no_tls else "none (omitted for HTTP)"
+        logger.info(f"Set {cookie_name} cookie: secure={not settings.no_tls}, httponly=True, samesite={samesite_str}, path=/")
 
         return response
     except HTTPException:
@@ -2238,19 +2255,27 @@ def get_user_from_request(request: Request) -> Optional[Dict[str, Any]]:
     from fastapi import Depends as FastAPIDependsClass
 
     auth_context = get_auth_context()
+    settings = get_settings()
 
     # Check OIDC session cookie first
-    session_id = request.cookies.get('session_id')
+    # Use different cookie names for HTTP vs HTTPS mode
+    session_cookie_name = "session_id_http" if settings.no_tls else "session_id"
+    session_id = request.cookies.get(session_cookie_name)
     if session_id:
         session = auth_context.session_manager.get_session(session_id)
         if session:
             return session.get('user_info')
 
     # Check Basic Auth JWT cookie (auth_token)
-    auth_token = request.cookies.get('auth_token')
+    # Use different cookie names for HTTP vs HTTPS mode
+    settings = get_settings()
+    cookie_name = "auth_token_http" if settings.no_tls else "auth_token"
+    auth_token = request.cookies.get(cookie_name)
+    logger.debug(f"Checking {cookie_name} cookie: present={bool(auth_token)}, cookies={list(request.cookies.keys())}")
     if auth_token and auth_context.jwt_manager:
         payload = auth_context.jwt_manager.verify_token(auth_token)
         if payload:
+            logger.debug(f"Auth token valid for user: {payload.get('sub')}")
             return {'sub': payload.get('sub'), 'name': payload.get('sub'), 'basic_auth': True}
         else:
             logger.debug("JWT token verification failed (expired or invalid)")
@@ -2366,7 +2391,10 @@ async def callback(request: Request, code: Optional[str] = None, state: Optional
         user_id = user_info.get('sub')
         
         # Session fixation protection: revoke any pre-login session
-        old_session_id = request.cookies.get('session_id')
+        # Use different cookie names for HTTP vs HTTPS mode
+        settings_tmp = get_settings()
+        session_cookie_name_tmp = "session_id_http" if settings_tmp.no_tls else "session_id"
+        old_session_id = request.cookies.get(session_cookie_name_tmp)
         if old_session_id:
             auth_context.session_manager.revoke_session(old_session_id)
             logger.debug(f"Revoked old session before login for user {user_id}")
@@ -2388,14 +2416,21 @@ async def callback(request: Request, code: Optional[str] = None, state: Optional
         )
         
         response = RedirectResponse(url='/', status_code=302)
-        response.set_cookie(
-            'session_id',
-            session_id,
-            httponly=True,
-            secure=True,
-            samesite='strict',
-            max_age=auth_context.session_manager.expiry_seconds
-        )
+        settings = get_settings()
+        # Use different cookie names for HTTP vs HTTPS to avoid browser security conflicts
+        session_cookie_name = "session_id_http" if settings.no_tls else "session_id"
+        # In NO_TLS mode, omit SameSite to avoid browser security restrictions on HTTP cookies
+        session_cookie_params = {
+            "key": session_cookie_name,
+            "value": session_id,
+            "path": "/",
+            "httponly": True,
+            "secure": not settings.no_tls,
+            "max_age": auth_context.session_manager.expiry_seconds
+        }
+        if not settings.no_tls:
+            session_cookie_params["samesite"] = "strict"
+        response.set_cookie(**session_cookie_params)
         return response
     
     except Exception as e:
@@ -2427,7 +2462,10 @@ def logout(request: Request):
         # Best-effort: proceed with logout even if user info cannot be retrieved
         logger.exception("Failed to get user info during logout")
 
-    session_id = request.cookies.get('session_id')
+    # Use different cookie names for HTTP vs HTTPS mode
+    settings = get_settings()
+    session_cookie_name = "session_id_http" if settings.no_tls else "session_id"
+    session_id = request.cookies.get(session_cookie_name)
     if session_id:
         auth_context.session_manager.revoke_session(session_id)
         logger.debug(f"Session revoked: {session_id}")
@@ -2450,8 +2488,10 @@ def logout(request: Request):
         logger.debug("Logout request received (no active session)")
 
     response = RedirectResponse(url='/login', status_code=302)
-    response.delete_cookie('session_id')
-    response.delete_cookie('auth_token')  # Also clear Basic Auth cookie
+    # Delete cookies using the correct names for current mode
+    auth_cookie_name = "auth_token_http" if settings.no_tls else "auth_token"
+    response.delete_cookie(session_cookie_name, path="/")
+    response.delete_cookie(auth_cookie_name, path="/")  # Also clear Basic Auth cookie
     return response
 
 

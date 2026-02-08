@@ -206,9 +206,9 @@ def initialize_gpu_detection():
             'h264_qsv': 'Intel Quick Sync',
             'h264_vaapi': 'Intel/AMD VAAPI'
         }.get(encoder, encoder)
-        logger.info(f"✓ Hardware encoder available: {encoder_name}")
+        logger.info(f"✅ Hardware encoder available: {encoder_name}")
     else:
-        logger.info("✗ No hardware encoder available, will use CPU (libx264)")
+        logger.info("❌ No hardware encoder available, will use CPU (libx264)")
     
     decoder = _detect_hw_decoder()
     if decoder:
@@ -217,9 +217,9 @@ def initialize_gpu_detection():
             'qsv': 'Intel Quick Sync',
             'vaapi': 'Intel/AMD VAAPI'
         }.get(decoder, decoder)
-        logger.info(f"✓ Hardware decoder available: {decoder_name}")
+        logger.info(f"✅ Hardware decoder available: {decoder_name}")
     else:
-        logger.info("✗ No hardware decoder available, will use CPU decoding")
+        logger.info("❌ No hardware decoder available, will use CPU decoding")
     
     logger.info("GPU hardware detection complete")
 

@@ -12,10 +12,10 @@
 <body>
     <nav class="navbar navbar-dark sticky-top" style="max-height: 70px; overflow: hidden;">
         <div class="container-fluid d-flex gap-2 align-items-center flex-nowrap">
-            <span class="navbar-brand mb-0 h1 flex-shrink-0">
+            <a href="/" class="navbar-brand mb-0 h1 flex-shrink-0" style="text-decoration: none;">
                 <img src="/static/favicon-squircle.png" alt="Logo" style="height: 48px; width: 48px; margin-right: 12px; vertical-align: middle;">
                 <span class="d-none d-sm-inline">Meme Describer</span>
-            </span>
+            </a>
             <!-- Search Bar with Clear Button -->
             <div style="flex: 1; min-width: 120px; max-width: 300px; display: flex; gap: 0.25rem; align-items: center;">
                 {% block search_bar %}{% endblock %}

@@ -49,7 +49,7 @@ class Settings(BaseSettings):
 
     # Security settings
     csrf_secret: SecretStr | None = None  # Required for CSRF protection; set via CSRF_SECRET env var or Docker secret
-    debug_mode: bool = False  # Set to False in production to enforce HTTPS
+    no_tls: bool = False  # Set to True to disable TLS/SSL and run in plain HTTP mode (port 8080)
     
     # Authentication modes (mutually exclusive - only one can be True)
     public_mode: bool = True  # No authentication, all endpoints public (default)
@@ -157,6 +157,17 @@ class Settings(BaseSettings):
             logger.warning(f"No API key configured for provider '{provider}'. "
                          f"Set {provider.upper()}_API_KEY environment variable.")
 
+        return self
+
+    @model_validator(mode="after")
+    def validate_no_tls_usage(self):
+        """Warn if NO_TLS is used with OIDC."""
+        if self.no_tls and self.oidc_enabled:
+            logger.warning(
+                "⚠️  NO_TLS=true with OIDC enabled. "
+                "Ensure you are running behind a TLS-terminating reverse proxy. "
+                "OIDC providers typically require HTTPS redirect URIs."
+            )
         return self
 
     @field_validator("oidc_enabled", mode="before")

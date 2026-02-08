@@ -4,7 +4,8 @@ services:
     container_name: llm-meme-describer
     user: "1000:1000"
     ports:
-      - "8443:8443"
+      - "8443:8443"  # HTTPS (default, when NO_TLS=false)
+      # - "8080:8080"  # HTTP (when NO_TLS=true)
     
     # Volume mounts
     volumes:
@@ -46,17 +47,37 @@ services:
       TIMEZONE: "UTC"
       
       # === SSL/TLS Configuration (OPTIONAL) ===
-      # If no certificates provided, self-signed certificates are auto-generated in /data/certs/
-      # This is safe for development and when deployed behind a reverse proxy (e.g., Cloudflare)
-      # 
-      # For production with provided certificates (via secrets or files):
+      # By default, the app runs on HTTPS (port 8443) with auto-generated self-signed certificates.
+      # This is safe for development and when deployed behind a reverse proxy (e.g., Cloudflare).
+      #
+      # To DISABLE TLS entirely (plain HTTP on port 8080):
+      # NO_TLS: "true"
+      # Note: When NO_TLS=true, change port mapping above to: - "8080:8080"
+      #
+      # For production with custom certificates (via secrets or files):
       # SSL_CERT_FILE: "/run/secrets/ssl_cert_file"  # Certificate (PEM format)
       # SSL_KEY_FILE: "/run/secrets/ssl_key_file"    # Private key (PEM format)
       # SSL_HOSTNAME: "example.com"                   # CN for self-signed cert generation
       #
-      # The app listens on https://0.0.0.0:8443 (HTTPS only)
-      # Access via: https://localhost:8443 (localhost) or https://your-domain.com (behind proxy)
-      
+      # Default behavior (NO_TLS=false):
+      # - Server runs on https://0.0.0.0:8443 (HTTPS)
+      # - Self-signed certificates auto-generated in /data/certs/
+      # - HTTPS redirect middleware enabled
+      # - Secure cookie flag enabled
+      #
+      # When NO_TLS=true:
+      # - Server runs on http://0.0.0.0:8080 (plain HTTP)
+      # - No SSL certificates generated
+      # - HTTPS redirect middleware disabled
+      # - Secure cookie flag disabled
+      # - WARNING: Only use behind a TLS-terminating reverse proxy (e.g., Cloudflare Tunnel)
+
+      # === TLS/SSL Settings (OPTIONAL) ===
+      # Disable TLS and run in plain HTTP mode (port 8080)
+      # ONLY use this behind a TLS-terminating reverse proxy
+      # Default: false (HTTPS enabled on port 8443)
+      # NO_TLS: "false"
+
       # === Google Generative AI Configuration ===
       # Model to use for analysis
       # Default: gemini-3-flash-preview
