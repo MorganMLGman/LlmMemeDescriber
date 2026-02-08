@@ -14,7 +14,7 @@ import secrets
 import json
 import base64
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple, List
 from urllib.parse import urlencode
 
 from argon2 import PasswordHasher
@@ -49,6 +49,46 @@ def get_password_hasher() -> PasswordHasher:
         hash_len=ARGON2_HASH_LEN,
         salt_len=ARGON2_SALT_LEN
     )
+
+
+def check_user_groups(user_info: Dict, allowed_groups: Optional[List[str]]) -> Tuple[bool, Optional[str]]:
+    """
+    Check if user belongs to at least one allowed group.
+
+    Args:
+        user_info: User information dictionary from OIDC provider (should contain 'groups' claim)
+        allowed_groups: List of allowed groups (None = allow all, [] = deny all)
+
+    Returns:
+        Tuple of (is_allowed: bool, error_reason: Optional[str])
+        - (True, None): User is allowed
+        - (False, "groups_claim_missing"): User info missing groups claim
+        - (False, "not_in_allowed_groups"): User not in any allowed group
+        - (False, "no_groups_allowed"): No groups are allowed (empty list mode)
+    """
+    # Special case: None means allow all authenticated users
+    if allowed_groups is None:
+        return (True, None)
+
+    # Special case: empty list means deny all
+    if len(allowed_groups) == 0:
+        return (False, "no_groups_allowed")
+
+    # Check if groups claim exists
+    if "groups" not in user_info:
+        return (False, "groups_claim_missing")
+
+    user_groups = user_info.get("groups", [])
+
+    # Handle both list and string formats
+    if isinstance(user_groups, str):
+        user_groups = [user_groups]
+
+    # Case-sensitive exact match
+    if any(group in allowed_groups for group in user_groups):
+        return (True, None)
+
+    return (False, "not_in_allowed_groups")
 
 
 class OIDCClient:

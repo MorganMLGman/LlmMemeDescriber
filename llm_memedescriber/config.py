@@ -60,6 +60,7 @@ class Settings(BaseSettings):
     oidc_client_secret: SecretStr | None = None
     oidc_redirect_uri: str | None = None
     oidc_scopes: str = "openid profile email"
+    oidc_allowed_groups: str = "admins"  # Comma-separated list of allowed groups, "all" for no restrictions, "" to deny all
     oidc_verify_ssl: bool = True  # Verify OIDC provider SSL certificate (default: True)
     oidc_ca_bundle_path: str | None = None  # Path to CA bundle for OIDC provider verification (optional)
     
@@ -181,9 +182,17 @@ class Settings(BaseSettings):
     
     def model_post_init(self, __context):
         """Check OIDC configuration after all fields are loaded."""
+        # Parse OIDC allowed groups
+        if self.oidc_allowed_groups == "all":
+            self.allowed_groups_list = None  # None = allow all
+        elif self.oidc_allowed_groups == "":
+            self.allowed_groups_list = []  # Empty = deny all
+        else:
+            self.allowed_groups_list = [g.strip() for g in self.oidc_allowed_groups.split(",") if g.strip()]
+
         if not self.oidc_enabled:
             return
-        
+
         required_fields = [
             ('oidc_provider_url', self.oidc_provider_url),
             ('oidc_client_id', self.oidc_client_id),
@@ -191,9 +200,9 @@ class Settings(BaseSettings):
             ('oidc_redirect_uri', self.oidc_redirect_uri),
             ('jwt_secret', self.jwt_secret)
         ]
-        
+
         missing = [name for name, value in required_fields if not value]
-        
+
         if missing:
             logger.warning("OIDC enabled but missing settings: %s", missing)
         else:
@@ -202,6 +211,7 @@ class Settings(BaseSettings):
             logger.info("  Client ID: %s...", str(self.oidc_client_id)[:30])
             logger.info("  Redirect URI: %s", self.oidc_redirect_uri)
             logger.info("  Scopes: %s", self.oidc_scopes)
+            logger.info("  Allowed Groups: %s", self.allowed_groups_list or "all")
 
     @field_validator("gemini_api_key", "openai_api_key", "anthropic_api_key", "webdav_url", "webdav_username", "webdav_password", "oidc_client_secret", "jwt_secret", "csrf_secret", mode="before")
     @classmethod

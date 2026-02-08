@@ -2385,20 +2385,44 @@ async def callback(request: Request, code: Optional[str] = None, state: Optional
     
     try:
         token = await auth_context.oidc_client.exchange_code_for_token(code, state)
-        
+
         user_info = await auth_context.oidc_client.get_userinfo(token['access_token'])
-        
+
         user_id = user_info.get('sub')
-        
+        if not user_id:
+            raise HTTPException(status_code=400, detail="Missing 'sub' claim in OIDC token")
+
+        # Check OIDC group membership if configured
+        from .auth import check_user_groups
+        settings_tmp = get_settings()
+        is_allowed, error_reason = check_user_groups(user_info, settings_tmp.allowed_groups_list)
+
+        if not is_allowed:
+            logger.warning(f"OIDC group check failed for user {user_id}: {error_reason}")
+            # Audit log group denial
+            log_audit_action(
+                app.state.engine,
+                user_id=user_id,
+                username=get_username_from_user_info(user_info),
+                action="OIDC_GROUP_DENIED",
+                resource=None,
+                details={
+                    "reason": error_reason,
+                    "user_groups": user_info.get("groups", []),
+                    "allowed_groups": settings_tmp.allowed_groups_list or "all"
+                },
+                ip_address=client_ip
+            )
+            return RedirectResponse(f"/login?error={error_reason}", status_code=303)
+
         # Session fixation protection: revoke any pre-login session
         # Use different cookie names for HTTP vs HTTPS mode
-        settings_tmp = get_settings()
         session_cookie_name_tmp = "session_id_http" if settings_tmp.no_tls else "session_id"
         old_session_id = request.cookies.get(session_cookie_name_tmp)
         if old_session_id:
             auth_context.session_manager.revoke_session(old_session_id)
             logger.debug(f"Revoked old session before login for user {user_id}")
-        
+
         # Create new authenticated session
         session_id = auth_context.session_manager.create_session(user_id, user_info)
         

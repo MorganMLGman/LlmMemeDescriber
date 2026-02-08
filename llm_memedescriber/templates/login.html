@@ -296,9 +296,17 @@
         }
 
         // Check query params for error messages
+        const errorMessages = {
+            'groups_claim_missing': 'Access denied. Your identity provider did not provide group information. Please contact your administrator.',
+            'not_in_allowed_groups': 'Access denied. You do not belong to an authorized group.',
+            'no_groups_allowed': 'Access denied. Group-based access is disabled.'
+        };
+
         const urlParams = new URLSearchParams(window.location.search);
         if (urlParams.has('error')) {
-            showMessage(`Login failed: ${urlParams.get('error')}`, 'error');
+            const errorCode = urlParams.get('error');
+            const message = errorMessages[errorCode] || `Login failed: ${errorCode}`;
+            showMessage(message, 'error');
         } else if (urlParams.has('message')) {
             showMessage(urlParams.get('message'), 'loading');
         }
