@@ -355,6 +355,7 @@ class App:
                         session.add(m)
 
                     session.commit()
+                    return True  # Return success indicator
 
             if not self._db_operation_with_retry(update_db_filename, max_retries=3):
                 logger.error("Failed to update database filename")
