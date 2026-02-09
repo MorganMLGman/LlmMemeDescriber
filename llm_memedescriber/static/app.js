@@ -478,18 +478,20 @@ function renderDisplayedMemes() {
     }
 
     try {
-        container.innerHTML = displayedMemes.map(meme => `
+        container.innerHTML = displayedMemes.map((meme, index) => `
             <div class="col-md-6 col-lg-4">
                 <div class="card meme-card h-100 position-relative">
-                    ${(meme.duplicate_group_id && meme.is_false_positive !== true) ? 
+                    ${(meme.duplicate_group_id && meme.is_false_positive !== true) ?
                         `<div class="position-absolute top-0 end-0 m-2">
-                            <button class="btn btn-sm btn-warning" onclick="openDeduplicationPanel('${escapeHtml(meme.filename)}')" 
+                            <button class="btn btn-sm btn-warning" onclick="openDeduplicationPanel('${escapeHtml(meme.filename)}')"
                                     style="padding: 2px 6px; font-size: 12px;">⚠️ Similar</button>
                         </div>` : ''}
-                    <img src="/memes/${encodeURIComponent(meme.filename)}/preview" 
-                         class="card-img-top cursor-pointer" 
+                    <img src="/memes/${encodeURIComponent(meme.filename)}/preview"
+                         class="card-img-top cursor-pointer"
                          style="height: 300px; object-fit: contain; background: #f8f9fa; cursor: pointer;"
                          alt="${meme.filename}"
+                         loading="${index < 12 ? 'eager' : 'lazy'}"
+                         decoding="async"
                          data-bs-toggle="modal" data-bs-target="#memeModal" data-meme-filename="${meme.filename}"
                          onerror="this.src='/static/placeholder.png'">
                     <div class="card-body d-flex flex-column cursor-pointer" data-bs-toggle="modal" data-bs-target="#memeModal" data-meme-filename="${meme.filename}">
