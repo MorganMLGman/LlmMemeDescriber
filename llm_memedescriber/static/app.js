@@ -1030,8 +1030,9 @@ async function copyMemeToClipboard() {
     if (!currentMemeId) return;
 
     const isVideo = /\.(mp4|webm|mov|mkv|avi|flv)$/i.test(currentMemeId);
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
 
-    // Helper to get signed share link (now only used for videos)
+    // Helper to get signed share link
     async function getShareLink() {
         try {
             const resp = await fetch(`/memes/${encodeURIComponent(currentMemeId)}/share-link`);
@@ -1057,7 +1058,43 @@ async function copyMemeToClipboard() {
         return;
     }
 
-    // Try to copy image data
+    // Mobile devices: Use Share API or copy link instead
+    if (isMobile) {
+        try {
+            const downloadUrl = `/memes/${encodeURIComponent(currentMemeId)}/download`;
+
+            // Try Web Share API if available (preferred on mobile)
+            if (navigator.share) {
+                try {
+                    const response = await fetch(downloadUrl);
+                    if (!response.ok) throw new Error('Failed to fetch image');
+                    const blob = await response.blob();
+                    const file = new File([blob], currentMemeId, { type: blob.type });
+
+                    await navigator.share({
+                        files: [file],
+                        title: currentMemeId
+                    });
+                    showAlert('Image shared!', 'success');
+                    return;
+                } catch (shareError) {
+                    console.log('Share API failed:', shareError);
+                    // Fall through to link copy
+                }
+            }
+
+            // Fallback: Copy share link for mobile
+            const shareUrl = await getShareLink();
+            await navigator.clipboard.writeText(shareUrl);
+            showAlert('Share link copied! (Images can\'t be copied on mobile)', 'success');
+        } catch (err) {
+            console.error('Mobile copy failed:', err);
+            showError('Copy failed. Try using the download button instead.');
+        }
+        return;
+    }
+
+    // Desktop: Try to copy image data
     try {
         const downloadUrl = `/memes/${encodeURIComponent(currentMemeId)}/download`;
         const response = await fetch(downloadUrl);
