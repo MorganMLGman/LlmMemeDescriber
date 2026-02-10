@@ -1795,3 +1795,243 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 });
+
+// ======================== Video Download Functions ========================
+
+let currentDownloadJobId = null;
+let downloadPollingInterval = null;
+
+function showDownloadModal() {
+    // Show the download video modal
+    const modal = new bootstrap.Modal(document.getElementById('downloadVideoModal'));
+
+    // Reset form
+    document.getElementById('videoUrl').value = '';
+    document.getElementById('downloadProgress').style.display = 'none';
+    document.getElementById('downloadError').style.display = 'none';
+    document.getElementById('downloadSuccess').style.display = 'none';
+    document.getElementById('submitDownloadBtn').disabled = false;
+
+    modal.show();
+}
+
+async function submitDownload() {
+    const url = document.getElementById('videoUrl').value.trim();
+
+    if (!url) {
+        showDownloadError('Please enter a video URL');
+        return;
+    }
+
+    // Validate URL format
+    try {
+        new URL(url);
+    } catch (e) {
+        showDownloadError('Please enter a valid URL');
+        return;
+    }
+
+    // Hide error/success messages
+    document.getElementById('downloadError').style.display = 'none';
+    document.getElementById('downloadSuccess').style.display = 'none';
+
+    // Disable submit button
+    document.getElementById('submitDownloadBtn').disabled = true;
+
+    try {
+        const response = await fetch('/api/download-video', {
+            method: 'POST',
+            headers: getSecurityHeaders(),
+            credentials: 'include',
+            body: JSON.stringify({ url: url })
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            showDownloadError(error.detail || 'Failed to submit download request');
+            document.getElementById('submitDownloadBtn').disabled = false;
+            return;
+        }
+
+        const job = await response.json();
+        currentDownloadJobId = job.id;
+
+        console.log('Download job created:', job.id);
+
+        // Show progress UI
+        document.getElementById('downloadProgress').style.display = 'block';
+        updateDownloadProgress(0, 'Queued for download...');
+
+        // Start polling for progress
+        startDownloadPolling(job.id);
+
+    } catch (error) {
+        console.error('Download submission error:', error);
+        showDownloadError(error.message || 'Network error occurred');
+        document.getElementById('submitDownloadBtn').disabled = false;
+    }
+}
+
+async function startDownloadPolling(jobId) {
+    console.log('Starting download polling for job', jobId);
+
+    // Clear any existing interval
+    stopDownloadPolling();
+
+    // Poll every 2 seconds
+    downloadPollingInterval = setInterval(async () => {
+        try {
+            const response = await fetch(`/api/download-jobs/${jobId}`, {
+                credentials: 'include'
+            });
+
+            if (!response.ok) {
+                console.error('Failed to fetch download job status:', response.status);
+                if (response.status === 404) {
+                    stopDownloadPolling();
+                    showDownloadError('Download job not found');
+                }
+                return;
+            }
+
+            const job = await response.json();
+            console.log('Download job status:', job.status, job.progress_percent + '%');
+
+            // Update progress bar
+            const progressPercent = Math.round(job.progress_percent);
+            updateDownloadProgress(progressPercent, getStatusMessage(job));
+
+            // Check if completed or failed
+            if (job.status === 'completed') {
+                stopDownloadPolling();
+                showDownloadSuccess(job.filename || 'Video downloaded successfully!');
+
+                // Refresh meme list after a short delay
+                setTimeout(async () => {
+                    await loadMemes();
+                    closeDownloadModal();
+                }, 2000);
+
+            } else if (job.status === 'failed') {
+                stopDownloadPolling();
+                showDownloadError(job.error_message || 'Download failed');
+                document.getElementById('submitDownloadBtn').disabled = false;
+            }
+
+        } catch (error) {
+            console.error('Error polling download status:', error);
+            // Don't stop polling on temporary errors
+        }
+    }, 2000);
+}
+
+function stopDownloadPolling() {
+    if (downloadPollingInterval) {
+        clearInterval(downloadPollingInterval);
+        downloadPollingInterval = null;
+    }
+}
+
+function getStatusMessage(job) {
+    switch (job.status) {
+        case 'pending':
+            return 'Waiting in queue...';
+        case 'downloading':
+            if (job.video_title) {
+                return `Downloading: ${job.video_title}`;
+            }
+            return 'Downloading video...';
+        case 'processing':
+            return 'Processing video...';
+        case 'completed':
+            return 'Download complete!';
+        case 'failed':
+            return 'Download failed';
+        default:
+            return 'Processing...';
+    }
+}
+
+function updateDownloadProgress(percent, message) {
+    const progressBar = document.getElementById('downloadProgressBar');
+    const statusText = document.getElementById('downloadStatus');
+
+    progressBar.style.width = `${percent}%`;
+    progressBar.textContent = `${percent}%`;
+
+    if (statusText && message) {
+        statusText.textContent = message;
+    }
+}
+
+function showDownloadError(message) {
+    const errorDiv = document.getElementById('downloadError');
+    errorDiv.textContent = message;
+    errorDiv.style.display = 'block';
+
+    // Hide success message
+    document.getElementById('downloadSuccess').style.display = 'none';
+}
+
+function showDownloadSuccess(message) {
+    const successDiv = document.getElementById('downloadSuccess');
+    successDiv.textContent = message;
+    successDiv.style.display = 'block';
+
+    // Hide error message
+    document.getElementById('downloadError').style.display = 'none';
+
+    // Hide progress
+    document.getElementById('downloadProgress').style.display = 'none';
+}
+
+function closeDownloadModal() {
+    const modal = bootstrap.Modal.getInstance(document.getElementById('downloadVideoModal'));
+    if (modal) {
+        modal.hide();
+    }
+    stopDownloadPolling();
+}
+
+// Check if download feature is enabled and show/hide button
+async function checkDownloadFeatureEnabled() {
+    try {
+        const response = await fetch('/api/stats', { credentials: 'include' });
+        if (response.ok) {
+            const stats = await response.json();
+
+            // Check if download feature flag exists in stats
+            // If the endpoint exists and doesn't return 404, feature is likely enabled
+            // We'll try to fetch download jobs to verify
+            try {
+                const testResponse = await fetch('/api/download-jobs?limit=1', { credentials: 'include' });
+                if (testResponse.ok || testResponse.status === 401) {
+                    // Feature is enabled (200 or 401 means endpoint exists)
+                    showDownloadButton();
+                }
+            } catch (e) {
+                // Feature disabled or not available
+                console.debug('Download feature not enabled');
+            }
+        }
+    } catch (error) {
+        console.debug('Could not check download feature status:', error);
+    }
+}
+
+function showDownloadButton() {
+    const downloadBtn = document.getElementById('downloadVideoBtn');
+    const downloadBtnMobile = document.getElementById('downloadVideoBtnMobile');
+
+    if (downloadBtn) {
+        downloadBtn.style.display = '';
+    }
+    if (downloadBtnMobile) {
+        downloadBtnMobile.style.display = '';
+    }
+}
+
+// Check download feature on page load
+document.addEventListener('DOMContentLoaded', function() {
+    checkDownloadFeatureEnabled();
+});

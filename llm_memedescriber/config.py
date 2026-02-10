@@ -72,6 +72,13 @@ class Settings(BaseSettings):
     redis_url: str | None = None  # e.g., "redis://redis:6379/0"
     redis_password: SecretStr | None = None  # Required if redis_url is set
 
+    # Video download feature (yt-dlp)
+    enable_video_downloads: bool = False  # Feature flag to enable/disable video downloads
+    download_max_filesize_mb: int = 100  # Maximum file size in MB (configurable)
+    download_workers: int = 2  # Number of concurrent download workers
+    download_timeout_seconds: int = 600  # Download timeout in seconds (10 minutes)
+    ytdlp_format: str = "bestvideo+bestaudio/best"  # yt-dlp format selector for highest quality
+
     @computed_field
     @property
     def allowed_groups_list(self) -> list[str] | None:
@@ -119,6 +126,33 @@ class Settings(BaseSettings):
             raise ValueError("jwt_expiry_days must be >= 1")
         if int(v) > 365:
             raise ValueError("jwt_expiry_days must be <= 365")
+        return int(v)
+
+    @field_validator("download_max_filesize_mb")
+    @classmethod
+    def validate_download_max_filesize(cls, v):
+        if int(v) < 1:
+            raise ValueError("download_max_filesize_mb must be >= 1")
+        if int(v) > 5000:
+            raise ValueError("download_max_filesize_mb must be <= 5000")
+        return int(v)
+
+    @field_validator("download_workers")
+    @classmethod
+    def validate_download_workers(cls, v):
+        if int(v) < 1:
+            raise ValueError("download_workers must be >= 1")
+        if int(v) > 5:
+            raise ValueError("download_workers must be <= 5")
+        return int(v)
+
+    @field_validator("download_timeout_seconds")
+    @classmethod
+    def validate_download_timeout(cls, v):
+        if int(v) < 60:
+            raise ValueError("download_timeout_seconds must be >= 60")
+        if int(v) > 3600:
+            raise ValueError("download_timeout_seconds must be <= 3600")
         return int(v)
 
     @model_validator(mode="after")

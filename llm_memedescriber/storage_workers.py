@@ -162,6 +162,10 @@ class StorageWorkerPool:
             data = data.encode('utf-8')
         return io.BytesIO(data)
 
+    def ls(self, path: str, *args, **kwargs):
+        """List files/directories at path (wraps underlying storage client's ls method)."""
+        return self.run(self._storage.client.ls, path, *args, **kwargs)
+
     def shutdown(self, wait: bool = True):
         try:
             self._executor.shutdown(wait=wait)

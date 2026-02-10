@@ -43,9 +43,10 @@ from .deduplication import (
     list_pair_exceptions,
 )
 from .dup_helpers import get_group_members, get_groups_for_filename
-from .models import Meme, DuplicateGroup as DBDuplicateGroup, MemeDuplicateGroup as DBDupeLink, UserToken, TokenResponse, TokenInfo, UserInfo, FileShareToken, ShareTokenInfo
+from .models import Meme, DuplicateGroup as DBDuplicateGroup, MemeDuplicateGroup as DBDupeLink, UserToken, TokenResponse, TokenInfo, UserInfo, FileShareToken, ShareTokenInfo, DownloadJob
 from sqlalchemy import desc
 from .storage_helpers import compute_and_persist_phash
+from .download import validate_url, get_video_info, extract_video_urls_from_html
 from .preview_helpers import async_generate_preview, restore_preview_cache, save_preview_cache, cleanup_orphaned_cache
 from sqlmodel import select
 from .db_helpers import session_scope
@@ -302,7 +303,28 @@ async def lifespan(app_instance: FastAPI):
             asyncio.create_task(cleanup_sessions_periodically())
         except Exception:
             logger.exception("Failed to start session cleanup task")
-    
+
+        # Start download worker if enabled
+        download_worker = None
+        if settings.enable_video_downloads:
+            if not storage:
+                logger.warning("Download worker enabled but storage not configured, skipping")
+            else:
+                try:
+                    from .download_worker import DownloadWorker
+                    logger.info("Starting download worker (max_workers=%d)...", settings.download_workers)
+                    download_worker = DownloadWorker(
+                        storage=storage,
+                        engine=app_instance.state.engine,
+                        settings=settings,
+                        max_workers=settings.download_workers
+                    )
+                    download_worker.start()
+                    app_instance.state.download_worker = download_worker
+                    logger.info("Download worker started")
+                except Exception:
+                    logger.exception("Failed to start download worker")
+
     yield
     
     logger.info("Shutting down llm_memedescriber FastAPI app")
@@ -325,7 +347,17 @@ async def lifespan(app_instance: FastAPI):
                 logger.exception("Error stopping app instance")
     finally:
         app_instance.state._started = False
-        logger.info("Shutdown event completed")
+
+    # Stop download worker if running
+    try:
+        if getattr(app_instance.state, 'download_worker', None):
+            logger.info("Stopping download worker")
+            app_instance.state.download_worker.stop()
+            logger.info("Download worker stopped")
+    except Exception:
+        logger.exception("Error stopping download worker")
+
+    logger.info("Shutdown event completed")
 
 
 app = FastAPI(title="llm_memedescriber", description="Meme describing service", version="0.0.1", lifespan=lifespan)
@@ -1234,6 +1266,387 @@ def get_sync_status(request: Request, user_info: Dict = Depends(require_auth)):
         return {"operation": None, "progress": {}, "error": str(e)}
 
 
+# Video Download Endpoints
+
+
+class DownloadVideoRequest(BaseModel):
+    """Request body for downloading a video from URL."""
+    url: str = Field(..., description="Video URL to download (YouTube, Vimeo, etc.)")
+    extract_if_failed: bool = Field(True, description="Try to extract video URLs from HTML if direct download fails")
+
+
+class ExtractedVideoUrl(BaseModel):
+    """Single extracted video URL with metadata."""
+    url: str
+    source: str  # Description of where it was found
+
+
+class ExtractedVideosResponse(BaseModel):
+    """Response when multiple video URLs are found on a page."""
+    page_url: str
+    extracted_urls: List[ExtractedVideoUrl]
+    message: str
+
+
+class DownloadJobResponse(BaseModel):
+    """Response when creating or querying a download job."""
+    id: int
+    url: str
+    status: str
+    progress_percent: float
+    filename: Optional[str] = None
+    error_message: Optional[str] = None
+    created_at: datetime.datetime
+    started_at: Optional[datetime.datetime] = None
+    completed_at: Optional[datetime.datetime] = None
+    video_title: Optional[str] = None
+    video_duration: Optional[int] = None
+    file_size_bytes: Optional[int] = None
+
+
+@app.post("/api/download-video", tags=["downloads"])
+@limiter.limit("5/minute")
+async def download_video_from_url(
+    request: Request,
+    download_request: DownloadVideoRequest,
+    user_info: Dict = Depends(require_auth)
+):
+    """
+    Download a video from URL and add to WebDAV storage.
+
+    The download happens asynchronously in the background.
+    Use GET /api/download-jobs/{job_id} to track progress.
+
+    If direct download fails and extract_if_failed=true, will attempt to
+    extract video URLs from the HTML page. If multiple URLs are found,
+    returns them for user selection.
+
+    REQUIRES AUTHENTICATION.
+    Rate limited to 5 requests per minute.
+    """
+    settings = get_settings()
+
+    # Check if feature is enabled
+    if not settings.enable_video_downloads:
+        raise HTTPException(status_code=404, detail="Video download feature is not enabled")
+
+    # Validate URL
+    is_valid, error = validate_url(download_request.url)
+    if not is_valid:
+        raise HTTPException(status_code=400, detail=error)
+
+    # Get user ID
+    user_id = user_info.get('sub', 'unknown')
+
+    # Step 1: Try direct download with yt-dlp
+    try:
+        logger.info(f"Attempting direct download for: {download_request.url}")
+        # Try to get video info to verify it's downloadable
+        video_info = get_video_info(download_request.url)
+        logger.info(f"Direct download possible for: {download_request.url}")
+        
+        # Create download job for direct URL
+        try:
+            with session_scope(app.state.engine) as session:
+                existing_job = session.exec(
+                    select(DownloadJob).where(
+                        DownloadJob.url == download_request.url,
+                        DownloadJob.status.in_(["pending", "downloading"])
+                    )
+                ).first()
+
+                if existing_job:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"A download job for this URL already exists (job_id: {existing_job.id})"
+                    )
+
+                # Create new download job
+                job = DownloadJob(
+                    url=download_request.url,
+                    user_id=user_id,
+                    status="pending",
+                    created_at=datetime.datetime.now(datetime.timezone.utc)
+                )
+                session.add(job)
+                session.commit()
+                session.refresh(job)
+
+                # Log audit action
+                try:
+                    log_audit_action(
+                        app.state.engine,
+                        user_id=user_id,
+                        username=get_username_from_user_info(user_info),
+                        action="DOWNLOAD_VIDEO",
+                        resource=download_request.url,
+                        resource_type="download_job",
+                        details={"job_id": job.id, "method": "direct"},
+                        ip_address=request.client.host if request.client else None
+                    )
+                except Exception as e:
+                    logger.warning("Failed to log audit action: %s", e)
+
+                logger.info(
+                    "Created download job %d for user %s: %s",
+                    job.id,
+                    user_id,
+                    download_request.url
+                )
+
+                return DownloadJobResponse(
+                    id=job.id,
+                    url=job.url,
+                    status=job.status,
+                    progress_percent=job.progress_percent,
+                    filename=job.filename,
+                    error_message=job.error_message,
+                    created_at=job.created_at,
+                    started_at=job.started_at,
+                    completed_at=job.completed_at,
+                    video_title=job.video_title,
+                    video_duration=job.video_duration,
+                    file_size_bytes=job.file_size_bytes
+                )
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error("Failed to create download job: %s", e, exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to create download job: {str(e)}")
+            
+    except ValueError as e:
+        # Direct download failed
+        error_msg = str(e)
+        logger.warning(f"Direct download failed for {download_request.url}: {error_msg}")
+        
+        # Step 2: Try HTML extraction if enabled
+        if download_request.extract_if_failed and "not supported" in error_msg.lower():
+            logger.info(f"Attempting HTML extraction for: {download_request.url}")
+            
+            extracted_urls = extract_video_urls_from_html(download_request.url)
+            
+            if not extracted_urls:
+                raise HTTPException(
+                    status_code=400,
+                    detail="No video found. Direct download not supported and no video URLs extracted from HTML."
+                )
+            
+            if len(extracted_urls) == 1:
+                # Only one URL found, create job automatically
+                video_url = extracted_urls[0]['url']
+                logger.info(f"Single video URL extracted, creating job: {video_url}")
+                
+                try:
+                    with session_scope(app.state.engine) as session:
+                        # Create new download job with extracted URL
+                        job = DownloadJob(
+                            url=video_url,
+                            user_id=user_id,
+                            status="pending",
+                            created_at=datetime.datetime.now(datetime.timezone.utc)
+                        )
+                        session.add(job)
+                        session.commit()
+                        session.refresh(job)
+
+                        # Log audit action
+                        try:
+                            log_audit_action(
+                                app.state.engine,
+                                user_id=user_id,
+                                username=get_username_from_user_info(user_info),
+                                action="DOWNLOAD_VIDEO",
+                                resource=video_url,
+                                resource_type="download_job",
+                                details={
+                                    "job_id": job.id,
+                                    "method": "extracted",
+                                    "original_url": download_request.url,
+                                    "source": extracted_urls[0]['source']
+                                },
+                                ip_address=request.client.host if request.client else None
+                            )
+                        except Exception as e:
+                            logger.warning("Failed to log audit action: %s", e)
+
+                        return DownloadJobResponse(
+                            id=job.id,
+                            url=job.url,
+                            status=job.status,
+                            progress_percent=job.progress_percent,
+                            filename=job.filename,
+                            error_message=job.error_message,
+                            created_at=job.created_at,
+                            started_at=job.started_at,
+                            completed_at=job.completed_at,
+                            video_title=job.video_title,
+                            video_duration=job.video_duration,
+                            file_size_bytes=job.file_size_bytes
+                        )
+                except Exception as e:
+                    logger.error("Failed to create download job: %s", e, exc_info=True)
+                    raise HTTPException(status_code=500, detail=f"Failed to create download job: {str(e)}")
+            
+            else:
+                # Multiple URLs found, return for user selection
+                logger.info(f"Multiple video URLs extracted ({len(extracted_urls)}), returning for selection")
+                return ExtractedVideosResponse(
+                    page_url=download_request.url,
+                    extracted_urls=[
+                        ExtractedVideoUrl(url=v['url'], source=v['source'])
+                        for v in extracted_urls
+                    ],
+                    message=f"Found {len(extracted_urls)} video(s) on this page. Please select one to download."
+                )
+        else:
+            # Extraction disabled or error not related to unsupported URL
+            raise HTTPException(status_code=400, detail=error_msg)
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Unexpected error in download_video_from_url: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to process download request: {str(e)}")
+
+
+@app.get("/api/download-jobs/{job_id}", tags=["downloads"], response_model=DownloadJobResponse)
+@limiter.limit("60/minute")
+async def get_download_job_status(
+    job_id: int,
+    request: Request,
+    user_info: Dict = Depends(require_auth)
+):
+    """
+    Get download job status and progress.
+
+    REQUIRES AUTHENTICATION.
+    Users can only view their own download jobs (unless in public mode).
+    """
+    settings = get_settings()
+
+    # Check if feature is enabled
+    if not settings.enable_video_downloads:
+        raise HTTPException(status_code=404, detail="Video download feature is not enabled")
+
+    user_id = user_info.get('sub', 'unknown')
+
+    try:
+        with session_scope(app.state.engine) as session:
+            job = session.get(DownloadJob, job_id)
+
+            if not job:
+                raise HTTPException(status_code=404, detail=f"Download job {job_id} not found")
+
+            # Check ownership (unless public mode)
+            if not settings.public_mode and job.user_id != user_id:
+                raise HTTPException(status_code=403, detail="You don't have permission to view this download job")
+
+            return DownloadJobResponse(
+                id=job.id,
+                url=job.url,
+                status=job.status,
+                progress_percent=job.progress_percent,
+                filename=job.filename,
+                error_message=job.error_message,
+                created_at=job.created_at,
+                started_at=job.started_at,
+                completed_at=job.completed_at,
+                video_title=job.video_title,
+                video_duration=job.video_duration,
+                file_size_bytes=job.file_size_bytes
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to get download job %d: %s", job_id, e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to get download job: {str(e)}")
+
+
+@app.get("/api/download-jobs", tags=["downloads"], response_model=List[DownloadJobResponse])
+@limiter.limit("30/minute")
+async def list_download_jobs(
+    request: Request,
+    limit: int = 50,
+    offset: int = 0,
+    status: Optional[str] = None,
+    user_info: Dict = Depends(require_auth)
+):
+    """
+    List download jobs for current user.
+
+    REQUIRES AUTHENTICATION.
+    Returns paginated list of download jobs, newest first.
+
+    Query parameters:
+    - limit: Maximum number of jobs to return (default: 50, max: 200)
+    - offset: Number of jobs to skip (default: 0)
+    - status: Filter by status (pending, downloading, completed, failed)
+    """
+    settings = get_settings()
+
+    # Check if feature is enabled
+    if not settings.enable_video_downloads:
+        raise HTTPException(status_code=404, detail="Video download feature is not enabled")
+
+    # Validate limits
+    if limit < 1 or limit > 200:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 200")
+
+    if offset < 0:
+        raise HTTPException(status_code=400, detail="offset must be >= 0")
+
+    user_id = user_info.get('sub', 'unknown')
+
+    try:
+        with session_scope(app.state.engine) as session:
+            # Build query
+            query = select(DownloadJob).where(DownloadJob.user_id == user_id)
+
+            # Filter by status if provided
+            if status:
+                valid_statuses = ["pending", "downloading", "processing", "completed", "failed"]
+                if status not in valid_statuses:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Invalid status. Must be one of: {', '.join(valid_statuses)}"
+                    )
+                query = query.where(DownloadJob.status == status)
+
+            # Order by newest first
+            query = query.order_by(desc(DownloadJob.created_at))
+
+            # Apply pagination
+            query = query.offset(offset).limit(limit)
+
+            jobs = session.exec(query).all()
+
+            return [
+                DownloadJobResponse(
+                    id=job.id,
+                    url=job.url,
+                    status=job.status,
+                    progress_percent=job.progress_percent,
+                    filename=job.filename,
+                    error_message=job.error_message,
+                    created_at=job.created_at,
+                    started_at=job.started_at,
+                    completed_at=job.completed_at,
+                    video_title=job.video_title,
+                    video_duration=job.video_duration,
+                    file_size_bytes=job.file_size_bytes
+                )
+                for job in jobs
+            ]
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to list download jobs: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to list download jobs: {str(e)}")
+
+
 @app.post("/memes/deduplication/analyze", tags=["deduplication"])
 @limiter.limit("10/minute")
 def analyze_duplicates(request: Request, user_info: Dict = Depends(require_auth)):
@@ -1350,7 +1763,7 @@ def get_duplicates_by_group(user_info: Dict = Depends(require_auth)):
                     if storage:
                         try:
                             try:
-                                file_entries = storage.client.ls(l.filename)
+                                file_entries = storage.ls(l.filename)
                                 if file_entries and isinstance(file_entries[0], dict):
                                     entry = file_entries[0]
                                     logger.debug(f"WebDAV entry for {l.filename}: {entry}")

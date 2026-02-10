@@ -138,3 +138,20 @@ class AuditLog(SQLModel, table=True):
     ip_address: Optional[str] = None  # IP address of the request
     status: str = Field(default="success")  # "success", "failure", etc.
 
+
+class DownloadJob(SQLModel, table=True):
+    """Track video download jobs from URLs using yt-dlp."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    url: str = Field(index=True)  # Original video URL
+    user_id: str = Field(index=True)  # User who created the job
+    status: str = Field(default="pending", index=True)  # pending, downloading, processing, completed, failed
+    progress_percent: float = Field(default=0.0)  # 0.0 to 100.0
+    filename: Optional[str] = None  # Final filename on WebDAV (NULL until uploaded)
+    error_message: Optional[str] = None  # Error details if failed
+    created_at: datetime.datetime = Field(default_factory=lambda: datetime.datetime.now(datetime.timezone.utc), index=True)
+    started_at: Optional[datetime.datetime] = None  # Download start time
+    completed_at: Optional[datetime.datetime] = None  # Completion timestamp
+    video_title: Optional[str] = None  # Video title from metadata
+    video_duration: Optional[int] = None  # Duration in seconds
+    file_size_bytes: Optional[int] = None  # Final file size
+
