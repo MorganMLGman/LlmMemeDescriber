@@ -221,16 +221,28 @@ document.addEventListener('DOMContentLoaded', async function() {
 
 async function loadTokensList() {
     try {
+        console.log('Fetching /api/tokens...');
         const response = await fetch('/api/tokens');
+        console.log('Response status:', response.status, 'Content-Type:', response.headers.get('content-type'));
+
         if (!response.ok) {
             if (response.status === 401) {
                 window.location.href = '/login';
                 return;
             }
-            throw new Error('Failed to load tokens');
+            const responseText = await response.text();
+            console.error('Failed response body:', responseText);
+            throw new Error(`Failed to load tokens (status ${response.status})`);
         }
 
-        const tokens = await response.json();
+        const responseText = await response.text();
+        console.log('Response text:', responseText.substring(0, 200));
+
+        if (!responseText || responseText.trim() === '') {
+            throw new Error('Empty response from server');
+        }
+
+        const tokens = JSON.parse(responseText);
         displayTokens(tokens);
     } catch (error) {
         console.error('Error loading tokens:', error);
@@ -244,13 +256,25 @@ async function loadTokensList() {
 
 async function loadShareTokensList() {
     try {
+        console.log('Fetching /api/share-tokens...');
         const response = await fetch('/api/share-tokens');
+        console.log('Share tokens response status:', response.status, 'Content-Type:', response.headers.get('content-type'));
+
         if (!response.ok) {
             if (response.status === 401) return; // handled by loadTokensList redirect usually
-            throw new Error('Failed to load share tokens');
+            const responseText = await response.text();
+            console.error('Failed share tokens response body:', responseText);
+            throw new Error(`Failed to load share tokens (status ${response.status})`);
         }
 
-        const tokens = await response.json();
+        const responseText = await response.text();
+        console.log('Share tokens response text:', responseText.substring(0, 200));
+
+        if (!responseText || responseText.trim() === '') {
+            throw new Error('Empty response from server');
+        }
+
+        const tokens = JSON.parse(responseText);
         displayShareTokens(tokens);
     } catch (error) {
         console.error('Error loading share tokens:', error);
