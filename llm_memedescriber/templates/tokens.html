@@ -203,13 +203,18 @@ let deleteTokenId = null;
 let revokeShareId = null;
 let newTokenContent = null;
 
-document.addEventListener('DOMContentLoaded', function() {
+document.addEventListener('DOMContentLoaded', async function() {
     generateTokenModal = new bootstrap.Modal(document.getElementById('generateTokenModal'));
     tokenDisplayModal = new bootstrap.Modal(document.getElementById('tokenDisplayModal'));
     revokeConfirmModal = new bootstrap.Modal(document.getElementById('revokeConfirmModal'));
     deleteConfirmModal = new bootstrap.Modal(document.getElementById('deleteConfirmModal'));
     revokeShareConfirmModal = new bootstrap.Modal(document.getElementById('revokeShareConfirmModal'));
-    
+
+    // Initialize CSRF token from app.js
+    if (typeof initializeCSRFToken === 'function') {
+        await initializeCSRFToken();
+    }
+
     loadTokensList();
     loadShareTokensList();
 });
@@ -403,11 +408,16 @@ async function generateToken() {
     }
 
     try {
+        const headers = {
+            'Content-Type': 'application/json'
+        };
+        if (typeof csrfToken !== 'undefined' && csrfToken) {
+            headers['X-CSRF-Token'] = csrfToken;
+        }
+
         const response = await fetch('/api/tokens', {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
+            headers: headers,
             body: JSON.stringify({ name, expires_at })
         });
 
@@ -470,8 +480,14 @@ async function confirmRevoke() {
     if (!revokeTokenId) return;
 
     try {
+        const headers = {};
+        if (typeof csrfToken !== 'undefined' && csrfToken) {
+            headers['X-CSRF-Token'] = csrfToken;
+        }
+
         const response = await fetch(`/api/tokens/${revokeTokenId}/revoke`, {
-            method: 'POST'
+            method: 'POST',
+            headers: headers
         });
 
         if (!response.ok) {
@@ -480,10 +496,10 @@ async function confirmRevoke() {
         }
 
         revokeConfirmModal.hide();
-        
+
         // Show success message
         showSuccessMessage('Token revoked successfully');
-        
+
         // Reload list
         setTimeout(() => {
             loadTokensList();
@@ -505,8 +521,14 @@ async function confirmDelete() {
     if (!deleteTokenId) return;
 
     try {
+        const headers = {};
+        if (typeof csrfToken !== 'undefined' && csrfToken) {
+            headers['X-CSRF-Token'] = csrfToken;
+        }
+
         const response = await fetch(`/api/tokens/${deleteTokenId}`, {
-            method: 'DELETE'
+            method: 'DELETE',
+            headers: headers
         });
 
         if (!response.ok) {
@@ -515,10 +537,10 @@ async function confirmDelete() {
         }
 
         deleteConfirmModal.hide();
-        
+
         // Show success message
         showSuccessMessage('Token deleted successfully');
-        
+
         // Reload list
         setTimeout(() => {
             loadTokensList();
@@ -540,8 +562,14 @@ async function confirmRevokeShare() {
     if (!revokeShareId) return;
 
     try {
+        const headers = {};
+        if (typeof csrfToken !== 'undefined' && csrfToken) {
+            headers['X-CSRF-Token'] = csrfToken;
+        }
+
         const response = await fetch(`/api/share-tokens/${revokeShareId}`, {
-            method: 'DELETE'
+            method: 'DELETE',
+            headers: headers
         });
 
         if (!response.ok) {

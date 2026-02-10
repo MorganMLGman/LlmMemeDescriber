@@ -40,6 +40,8 @@ By default the web preview is available at **https://localhost:8443/**
 - Duplicate list: GET /memes/{filename}/duplicates
 - App stats: GET /api/stats
 
+**For complete API documentation**, see [API_DOCUMENTATION.md](./API_DOCUMENTATION.md) for all 56 endpoints with request/response formats, authentication requirements, rate limits, and examples.
+
 ## Behavior & notes 💡
 - **Database-first approach**: All meme metadata (descriptions, OCR, perceptual hashes) is stored in a local SQLite database.
 - **Automatic sync**: On startup and at regular intervals, the service scans WebDAV for new/removed images and updates the database.
