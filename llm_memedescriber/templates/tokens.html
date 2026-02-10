@@ -339,12 +339,12 @@ function displayTokens(tokens) {
                 
                 <div class="token-actions">
                     ${!token.revoked && !isExpired ? `
-                        <button class="btn btn-sm btn-warning" onclick="showRevokeConfirm(${token.id}, ${JSON.stringify(token.name)})">
+                        <button class="btn btn-sm btn-warning" onclick='showRevokeConfirm(${token.id}, ${JSON.stringify(token.name)})'>
                             ⛔ Revoke
                         </button>
                     ` : ''}
                     ${token.revoked || isExpired ? `
-                        <button class="btn btn-sm btn-danger" onclick="showDeleteConfirm(${token.id}, ${JSON.stringify(token.name)})">
+                        <button class="btn btn-sm btn-danger" onclick='showDeleteConfirm(${token.id}, ${JSON.stringify(token.name)})'>
                             🗑️ Delete
                         </button>
                     ` : ''}
@@ -374,7 +374,7 @@ function displayShareTokens(tokens) {
             <div class="card-body">
                 <div class="token-card-header">
                     <h6 class="token-name text-truncate" title="${escapeAttribute(token.filename)}">
-                        <a href="#" onclick="openMemeSimplePreview(${JSON.stringify(token.filename)}); return false;" class="text-decoration-none text-dark">
+                        <a href="#" onclick='openMemeSimplePreview(${JSON.stringify(token.filename)}); return false;' class="text-decoration-none text-dark">
                             ${escapeHtml(token.filename)} 🔗
                         </a>
                     </h6>
@@ -396,7 +396,7 @@ function displayShareTokens(tokens) {
                 </div>
                 
                 <div class="token-actions">
-                    <button class="btn btn-sm btn-danger" onclick="showRevokeShareConfirm(${token.id}, ${JSON.stringify(token.filename)})">
+                    <button class="btn btn-sm btn-danger" onclick='showRevokeShareConfirm(${token.id}, ${JSON.stringify(token.filename)})'>
                         ⛔ Revoke Link
                     </button>
                 </div>
@@ -507,16 +507,31 @@ async function confirmRevoke() {
         const headers = {};
         if (typeof csrfToken !== 'undefined' && csrfToken) {
             headers['X-CSRF-Token'] = csrfToken;
+            console.log('Using CSRF token for revoke:', csrfToken.substring(0, 20) + '...');
+        } else {
+            console.warn('No CSRF token available!');
         }
+
+        console.log('Revoking token ID:', revokeTokenId);
 
         const response = await fetch(`/api/tokens/${revokeTokenId}/revoke`, {
             method: 'POST',
             headers: headers
         });
 
+        console.log('Revoke response status:', response.status);
+        const responseText = await response.text();
+        console.log('Revoke response body:', responseText);
+
         if (!response.ok) {
-            const data = await response.json();
-            throw new Error(data.detail || 'Failed to revoke token');
+            let errorMessage = 'Failed to revoke token';
+            try {
+                const data = JSON.parse(responseText);
+                errorMessage = data.detail || errorMessage;
+            } catch (e) {
+                errorMessage = `Server returned: ${responseText.substring(0, 100)}`;
+            }
+            throw new Error(errorMessage);
         }
 
         revokeConfirmModal.hide();
@@ -536,28 +551,50 @@ async function confirmRevoke() {
 }
 
 function showDeleteConfirm(tokenId, tokenName) {
+    console.log('showDeleteConfirm called with tokenId:', tokenId, 'tokenName:', tokenName);
     deleteTokenId = tokenId;
     document.getElementById('deleteTokenName').textContent = tokenName;
     deleteConfirmModal.show();
+    console.log('Delete modal shown');
 }
 
 async function confirmDelete() {
-    if (!deleteTokenId) return;
+    console.log('confirmDelete called! deleteTokenId:', deleteTokenId);
+    if (!deleteTokenId) {
+        console.warn('No deleteTokenId set, returning');
+        return;
+    }
 
     try {
         const headers = {};
         if (typeof csrfToken !== 'undefined' && csrfToken) {
             headers['X-CSRF-Token'] = csrfToken;
+            console.log('Using CSRF token:', csrfToken.substring(0, 20) + '...');
+        } else {
+            console.warn('No CSRF token available!');
         }
+
+        console.log('Deleting token ID:', deleteTokenId);
+        console.log('Request headers:', headers);
 
         const response = await fetch(`/api/tokens/${deleteTokenId}`, {
             method: 'DELETE',
             headers: headers
         });
 
+        console.log('Delete response status:', response.status);
+        const responseText = await response.text();
+        console.log('Delete response body:', responseText);
+
         if (!response.ok) {
-            const data = await response.json();
-            throw new Error(data.detail || 'Failed to delete token');
+            let errorMessage = 'Failed to delete token';
+            try {
+                const data = JSON.parse(responseText);
+                errorMessage = data.detail || errorMessage;
+            } catch (e) {
+                errorMessage = `Server returned: ${responseText.substring(0, 100)}`;
+            }
+            throw new Error(errorMessage);
         }
 
         deleteConfirmModal.hide();
