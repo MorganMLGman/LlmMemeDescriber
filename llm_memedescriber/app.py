@@ -52,7 +52,7 @@ from sqlmodel import select
 from .db_helpers import session_scope
 import datetime
 from .auth import OIDCAuthContext, hash_token, generate_state_token, verify_api_token_not_revoked, verify_share_token_db, verify_basic_auth_user, BASIC_AUTH_MAX_ATTEMPTS
-from .auth_cache import init_redis_cache, get_cached_token_validation, cache_token_validation, invalidate_token_cache
+from .auth_cache import init_redis_cache, get_cached_token_validation, cache_token_validation, invalidate_token_cache, invalidate_token_cache_by_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -483,53 +483,8 @@ async def add_security_headers(request: Request, call_next):
     return response
 
 
-# Custom middleware to track API token usage
-@app.middleware("http")
-async def track_api_token_usage(request: Request, call_next):
-    """Track last usage time of API tokens."""
-    auth_header = request.headers.get('Authorization')
-    
-    if auth_header and auth_header.startswith('Bearer '):
-        token = auth_header[7:]
-        auth_context = OIDCAuthContext()
-        
-        # Verify token to ensure it's valid
-        if auth_context.jwt_manager:
-            payload = auth_context.jwt_manager.verify_token(token)
-            if payload:
-                # Update last_used_at asynchronously (don't block response)
-                try:
-                    # Schedule update in background
-                    asyncio.create_task(_update_token_usage(token))
-                except Exception as e:
-                    logger.exception(f"Failed to track token usage: {e}")
-    
-    response = await call_next(request)
-    return response
-
-
-async def _update_token_usage(token: str):
-    """Update last_used_at for a token (background task)."""
-    try:
-        from argon2 import PasswordHasher
-        from argon2.exceptions import VerifyMismatchError
-        
-        ph = PasswordHasher()
-        with session_scope(app.state.engine) as session:
-            # Fetch all tokens and verify against the provided token
-            tokens = session.exec(select(UserToken)).all()
-            for candidate in tokens:
-                try:
-                    ph.verify(candidate.token_hash, token)
-                    candidate.last_used_at = datetime.datetime.now(datetime.timezone.utc)
-                    session.add(candidate)
-                    session.commit()
-                    break
-                except VerifyMismatchError:
-                    continue
-    except Exception as e:
-        logger.exception(f"Failed to update token usage: {e}")
-
+# Note: Token usage tracking (last_used_at) is handled in verify_api_token_not_revoked()
+# No separate middleware needed - this avoids redundant DB queries
 
 # Periodic session cleanup (runs every hour)
 async def cleanup_sessions_periodically():
