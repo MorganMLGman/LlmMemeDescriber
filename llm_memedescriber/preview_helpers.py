@@ -14,14 +14,18 @@ from .storage_helpers import call_storage
 logger = logging.getLogger(__name__)
 
 
-def _cache_path(filename: str) -> str:
-    name_hash = hashlib.md5(filename.encode()).hexdigest()
+def _cache_path(filename: str, size: int = 300) -> str:
+    """Get cache path for filename at specific size.
+    
+    Different sizes get different cache files.
+    """
+    name_hash = hashlib.sha256(f"{filename}_{size}".encode()).hexdigest()
     return os.path.join(CACHE_DIR, f"{name_hash}.jpg")
 
 
 def generate_preview(filename: str, is_vid: bool, storage: Any, size: int = 300) -> bytes:
     """Sync preview generation (uses sync storage methods)."""
-    cache_path = _cache_path(filename)
+    cache_path = _cache_path(filename, size)
     if os.path.isfile(cache_path):
         try:
             with open(cache_path, 'rb') as f:
@@ -62,7 +66,7 @@ def generate_preview(filename: str, is_vid: bool, storage: Any, size: int = 300)
 
 async def async_generate_preview(filename: str, is_vid: bool, storage: Any, size: int = 300) -> bytes:
     """Async preview generation using `call_storage` to dispatch to async/sync storage methods."""
-    cache_path = _cache_path(filename)
+    cache_path = _cache_path(filename, size)
     if os.path.isfile(cache_path):
         try:
             with open(cache_path, 'rb') as f:
@@ -207,23 +211,33 @@ def restore_preview_cache() -> int:
 
 def remove_cache_entry(filename: str) -> bool:
     """
-    Remove a cache entry for a specific filename.
+    Remove all cached preview entries for a filename (all size variants).
     
     Args:
-        filename: The filename whose cache entry should be removed.
+        filename: The filename whose cache entries should be removed.
         
     Returns:
         True if removed successfully or file didn't exist, False if an error occurred.
     """
     try:
-        cache_path = _cache_path(filename)
-        if os.path.isfile(cache_path):
-            os.remove(cache_path)
-            logger.debug(f"Removed cache entry for: {filename}")
+        removed_count = 0
+        if not os.path.isdir(CACHE_DIR):
             return True
+        
+        # Remove all size variants of this filename
+        for test_size in [100, 200, 300, 400, 500, 600, 800, 1000]:
+            cache_path = _cache_path(filename, test_size)
+            if os.path.isfile(cache_path):
+                try:
+                    os.remove(cache_path)
+                    logger.debug(f"Removed cache entry for: {filename} (size={test_size})")
+                    removed_count += 1
+                except OSError:
+                    pass
+        
         return True
     except Exception as e:
-        logger.warning(f"Failed to remove cache entry for {filename}: {e}")
+        logger.warning(f"Failed to remove cache entries for {filename}: {e}")
         return False
 
 
@@ -253,11 +267,15 @@ def cleanup_orphaned_cache(valid_filenames: set) -> int:
             if not filename.endswith('.jpg'):
                 continue
             
-            # Check if this cache file corresponds to any valid filename
+            # Check if this cache file corresponds to any valid filename and size
             is_orphaned = True
             for valid_filename in valid_filenames:
-                if _cache_path(valid_filename) == os.path.join(CACHE_DIR, filename):
-                    is_orphaned = False
+                # Check all possible sizes for this filename
+                for test_size in [100, 200, 300, 400, 500, 600, 800, 1000]:
+                    if _cache_path(valid_filename, test_size) == os.path.join(CACHE_DIR, filename):
+                        is_orphaned = False
+                        break
+                if not is_orphaned:
                     break
             
             if is_orphaned:

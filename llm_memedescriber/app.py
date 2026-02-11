@@ -47,7 +47,7 @@ from .models import Meme, DuplicateGroup as DBDuplicateGroup, MemeDuplicateGroup
 from sqlalchemy import desc
 from .storage_helpers import compute_and_persist_phash
 from .download import validate_url, get_video_info, extract_video_urls_from_html
-from .preview_helpers import async_generate_preview, restore_preview_cache, save_preview_cache, cleanup_orphaned_cache
+from .preview_helpers import async_generate_preview, restore_preview_cache, save_preview_cache, cleanup_orphaned_cache, remove_cache_entry
 from sqlmodel import select
 from .db_helpers import session_scope
 import datetime
@@ -254,7 +254,7 @@ async def lifespan(app_instance: FastAPI):
                         # Skip unsupported file types
                         if not is_supported(r.filename):
                             continue
-                        cache_path = _get_cache_path(r.filename)
+                        cache_path = _get_cache_path(r.filename, PREVIEW_SIZE)
                         if not os.path.isfile(cache_path):
                             to_generate.append((r.filename, r.filename.lower().rsplit('.', 1)[-1] if '.' in r.filename else ''))
 
@@ -708,10 +708,62 @@ class MergeDuplicatesRequest(BaseModel):
 
 app.state._started = False
 
-def _get_cache_path(filename: str) -> str:
-    """Get safe cache file path from filename hash (using SHA256)."""
-    name_hash = hashlib.sha256(filename.encode()).hexdigest()
+def _get_cache_path(filename: str, size: int = 300) -> str:
+    """Get safe cache file path from filename hash (using SHA256) and size.
+    
+    Different sizes for the same file get different cache files.
+    """
+    name_hash = hashlib.sha256(f"{filename}_{size}".encode()).hexdigest()
     return os.path.join(CACHE_DIR, f"{name_hash}.jpg")
+
+
+def _enforce_preview_size_limit(filename: str, max_sizes: int = 5) -> None:
+    """Enforce max cached preview sizes per file.
+    
+    Each filename can have multiple cached previews (one per size). This function
+    ensures no more than max_sizes are cached per filename. If limit is exceeded,
+    deletes the oldest cached preview.
+    
+    Args:
+        filename: The meme filename (not filepath)
+        max_sizes: Maximum number of different sizes to cache per file (default 5)
+    """
+    try:
+        if not os.path.isdir(CACHE_DIR):
+            return
+        
+        # Find all cache files for this filename (all sizes)
+        # Cache files are {hash}.jpg where hash = sha256(filename_size)
+        file_caches = []
+        
+        for cache_file in os.listdir(CACHE_DIR):
+            if not cache_file.endswith('.jpg'):
+                continue
+            
+            cache_path = os.path.join(CACHE_DIR, cache_file)
+            
+            # Check if this cache file matches any size of our filename
+            for test_size in [100, 200, 300, 400, 500, 600, 800, 1000]:
+                test_hash = hashlib.sha256(f"{filename}_{test_size}".encode()).hexdigest()
+                if cache_file == f"{test_hash}.jpg":
+                    try:
+                        mtime = os.path.getmtime(cache_path)
+                        file_caches.append((mtime, cache_path, test_size))
+                    except OSError:
+                        pass
+                    break
+        
+        # If we have too many, delete oldest
+        if len(file_caches) >= max_sizes:
+            file_caches.sort()  # Sort by mtime (oldest first)
+            oldest_mtime, oldest_path, oldest_size = file_caches[0]
+            try:
+                os.remove(oldest_path)
+                logger.debug('Reached preview size limit for %s. Deleted oldest (size=%d)', filename, oldest_size)
+            except OSError as e:
+                logger.warning('Failed to delete oldest preview for %s: %s', filename, e)
+    except Exception as e:
+        logger.warning('Failed to enforce preview size limit for %s: %s', filename, e)
 
 
 def _get_mime_type(ext: str) -> str:
@@ -736,11 +788,40 @@ def _get_mime_type(ext: str) -> str:
 
 
 async def _aget_or_generate_preview(filename: str, is_vid: bool, storage: Any, size: int = 300) -> bytes:
-    """Async wrapper for preview generation that uses storage async methods when available."""
-    cache_path = _get_cache_path(filename)
+    """Async wrapper for preview generation that uses storage async methods when available.
+    
+    Checks disk cache first (uses size-specific cache). If not cached, generates preview
+    and saves to cache. Enforces a 5-preview-per-file limit (oldest deleted on new size).
+    """
+    cache_path = _get_cache_path(filename, size)
+    
+    # Check cache first
+    if os.path.isfile(cache_path):
+        try:
+            with open(cache_path, 'rb') as f:
+                preview_bytes = f.read()
+            logger.debug('Served cached preview for %s (size=%d)', filename, size)
+            return preview_bytes
+        except Exception as e:
+            logger.warning('Failed to read cached preview for %s: %s', filename, e)
+            # Fall through to regenerate
 
     try:
-        return await async_generate_preview(filename, is_vid, storage, size=size)
+        preview_bytes = await async_generate_preview(filename, is_vid, storage, size=size)
+        
+        # Enforce size limit before saving new preview
+        _enforce_preview_size_limit(filename, max_sizes=5)
+        
+        # Save to cache for next time
+        try:
+            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+            with open(cache_path, 'wb') as f:
+                f.write(preview_bytes)
+            logger.debug('Cached preview for %s (size=%d)', filename, size)
+        except Exception as e:
+            logger.warning('Failed to cache preview for %s: %s', filename, e)
+        
+        return preview_bytes
     except FileNotFoundError:
         logger.info('File not found: %s', filename)
         raise HTTPException(status_code=404, detail='File not found in storage')
@@ -2147,6 +2228,25 @@ async def remove_meme(filename: str, request: Request, user_info: Dict = Depends
                     details=None,
                     ip_address=request.client.host if request.client else None
                 )
+                # Clean up ALL preview caches for this file (all sizes)
+                if os.path.isdir(CACHE_DIR):
+                    deleted_count = 0
+                    for cache_file in os.listdir(CACHE_DIR):
+                        if not cache_file.endswith('.jpg'):
+                            continue
+                        # Check if matches any size variant of this filename
+                        for test_size in [100, 200, 300, 400, 500, 600, 800, 1000]:
+                            test_hash = hashlib.sha256(f"{filename}_{test_size}".encode()).hexdigest()
+                            if cache_file == f"{test_hash}.jpg":
+                                try:
+                                    os.remove(os.path.join(CACHE_DIR, cache_file))
+                                    deleted_count += 1
+                                    logger.debug("Cleaned preview cache for %s (size=%d)", filename, test_size)
+                                except OSError as e:
+                                    logger.warning("Failed to delete cache for %s: %s", filename, e)
+                                break
+                    if deleted_count > 0:
+                        logger.info("Deleted %d cache entries for %s", deleted_count, filename)
     except Exception as exc:
         logger.exception("Failed to delete %s from database: %s", filename, exc)
         raise HTTPException(status_code=500, detail=f"Failed to delete from database: {exc}")
@@ -2178,7 +2278,12 @@ async def preview_meme(filename: str, size: int = PREVIEW_SIZE, user_info: Dict 
     preview_bytes = await _aget_or_generate_preview(filename, is_vid, storage, size)
     ctype = 'image/jpeg'
     logger.debug('Served preview for %s', filename)
-    return StreamingResponse(BytesIO(preview_bytes), media_type=ctype)
+    
+    # Add HTTP cache headers for browser caching (24 hours)
+    response = StreamingResponse(BytesIO(preview_bytes), media_type=ctype)
+    response.headers["Cache-Control"] = "public, max-age=86400"
+    response.headers["ETag"] = f'"{hashlib.md5(preview_bytes).hexdigest()}"'
+    return response
 
 
 @app.get("/api/stats", tags=["api"])
