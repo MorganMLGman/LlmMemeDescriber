@@ -52,6 +52,7 @@ from sqlmodel import select
 from .db_helpers import session_scope
 import datetime
 from .auth import OIDCAuthContext, hash_token, generate_state_token, verify_api_token_not_revoked, verify_share_token_db, verify_basic_auth_user, BASIC_AUTH_MAX_ATTEMPTS
+from .auth_cache import init_redis_cache, get_cached_token_validation, cache_token_validation, invalidate_token_cache
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +81,10 @@ async def lifespan(app_instance: FastAPI):
         logger.info("OIDC authentication enabled")
     
     logger.info("Starting llm_memedescriber FastAPI app (preview cache: %s)", CACHE_DIR)
+    
+    # Initialize Redis auth caching if configured
+    redis_password = settings.redis_password.get_secret_value() if settings.redis_password else None
+    init_redis_cache(settings.redis_url, redis_password)
     
     # Initialize GPU hardware detection at startup
     try:
@@ -478,6 +483,23 @@ async def add_security_headers(request: Request, call_next):
     return response
 
 
+# Auth caching middleware - caches authentication results per-request
+@app.middleware("http")
+async def cache_auth_in_request_state(request: Request, call_next):
+    """Cache authentication result in request.state to avoid redundant DB queries.
+    
+    This middleware performs authentication once per request and caches the result
+    in request.state. Subsequent calls to require_auth() or optional_auth() will
+    use the cached result instead of hitting the database again.
+    """
+    # Initialize auth cache as None (not yet computed)
+    request.state.cached_user_info = None
+    request.state.auth_checked = False
+    
+    response = await call_next(request)
+    return response
+
+
 # Custom middleware to track API token usage
 @app.middleware("http")
 async def track_api_token_usage(request: Request, call_next):
@@ -604,9 +626,15 @@ def require_auth(
     """Dependency to require authentication (session cookie, bearer token, or Basic Auth).
     If public_mode is enabled, returns a public user without authentication.
     """
+    # Check if auth already cached in request state (Option 1: Request-level caching)
+    if hasattr(request.state, 'cached_user_info'):
+        return request.state.cached_user_info
+    
     # Public mode bypasses all authentication
     if settings.public_mode:
-        return _validate_user_info({"sub": "public-user", "public": True})
+        user_info = _validate_user_info({"sub": "public-user", "public": True})
+        request.state.cached_user_info = user_info
+        return user_info
 
     # Basic Auth mode - check JWT cookie first, fallback to Basic Auth header
     if settings.basic_auth:
@@ -620,7 +648,9 @@ def require_auth(
                 payload = auth_context.jwt_manager.verify_token(auth_token)
                 if payload:
                     user_info = {'sub': payload.get('sub'), 'name': payload.get('sub'), 'basic_auth': True}
-                    return _validate_user_info(user_info)
+                    user_info = _validate_user_info(user_info)
+                    request.state.cached_user_info = user_info
+                    return user_info
 
         # Fallback to HTTP Basic Auth header (for curl/API clients)
         if credentials:
@@ -630,7 +660,9 @@ def require_auth(
                 request.app.state.engine
             )
             if user_info:
-                return _validate_user_info(user_info)
+                user_info = _validate_user_info(user_info)
+                request.state.cached_user_info = user_info
+                return user_info
 
         # No valid authentication found
         raise HTTPException(
@@ -650,7 +682,9 @@ def require_auth(
         session = auth_context.session_manager.get_session(session_id)
         if session:
             user_info = session.get('user_info', {})
-            return _validate_user_info(user_info)
+            user_info = _validate_user_info(user_info)
+            request.state.cached_user_info = user_info
+            return user_info
 
     auth_header = request.headers.get('Authorization')
     if auth_header and auth_header.startswith('Bearer '):
@@ -661,7 +695,9 @@ def require_auth(
                 user_info = verify_api_token_not_revoked(token, request.app.state.engine)
                 if user_info:
                     logger.debug(f"API request authenticated for user: {user_info.get('sub')}")
-                    return _validate_user_info(user_info)
+                    user_info = _validate_user_info(user_info)
+                    request.state.cached_user_info = user_info
+                    return user_info
                 else:
                     logger.warning(f"API token rejected: token revoked, expired, or invalid")
                     raise HTTPException(status_code=401, detail="Token revoked, expired, or invalid")
@@ -3107,6 +3143,9 @@ def generate_api_token(request_body: TokenGenerateRequest, request: Request):
     token = auth_context.jwt_manager.create_token(user_id, token_jti)
     token_hash = hash_token(token)
     
+    # Option 3: Generate SHA256 lookup hash for fast token queries
+    token_lookup_hash = hashlib.sha256(token.encode()).hexdigest()
+    
     # Parse expiration date if provided (expected as UTC ISO string from frontend)
     expires_at = None
     if request_body.expires_at:
@@ -3123,6 +3162,7 @@ def generate_api_token(request_body: TokenGenerateRequest, request: Request):
                 user_id=user_id,
                 name=request_body.name,
                 token_hash=token_hash,
+                token_lookup_hash=token_lookup_hash,
                 created_at=datetime.datetime.now(datetime.timezone.utc),
                 expires_at=expires_at
             )
@@ -3219,6 +3259,9 @@ def revoke_api_token(token_id: int, request: Request):
             session.add(token)
             session.commit()
             
+            # Invalidate Redis cache for this user's tokens
+            invalidate_token_cache_by_user_id(user_id)
+            
             logger.info(f"API token revoked for user {user_id}: {token.name}")
 
             # Audit log
@@ -3265,6 +3308,9 @@ def delete_api_token(token_id: int, request: Request):
             token_name = token.name
             session.delete(token)
             session.commit()
+            
+            # Invalidate Redis cache for this user's tokens
+            invalidate_token_cache_by_user_id(user_id)
             
             logger.info(f"API token deleted for user {user_id}: {token_name}")
 

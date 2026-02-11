@@ -59,7 +59,8 @@ class UserToken(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     user_id: str = Field(index=True)
     name: str
-    token_hash: str
+    token_hash: str  # Argon2id hash for secure verification
+    token_lookup_hash: Optional[str] = Field(default=None, index=True)  # SHA256 hash for fast lookups (Option 3)
     created_at: datetime.datetime = Field(default_factory=lambda: datetime.datetime.now(datetime.timezone.utc), index=True)
     last_used_at: Optional[datetime.datetime] = None
     expires_at: Optional[datetime.datetime] = None

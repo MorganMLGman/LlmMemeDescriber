@@ -25,6 +25,7 @@ from pydantic import SecretStr
 from sqlmodel import Session, select
 
 from .config import load_settings
+from .auth_cache import get_cached_token_validation, cache_token_validation, invalidate_token_cache
 
 logger = logging.getLogger(__name__)
 
@@ -699,6 +700,10 @@ def verify_api_token_not_revoked(token: str, engine) -> Optional[Dict[str, Any]]
     """
     Verify token exists in DB, is not revoked, and has not expired.
     
+    Optimizations:
+    - Option 2: Uses Redis cache if available to avoid DB queries for repeated token validation.
+    - Option 3: Uses SHA256 token_lookup_hash for fast indexed DB queries instead of fetching all tokens.
+    
     Args:
         token: Plain text API token from bearer header
         engine: SQLAlchemy engine for DB access
@@ -709,14 +714,31 @@ def verify_api_token_not_revoked(token: str, engine) -> Optional[Dict[str, Any]]
     from sqlmodel import select, Session
     from .models import UserToken
     from .db_helpers import session_scope
+    import hashlib
+    
+    # Option 2: Check Redis cache first
+    cached_result = get_cached_token_validation(token)
+    if cached_result is not None:
+        logger.debug(f"Token validation cache HIT for user: {cached_result.get('sub')}")
+        return cached_result
+    
+    logger.debug("Token validation cache MISS - querying database")
+    
+    # Option 3: Compute SHA256 lookup hash for indexed query
+    token_lookup_hash = hashlib.sha256(token.encode()).hexdigest()
     
     ph = PasswordHasher()
     try:
         with session_scope(engine) as session:
-            # Fetch all non-revoked tokens for this user to verify against
-            stmt = select(UserToken).where(UserToken.revoked == False)
+            # Query by indexed token_lookup_hash instead of fetching all tokens (Option 3)
+            stmt = (
+                select(UserToken)
+                .where(UserToken.token_lookup_hash == token_lookup_hash)
+                .where(UserToken.revoked == False)
+            )
             tokens = session.exec(stmt).all()
             
+            # Verify with Argon2id (should be at most 1 token if lookup hash is unique)
             user_token = None
             for candidate in tokens:
                 try:
@@ -728,6 +750,8 @@ def verify_api_token_not_revoked(token: str, engine) -> Optional[Dict[str, Any]]
             
             if not user_token:
                 logger.debug("Token not found or revoked")
+                # Cache negative result (token invalid)
+                cache_token_validation(token, None)
                 return None
             
             if user_token.expires_at:
@@ -739,13 +763,21 @@ def verify_api_token_not_revoked(token: str, engine) -> Optional[Dict[str, Any]]
                 
                 if now > expires_at:
                     logger.warning(f"Token rejected - EXPIRED: (expired at {user_token.expires_at}, current time: {now}, user: {user_token.user_id})")
+                    # Invalidate cache for expired token
+                    invalidate_token_cache(token)
                     return None
+            
             user_token.last_used_at = datetime.now(timezone.utc)
             session.add(user_token)
             session.commit()
             
             logger.debug(f"API token validated on use: (user: {user_token.user_id}, name: {user_token.name})")
-            return {'sub': user_token.user_id, 'token_id': str(user_token.id)}
+            
+            # Cache positive validation result
+            user_info = {'sub': user_token.user_id, 'token_id': str(user_token.id)}
+            cache_token_validation(token, user_info)
+            
+            return user_info
     except Exception as e:
         logger.exception(f"Error verifying API token on use: {e}")
         return None
