@@ -33,12 +33,12 @@ def test_generate_preview_from_image_creates_rgb_jpeg_and_caches(tmp_path, caplo
     assert img.mode == 'RGB'
     assert img.format == 'JPEG'
 
-    cache_path = preview_helpers._cache_path('img.png')
+    cache_path = preview_helpers._cache_path('img.png', size=50)
     assert os.path.exists(cache_path)
 
-    # next call should use cache and not call storage again
+    # next call with same size should use cache and not call storage again
     storage2 = FakeStorage(content=b'should-not-be-used')
-    out2 = preview_helpers.generate_preview('img.png', is_vid=False, storage=storage2)
+    out2 = preview_helpers.generate_preview('img.png', is_vid=False, storage=storage2, size=50)
     assert out2 == out
     assert storage2.download_calls == 0
 
@@ -175,12 +175,13 @@ def test_async_generate_preview_logs_and_raises_on_unexpected_exception(tmp_path
     assert any('Failed to generate preview for' in r.getMessage() for r in caplog.records)
 
 
-def test_cache_path_md5(tmp_path):
-    preview_helpers.CACHE_DIR = str(tmp_path / "cache_md5")
+def test_cache_path_sha256_with_size(tmp_path):
+    preview_helpers.CACHE_DIR = str(tmp_path / "cache_sha256")
     import hashlib
     name = 'somefile.png'
-    expected = hashlib.md5(name.encode()).hexdigest()
-    path = preview_helpers._cache_path(name)
+    size = 300
+    expected = hashlib.sha256(f"{name}_{size}".encode()).hexdigest()
+    path = preview_helpers._cache_path(name, size=size)
     assert path.endswith(expected + '.jpg')
 
 

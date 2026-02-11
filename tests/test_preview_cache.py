@@ -270,36 +270,39 @@ def test_cleanup_orphaned_cache(tmp_path):
     
     preview_helpers.CACHE_DIR = str(cache_dir)
     
-    # Create some cache files by hashing filenames
+    # Create some cache files using new size-aware paths
     valid_filenames = {"image1.jpg", "image2.jpg"}
     orphaned_filenames = {"removed1.jpg", "removed2.jpg"}
     
-    # Create cache files for both valid and orphaned files
-    import hashlib
+    # Each file has 2 size variants cached
+    created_files = []
     for filename in valid_filenames | orphaned_filenames:
-        name_hash = hashlib.md5(filename.encode()).hexdigest()
-        cache_file = cache_dir / f"{name_hash}.jpg"
-        cache_file.write_bytes(b"fake image data")
+        for size in [300, 500]:
+            cache_path = preview_helpers._cache_path(filename, size=size)
+            (cache_dir / f"{cache_path.split('/')[-1]}").write_bytes(b"fake image data")
+            created_files.append(cache_path)
     
-    # Verify all files exist
-    assert len(list(cache_dir.glob("*.jpg"))) == 4
+    # Verify all files exist: 2 valid files * 2 sizes + 2 orphaned files * 2 sizes = 8 files
+    assert len(list(cache_dir.glob("*.jpg"))) == 8
     
     # Clean up orphaned cache
     removed_count = preview_helpers.cleanup_orphaned_cache(valid_filenames)
     
-    # Verify that 2 files were removed
-    assert removed_count == 2
-    assert len(list(cache_dir.glob("*.jpg"))) == 2
+    # Verify that 4 files were removed (2 orphaned files * 2 sizes each)
+    assert removed_count == 4
+    assert len(list(cache_dir.glob("*.jpg"))) == 4
     
     # Verify that valid files still exist
     for filename in valid_filenames:
-        name_hash = hashlib.md5(filename.encode()).hexdigest()
-        assert (cache_dir / f"{name_hash}.jpg").exists()
+        for size in [300, 500]:
+            cache_path = preview_helpers._cache_path(filename, size=size)
+            assert (cache_dir / f"{cache_path.split('/')[-1]}").exists()
     
     # Verify that orphaned files were removed
     for filename in orphaned_filenames:
-        name_hash = hashlib.md5(filename.encode()).hexdigest()
-        assert not (cache_dir / f"{name_hash}.jpg").exists()
+        for size in [300, 500]:
+            cache_path = preview_helpers._cache_path(filename, size=size)
+            assert not (cache_dir / f"{cache_path.split('/')[-1]}").exists()
 
 
 def test_cleanup_orphaned_cache_empty_valid_set(tmp_path):
