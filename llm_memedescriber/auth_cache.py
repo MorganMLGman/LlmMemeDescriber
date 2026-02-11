@@ -80,13 +80,13 @@ def get_cached_token_validation(token: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def cache_token_validation(token: str, user_info: Dict[str, Any], ttl_seconds: int = 300) -> None:
+def cache_token_validation(token: str, user_info: Dict[str, Any], ttl_seconds: int = 60) -> None:
     """Cache token validation result in Redis.
     
     Args:
         token: Bearer token string
         user_info: User information dict to cache
-        ttl_seconds: Cache TTL in seconds (default: 5 minutes)
+        ttl_seconds: Cache TTL in seconds (default: 1 minute)
     """
     if not _redis_enabled or not _redis_client:
         return
