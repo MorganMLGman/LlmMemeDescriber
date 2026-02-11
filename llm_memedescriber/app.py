@@ -483,23 +483,6 @@ async def add_security_headers(request: Request, call_next):
     return response
 
 
-# Auth caching middleware - caches authentication results per-request
-@app.middleware("http")
-async def cache_auth_in_request_state(request: Request, call_next):
-    """Cache authentication result in request.state to avoid redundant DB queries.
-    
-    This middleware performs authentication once per request and caches the result
-    in request.state. Subsequent calls to require_auth() or optional_auth() will
-    use the cached result instead of hitting the database again.
-    """
-    # Initialize auth cache as None (not yet computed)
-    request.state.cached_user_info = None
-    request.state.auth_checked = False
-    
-    response = await call_next(request)
-    return response
-
-
 # Custom middleware to track API token usage
 @app.middleware("http")
 async def track_api_token_usage(request: Request, call_next):
@@ -625,9 +608,11 @@ def require_auth(
 ) -> Dict[str, Any]:
     """Dependency to require authentication (session cookie, bearer token, or Basic Auth).
     If public_mode is enabled, returns a public user without authentication.
+    
+    Option 1: Caches auth result in request.state to avoid redundant checks within same request.
     """
     # Check if auth already cached in request state (Option 1: Request-level caching)
-    if hasattr(request.state, 'cached_user_info'):
+    if hasattr(request.state, 'cached_user_info') and request.state.cached_user_info is not None:
         return request.state.cached_user_info
     
     # Public mode bypasses all authentication
