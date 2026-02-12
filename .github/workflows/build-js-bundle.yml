@@ -1,0 +1,60 @@
+name: Build JavaScript Bundle
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    outputs:
+      artifact-name:
+        description: "Name of the uploaded bundle artifact"
+        value: ${{ jobs.build.outputs.artifact-name }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build JS Bundle
+    runs-on: ubuntu-latest
+    outputs:
+      artifact-name: ${{ steps.upload.outputs.artifact-name }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.14'
+      
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install rjsmin
+      
+      - name: Build JavaScript bundle
+        run: python3 build_js.py
+      
+      - name: Verify bundle was created
+        run: |
+          if [ ! -f "llm_memedescriber/static/bundle.min.js" ]; then
+            echo "❌ Error: bundle.min.js was not created"
+            exit 1
+          fi
+          if [ ! -f "llm_memedescriber/static/bundle.min.js.map" ]; then
+            echo "❌ Error: bundle.min.js.map was not created"
+            exit 1
+          fi
+          echo "✅ Bundle created successfully"
+          ls -lh llm_memedescriber/static/bundle*
+      
+      - name: Upload bundle artifact
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: js-bundle-${{ github.sha }}
+          path: |
+            llm_memedescriber/static/bundle.min.js
+            llm_memedescriber/static/bundle.min.js.map
+          retention-days: 7
+          if-no-files-found: error

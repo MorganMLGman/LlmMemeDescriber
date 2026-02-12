@@ -80,3 +80,13 @@ docker-compose.override.yml
 
 *db/
 .claude/
+
+# Node.js
+node_modules/
+package-lock.json
+
+# Generated bundles
+llm_memedescriber/static/bundle.js
+llm_memedescriber/static/bundle.min.js
+llm_memedescriber/static/bundle.js.map
+llm_memedescriber/static/bundle.min.js.map

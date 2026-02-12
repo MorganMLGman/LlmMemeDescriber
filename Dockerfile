@@ -10,6 +10,7 @@ RUN apt-get update \
 RUN python3 -m pip install --upgrade pip setuptools wheel
 
 COPY Pipfile Pipfile.lock /app/
+
 RUN python3 -m pip install --no-cache-dir pipenv \
   && cd /app \
   && PIPENV_VENV_IN_PROJECT=1 pipenv install --deploy --ignore-pipfile \

@@ -38,9 +38,15 @@ jobs:
         env:
           PIPENV_VENV_IN_PROJECT: 1
 
+  build-js:
+    name: Build JavaScript Bundle
+    uses: ./.github/workflows/build-js-bundle.yml
+    permissions:
+      contents: read
+
   build:
     name: Build ${{ matrix.platform }} Image
-    needs: test
+    needs: [test, build-js]
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -53,6 +59,17 @@ jobs:
     
     steps:
       - uses: actions/checkout@v4
+      
+      - name: Download JS bundle artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: js-bundle-${{ github.sha }}
+          path: llm_memedescriber/static/
+      
+      - name: Verify bundle downloaded
+        run: |
+          ls -lh llm_memedescriber/static/bundle*
+          echo "✅ JS bundle downloaded successfully"
       
       - name: Determine app version and replace placeholder
         run: |

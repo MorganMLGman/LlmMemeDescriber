@@ -49,3 +49,13 @@ docker-compose.override.yml
 
 # Common caches
 .cache/
+
+# JavaScript bundles (built during Docker build)
+llm_memedescriber/static/bundle.js
+llm_memedescriber/static/bundle.min.js
+llm_memedescriber/static/bundle.js.map
+llm_memedescriber/static/bundle.min.js.map
+llm_memedescriber/static/index.js
+
+# Local npm artifacts (if any)
+package-lock.json
