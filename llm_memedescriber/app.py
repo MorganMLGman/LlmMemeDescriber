@@ -1213,7 +1213,13 @@ def list_memes(limit: int = DEFAULT_LIST_LIMIT, offset: int = DEFAULT_OFFSET, st
                 result.append(meme_dict)
             
             logger.debug(f"Returning {len(result)} memes")
-            return result
+            
+            # Return with no-cache headers to prevent Cloudflare caching
+            response = JSONResponse(content=result)
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+            return response
     except Exception as e:
         logger.exception("Error in list_memes")
         raise HTTPException(status_code=500, detail=f"List memes failed: {str(e)}")
@@ -1901,7 +1907,13 @@ def get_meme_detail(filename: str, user_info: Dict = Depends(require_auth)):
             raise HTTPException(status_code=404, detail="Meme not found")
         meme_dict = m.model_dump()
         meme_dict['processed'] = m.status == 'filled'
-        return meme_dict
+        
+        # Return with no-cache headers to prevent Cloudflare caching
+        response = JSONResponse(content=meme_dict)
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
 
 
 @app.post("/memes/{filename}/force-description", tags=["memes"])
@@ -2926,7 +2938,7 @@ async def callback(request: Request, code: Optional[str] = None, state: Optional
         log_audit_action(
             app.state.engine,
             user_id=user_id,
-            username=get_username_from_user_info(user_info),
+            username=get_username_from_user_info(user_info) if user_info else None,
             action="OIDC_LOGIN_SUCCESS",
             resource=None,
             details={"username": user_info.get('preferred_username', 'unknown')},
