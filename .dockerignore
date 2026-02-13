@@ -50,6 +50,19 @@ docker-compose.override.yml
 # Common caches
 .cache/
 
-# Local npm artifacts (if any)
+# Source JS modules (bundled in bundle.min.js)
+llm_memedescriber/static/core.js
+llm_memedescriber/static/api.js
+llm_memedescriber/static/auth-search.js
+llm_memedescriber/static/memes-ui.js
+llm_memedescriber/static/meme-actions.js
+llm_memedescriber/static/deduplication.js
+llm_memedescriber/static/sync-download.js
+llm_memedescriber/static/index.js
+
+# Development bundle (use minified version)
+llm_memedescriber/static/bundle.js
+llm_memedescriber/static/bundle.js.map
+llm_memedescriber/static/bundle.js.gz# Local npm artifacts (if any)
 package-lock.json
 node_modules/
