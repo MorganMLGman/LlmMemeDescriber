@@ -18,6 +18,7 @@ async function copyMemeToClipboard() {
     if (!currentMemeId) return;
 
     const isVideo = /\.(mp4|webm|mov|mkv|avi|flv)$/i.test(currentMemeId);
+    const isWebP = currentMemeId.toLowerCase().endsWith('.webp');
     const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
 
     // Helper to get signed share link
@@ -33,15 +34,16 @@ async function copyMemeToClipboard() {
         }
     }
 
-    // If it's a video, we fetch a signed temporary link
-    if (isVideo) {
+    // If it's a video or WebP (animated), copy share link instead of image data
+    if (isVideo || isWebP) {
         try {
             const shareUrl = await getShareLink();
             await navigator.clipboard.writeText(shareUrl);
-            showAlert('Temporary share link copied! (Valid for 24h)', 'success');
+            const fileType = isVideo ? 'video' : 'animated WebP';
+            showAlert(`Share link copied! (${fileType}, valid for 24h)`, 'success');
         } catch (err) {
-            console.error('Failed to copy video URL:', err);
-            showError('Failed to copy video URL');
+            console.error('Failed to copy share URL:', err);
+            showError('Failed to copy share URL');
         }
         return;
     }
