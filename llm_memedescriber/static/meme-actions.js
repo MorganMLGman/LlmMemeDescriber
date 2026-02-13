@@ -91,8 +91,9 @@ async function copyMemeToClipboard() {
 
         let blobToCopy = originalBlob;
 
-        // The Clipboard API is strict about MIME types. Most browsers reliably support 'image/png'.
-        if (originalBlob.type !== 'image/png') {
+        // WebP and PNG are supported by Clipboard API - copy as-is to preserve animation
+        // Convert other formats (JPEG, GIF, etc) to PNG for compatibility
+        if (originalBlob.type !== 'image/png' && originalBlob.type !== 'image/webp') {
             try {
                 blobToCopy = await convertBlobToPng(originalBlob);
             } catch (conversionError) {

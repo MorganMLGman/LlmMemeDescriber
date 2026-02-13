@@ -261,7 +261,15 @@ async function viewMeme(memeFilename) {
         } else {
             videoElement.style.display = 'none';
             imageElement.style.display = 'block';
-            imageElement.src = `/memes/${encodeURIComponent(memeFilename)}/preview?size=600`;
+
+            // For WebP files, use download endpoint to get actual animated file
+            // For other images, use preview endpoint for resized version
+            const isWebP = memeFilename.toLowerCase().endsWith('.webp');
+            if (isWebP) {
+                imageElement.src = `/memes/${encodeURIComponent(memeFilename)}/download`;
+            } else {
+                imageElement.src = `/memes/${encodeURIComponent(memeFilename)}/preview?size=600`;
+            }
         }
         
         // Show memePreview, hide loading spinner
