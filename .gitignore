@@ -90,3 +90,5 @@ llm_memedescriber/static/bundle.js
 llm_memedescriber/static/bundle.min.js
 llm_memedescriber/static/bundle.js.map
 llm_memedescriber/static/bundle.min.js.map
+llm_memedescriber/static/bundle.js.gz
+llm_memedescriber/static/bundle.min.js.gz

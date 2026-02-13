@@ -4,6 +4,7 @@ Build script for bundling and minifying JavaScript files.
 Pure Python solution - no Node.js/npm required!
 """
 
+import gzip
 import json
 import os
 from pathlib import Path
@@ -55,16 +56,23 @@ def create_bundle(files, output_path, minify=True, source_map=True):
     if source_map:
         create_source_map(source_files, output_path, bundle)
     
+    # Create gzip version (for static file serving)
+    create_gzip(output_path)
+    
     # Stats
     original_size = sum(Path(f).stat().st_size for f in files if Path(f).exists())
     bundle_size = output_path.stat().st_size
+    gz_size = (output_path.with_suffix(output_path.suffix + '.gz')).stat().st_size if (output_path.with_suffix(output_path.suffix + '.gz')).exists() else 0
     reduction = ((original_size - bundle_size) / original_size * 100) if original_size > 0 else 0
+    gz_reduction = ((bundle_size - gz_size) / bundle_size * 100) if bundle_size > 0 else 0
     
     print(f"\n✅ Bundle created: {output_path}")
     print(f"📊 Original size: {original_size:,} bytes")
     print(f"📊 Bundle size: {bundle_size:,} bytes")
     if minify:
-        print(f"📉 Reduction: {reduction:.1f}%")
+        print(f"📉 Minification reduction: {reduction:.1f}%")
+    if gz_size > 0:
+        print(f"📦 Gzipped size: {gz_size:,} bytes ({gz_reduction:.1f}% smaller than minified)")
     
     return output_path
 
@@ -101,6 +109,19 @@ def create_source_map(source_files, output_path, content):
         f.write(f'\n//# sourceMappingURL={map_path.name}\n')
     
     print(f"🗺️  Source map created: {map_path}")
+
+
+def create_gzip(output_path):
+    """Create gzipped version of bundle for static file serving."""
+    
+    output_path = Path(output_path)
+    gz_path = output_path.with_suffix(output_path.suffix + '.gz')
+    
+    with open(output_path, 'rb') as f_in:
+        with gzip.open(gz_path, 'wb', compresslevel=9) as f_out:
+            f_out.writelines(f_in)
+    
+    print(f"🗜️  Gzipped bundle created: {gz_path}")
 
 
 def main():

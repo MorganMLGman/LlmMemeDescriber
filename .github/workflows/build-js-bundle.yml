@@ -45,7 +45,11 @@ jobs:
             echo "❌ Error: bundle.min.js.map was not created"
             exit 1
           fi
-          echo "✅ Bundle created successfully"
+          if [ ! -f "llm_memedescriber/static/bundle.min.js.gz" ]; then
+            echo "❌ Error: bundle.min.js.gz was not created"
+            exit 1
+          fi
+          echo "✅ All bundles created successfully"
           ls -lh llm_memedescriber/static/bundle*
       
       - name: Upload bundle artifact
@@ -56,5 +60,6 @@ jobs:
           path: |
             llm_memedescriber/static/bundle.min.js
             llm_memedescriber/static/bundle.min.js.map
+            llm_memedescriber/static/bundle.min.js.gz
           retention-days: 7
           if-no-files-found: error
