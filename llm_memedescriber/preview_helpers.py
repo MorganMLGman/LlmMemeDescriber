@@ -16,22 +16,40 @@ logger = logging.getLogger(__name__)
 
 def _cache_path(filename: str, size: int = 300) -> str:
     """Get cache path for filename at specific size.
-    
+
     Different sizes get different cache files.
     """
     name_hash = hashlib.sha256(f"{filename}_{size}".encode()).hexdigest()
     return os.path.join(CACHE_DIR, f"{name_hash}.jpg")
 
 
+def _is_gif(filename: str) -> bool:
+    """Check if filename is a GIF."""
+    return filename.lower().endswith('.gif')
+
+
 def generate_preview(filename: str, is_vid: bool, storage: Any, size: int = 300) -> bytes:
     """Sync preview generation (uses sync storage methods)."""
     cache_path = _cache_path(filename, size)
-    if os.path.isfile(cache_path):
-        try:
-            with open(cache_path, 'rb') as f:
-                return f.read()
-        except Exception:
-            pass
+
+    # Check for GIF cache with .gif extension
+    is_gif = _is_gif(filename)
+    serve_original_gif = is_gif and size >= 600
+    if serve_original_gif:
+        cache_path_gif = cache_path.replace('.jpg', '.gif')
+        if os.path.isfile(cache_path_gif):
+            try:
+                with open(cache_path_gif, 'rb') as f:
+                    return f.read()
+            except Exception:
+                pass
+    else:
+        if os.path.isfile(cache_path):
+            try:
+                with open(cache_path, 'rb') as f:
+                    return f.read()
+            except Exception:
+                pass
 
     if is_vid:
         frame_data = storage.extract_video_frame(filename, timestamp=1.0)
@@ -42,6 +60,35 @@ def generate_preview(filename: str, is_vid: bool, storage: Any, size: int = 300)
         data = storage.download_file(filename)
         if data is None:
             raise FileNotFoundError(filename)
+
+        # Handle GIF serving for modal view (size >= 600)
+        if serve_original_gif:
+            img = Image.open(BytesIO(data))
+            # Only resize if GIF is larger than requested size
+            if img.size[0] > size or img.size[1] > size:
+                img.thumbnail((size, size), Image.Resampling.LANCZOS)
+
+                # Save as GIF preserving animation
+                with BytesIO() as bio:
+                    # save_all=True preserves all frames, optimize=True reduces size
+                    img.save(bio, format='GIF', save_all=True, optimize=True)
+                    preview_bytes = bio.getvalue()
+            else:
+                # GIF is already small enough, return original
+                preview_bytes = data
+
+            # Cache the result with .gif extension
+            try:
+                os.makedirs(CACHE_DIR, exist_ok=True)
+                cache_path_gif = cache_path.replace('.jpg', '.gif')
+                with open(cache_path_gif, 'wb') as f:
+                    f.write(preview_bytes)
+            except Exception as e:
+                logger.warning('Failed to write GIF preview cache for %s: %s', filename, e)
+
+            return preview_bytes
+
+        # Standard path: convert to JPEG
         img = Image.open(BytesIO(data))
 
     img.thumbnail((size, size), Image.Resampling.LANCZOS)
@@ -67,12 +114,25 @@ def generate_preview(filename: str, is_vid: bool, storage: Any, size: int = 300)
 async def async_generate_preview(filename: str, is_vid: bool, storage: Any, size: int = 300) -> bytes:
     """Async preview generation using `call_storage` to dispatch to async/sync storage methods."""
     cache_path = _cache_path(filename, size)
-    if os.path.isfile(cache_path):
-        try:
-            with open(cache_path, 'rb') as f:
-                return f.read()
-        except Exception:
-            pass
+
+    # Check for GIF cache with .gif extension
+    is_gif = _is_gif(filename)
+    serve_original_gif = is_gif and size >= 600
+    if serve_original_gif:
+        cache_path_gif = cache_path.replace('.jpg', '.gif')
+        if os.path.isfile(cache_path_gif):
+            try:
+                with open(cache_path_gif, 'rb') as f:
+                    return f.read()
+            except Exception:
+                pass
+    else:
+        if os.path.isfile(cache_path):
+            try:
+                with open(cache_path, 'rb') as f:
+                    return f.read()
+            except Exception:
+                pass
 
     try:
         if is_vid:
@@ -84,6 +144,40 @@ async def async_generate_preview(filename: str, is_vid: bool, storage: Any, size
             data = await call_storage(storage, 'download_file', filename)
             if data is None:
                 raise FileNotFoundError(filename)
+
+            # Handle GIF serving for modal view (size >= 600)
+            if serve_original_gif:
+                img = Image.open(BytesIO(data))
+                # Only resize if GIF is larger than requested size
+                if img.size[0] > size or img.size[1] > size:
+                    img.thumbnail((size, size), Image.Resampling.LANCZOS)
+
+                    # Save as GIF preserving animation
+                    with BytesIO() as bio:
+                        # save_all=True preserves all frames, optimize=True reduces size
+                        img.save(bio, format='GIF', save_all=True, optimize=True)
+                        preview_bytes = bio.getvalue()
+                else:
+                    # GIF is already small enough, return original
+                    preview_bytes = data
+
+                # Cache the result with .gif extension
+                try:
+                    os.makedirs(CACHE_DIR, exist_ok=True)
+                    loop = asyncio.get_running_loop()
+                    cache_path_gif = cache_path.replace('.jpg', '.gif')
+
+                    def _write_cache():
+                        with open(cache_path_gif, 'wb') as f:
+                            f.write(preview_bytes)
+
+                    await loop.run_in_executor(None, _write_cache)
+                except Exception as e:
+                    logger.warning('Failed to write GIF preview cache for %s: %s', filename, e)
+
+                return preview_bytes
+
+            # Standard path: convert to JPEG
             img = Image.open(BytesIO(data))
 
         img.thumbnail((size, size), Image.Resampling.LANCZOS)
@@ -99,9 +193,11 @@ async def async_generate_preview(filename: str, is_vid: bool, storage: Any, size
         try:
             os.makedirs(CACHE_DIR, exist_ok=True)
             loop = asyncio.get_running_loop()
+
             def _write_cache():
                 with open(cache_path, 'wb') as f:
                     f.write(preview_bytes)
+
             await loop.run_in_executor(None, _write_cache)
         except Exception as e:
             logger.warning('Failed to write preview cache for %s to %s: %s', filename, cache_path, e)
@@ -117,9 +213,9 @@ async def async_generate_preview(filename: str, is_vid: bool, storage: Any, size
 def save_preview_cache() -> int:
     """
     Save the current preview cache to disk.
-    Scans CACHE_DIR for all jpg files and copies them to /data/preview_cache.
+    Scans CACHE_DIR for all jpg and gif files and copies them to /data/preview_cache.
     Also saves a manifest with filenames.
-    
+
     Returns:
         Number of cached previews saved to disk.
     """
@@ -132,13 +228,13 @@ def save_preview_cache() -> int:
             with open(PREVIEW_CACHE_METADATA, 'w') as f:
                 json.dump(cache_manifest, f, indent=2)
             return 0
-        
+
         cached_files = []
         try:
             all_files = os.listdir(CACHE_DIR)
             logger.debug(f"Files in {CACHE_DIR}: {all_files}")
             for filename in all_files:
-                if filename.endswith('.jpg'):
+                if filename.endswith('.jpg') or filename.endswith('.gif'):
                     file_path = os.path.join(CACHE_DIR, filename)
                     try:
                         # Only include files with actual content (> 0 bytes)
@@ -149,20 +245,20 @@ def save_preview_cache() -> int:
         except OSError as e:
             logger.warning(f"Failed to list files in {CACHE_DIR}: {e}")
             return 0
-        
-        logger.info(f"Found {len(cached_files)} jpg files with content in cache")
-        
+
+        logger.info(f"Found {len(cached_files)} preview files with content in cache")
+
         preview_cache_dir = os.path.dirname(PREVIEW_CACHE_METADATA)
         os.makedirs(preview_cache_dir, exist_ok=True)
-        
+
         cache_manifest = {
             'cached_previews': cached_files,
             'count': len(cached_files)
         }
-        
+
         with open(PREVIEW_CACHE_METADATA, 'w') as f:
             json.dump(cache_manifest, f, indent=2)
-        
+
         logger.info(f"Saved preview cache manifest with {len(cached_files)} files to {preview_cache_dir}")
         return len(cached_files)
     except Exception as e:
@@ -212,10 +308,10 @@ def restore_preview_cache() -> int:
 def remove_cache_entry(filename: str) -> bool:
     """
     Remove all cached preview entries for a filename (all size variants).
-    
+
     Args:
         filename: The filename whose cache entries should be removed.
-        
+
     Returns:
         True if removed successfully or file didn't exist, False if an error occurred.
     """
@@ -223,7 +319,7 @@ def remove_cache_entry(filename: str) -> bool:
         removed_count = 0
         if not os.path.isdir(CACHE_DIR):
             return True
-        
+
         # Remove all size variants of this filename
         for test_size in [100, 200, 300, 400, 500, 600, 800, 1000]:
             cache_path = _cache_path(filename, test_size)
@@ -234,7 +330,17 @@ def remove_cache_entry(filename: str) -> bool:
                     removed_count += 1
                 except OSError:
                     pass
-        
+
+            # Also remove GIF cache if exists
+            cache_path_gif = cache_path.replace('.jpg', '.gif')
+            if os.path.isfile(cache_path_gif):
+                try:
+                    os.remove(cache_path_gif)
+                    logger.debug(f"Removed GIF cache entry for: {filename} (size={test_size})")
+                    removed_count += 1
+                except OSError:
+                    pass
+
         return True
     except Exception as e:
         logger.warning(f"Failed to remove cache entries for {filename}: {e}")
@@ -245,39 +351,43 @@ def cleanup_orphaned_cache(valid_filenames: set) -> int:
     """
     Remove cache entries that don't have corresponding filenames in the provided set.
     This is called when files are removed from the database to keep cache in sync.
-    
+
     Args:
         valid_filenames: Set of filenames that should have cache entries (from database).
-        
+
     Returns:
         Number of orphaned cache files removed.
     """
     try:
         if not os.path.isdir(CACHE_DIR):
             return 0
-        
+
         removed_count = 0
         try:
             all_files = os.listdir(CACHE_DIR)
         except OSError as e:
             logger.warning(f"Failed to list files in {CACHE_DIR}: {e}")
             return 0
-        
+
         for filename in all_files:
-            if not filename.endswith('.jpg'):
+            if not (filename.endswith('.jpg') or filename.endswith('.gif')):
                 continue
-            
+
             # Check if this cache file corresponds to any valid filename and size
             is_orphaned = True
             for valid_filename in valid_filenames:
                 # Check all possible sizes for this filename
                 for test_size in [100, 200, 300, 400, 500, 600, 800, 1000]:
-                    if _cache_path(valid_filename, test_size) == os.path.join(CACHE_DIR, filename):
+                    cache_jpg = _cache_path(valid_filename, test_size)
+                    cache_gif = cache_jpg.replace('.jpg', '.gif')
+                    cache_file_path = os.path.join(CACHE_DIR, filename)
+
+                    if cache_file_path in (cache_jpg, cache_gif):
                         is_orphaned = False
                         break
                 if not is_orphaned:
                     break
-            
+
             if is_orphaned:
                 try:
                     cache_path = os.path.join(CACHE_DIR, filename)
@@ -286,10 +396,10 @@ def cleanup_orphaned_cache(valid_filenames: set) -> int:
                     removed_count += 1
                 except Exception as e:
                     logger.warning(f"Failed to remove orphaned cache file {filename}: {e}")
-        
+
         if removed_count > 0:
             logger.info(f"Removed {removed_count} orphaned cache files")
-        
+
         return removed_count
     except Exception as e:
         logger.exception(f"Failed to cleanup orphaned cache: {e}")

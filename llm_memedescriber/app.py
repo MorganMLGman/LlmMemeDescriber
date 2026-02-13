@@ -475,7 +475,7 @@ async def add_security_headers(request: Request, call_next):
     # Content Security Policy - restrict resource loading
     # Note: 'unsafe-inline' is necessary due to extensive use of inline event handlers in templates.
     # TODO: Refactor event handlers from HTML attributes to JavaScript event listeners for better CSP
-    response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data:; font-src 'self'; connect-src 'self' https://cdn.jsdelivr.net; frame-ancestors 'none'"
+    response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://cdn.jsdelivr.net; frame-ancestors 'none'"
     # Referrer policy - control referrer information
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     # Permissions policy - disable dangerous features
@@ -2245,28 +2245,35 @@ async def remove_meme(filename: str, request: Request, user_info: Dict = Depends
 @app.get("/memes/{filename}/preview", tags=["memes"])
 async def preview_meme(filename: str, size: int = PREVIEW_SIZE, user_info: Dict = Depends(require_auth)):
     """Get a thumbnail preview of a meme (resized). Supports images and videos (extracts first frame). REQUIRES AUTHENTICATION.
-    
+
     For videos, extracts the first frame at 1 second mark and returns as JPEG.
-    For images, resizes and returns as JPEG.
+    For images, resizes and returns as JPEG (or GIF for animated GIFs when size >= 600).
     Previews are cached to /data/previews for fast repeated access.
     """
     try:
         filename = sanitize_filename(filename)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    
+
     storage = getattr(app.state, 'app_instance', None) and getattr(app.state.app_instance, 'storage', None)
     if not storage:
         raise HTTPException(status_code=503, detail='Storage not configured')
-    
+
     if not (is_image(filename) or is_video(filename)):
         raise HTTPException(status_code=400, detail='File type is not supported for preview')
-    
+
     is_vid = is_video(filename)
     preview_bytes = await _aget_or_generate_preview(filename, is_vid, storage, size)
-    ctype = 'image/jpeg'
-    logger.debug('Served preview for %s', filename)
-    
+
+    # Determine content type based on filename and size
+    is_gif = filename.lower().endswith('.gif')
+    if is_gif and size >= 600:
+        ctype = 'image/gif'
+    else:
+        ctype = 'image/jpeg'
+
+    logger.debug('Served preview for %s (type=%s)', filename, ctype)
+
     # Add HTTP cache headers for browser caching (24 hours)
     response = StreamingResponse(BytesIO(preview_bytes), media_type=ctype)
     response.headers["Cache-Control"] = "public, max-age=86400"
