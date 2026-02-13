@@ -643,3 +643,88 @@ class WebDavStorage:
             raise IOError(f"Transcoding timeout for {mkv_path} (>{TRANSCODE_TIMEOUT}s)")
         except Exception as exc:
             raise IOError(f"Failed to transcode {mkv_path}: {exc}") from exc
+
+    def transcode_gif_to_webp(self, gif_path: str) -> tuple[bytes, str]:
+        """Convert GIF image to WebP format for better animation support and compression.
+
+        Args:
+            gif_path: Path to GIF file on WebDAV
+
+        Returns:
+            Tuple of (webp_bytes, new_filename_with_webp_extension)
+
+        Raises:
+            FileNotFoundError: If GIF file not found on WebDAV
+            IOError: If conversion fails or times out
+        """
+        try:
+            # Download GIF file from WebDAV
+            logger.info(f"Downloading GIF file: {gif_path}")
+            gif_data = self.download_file(gif_path)
+            if gif_data is None:
+                raise FileNotFoundError(f"GIF file not found: {gif_path}")
+
+            logger.info(f"Downloaded {gif_path} ({len(gif_data)} bytes), starting conversion...")
+
+            # Create temporary files for processing
+            with tempfile.NamedTemporaryFile(suffix='.gif', delete=False) as tmp_gif:
+                tmp_gif.write(gif_data)
+                tmp_gif_path = tmp_gif.name
+
+            # Generate output filename (.gif -> .webp)
+            base_name = gif_path.rsplit('.', 1)[0] if '.' in gif_path else gif_path
+            new_filename = f"{base_name}.webp"
+
+            with tempfile.NamedTemporaryFile(suffix='.webp', delete=False) as tmp_webp:
+                tmp_webp_path = tmp_webp.name
+
+            try:
+                # Build FFmpeg convert command - preserve animation with -loop 0
+                cmd = [
+                    'ffmpeg',
+                    '-i', tmp_gif_path,
+                    '-c:v', 'libwebp',
+                    '-quality', '80',  # WebP quality (0-100)
+                    '-lossless', '0',  # Use lossy compression
+                    '-loop', '0',      # Infinite loop for animation
+                    '-y',              # Overwrite output
+                    tmp_webp_path
+                ]
+
+                logger.info(f"Running FFmpeg convert command: {' '.join(cmd)}")
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    timeout=TRANSCODE_TIMEOUT,
+                    check=False
+                )
+
+                if result.returncode != 0:
+                    error_msg = result.stderr.decode('utf-8', errors='ignore')
+                    raise IOError(f"FFmpeg conversion failed (exit code {result.returncode}): {error_msg}")
+
+                # Read converted WebP
+                with open(tmp_webp_path, 'rb') as f:
+                    webp_data = f.read()
+
+                if not webp_data:
+                    raise IOError("FFmpeg produced no output")
+
+                logger.info(f"Successfully converted {gif_path} to WebP ({len(webp_data)} bytes)")
+                return webp_data, new_filename
+
+            finally:
+                # Cleanup temp files
+                for path in [tmp_gif_path, tmp_webp_path]:
+                    try:
+                        os.unlink(path)
+                    except Exception:
+                        # File may not exist or could not be deleted; safe to ignore
+                        pass
+
+        except FileNotFoundError:
+            raise
+        except subprocess.TimeoutExpired:
+            raise IOError(f"Conversion timeout for {gif_path} (>{TRANSCODE_TIMEOUT}s)")
+        except Exception as exc:
+            raise IOError(f"Failed to convert {gif_path} to WebP: {exc}") from exc

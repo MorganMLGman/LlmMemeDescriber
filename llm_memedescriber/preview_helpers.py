@@ -63,19 +63,9 @@ def generate_preview(filename: str, is_vid: bool, storage: Any, size: int = 300)
 
         # Handle GIF serving for modal view (size >= 600)
         if serve_original_gif:
-            img = Image.open(BytesIO(data))
-            # Only resize if GIF is larger than requested size
-            if img.size[0] > size or img.size[1] > size:
-                img.thumbnail((size, size), Image.Resampling.LANCZOS)
-
-                # Save as GIF preserving animation
-                with BytesIO() as bio:
-                    # save_all=True preserves all frames, optimize=True reduces size
-                    img.save(bio, format='GIF', save_all=True, optimize=True)
-                    preview_bytes = bio.getvalue()
-            else:
-                # GIF is already small enough, return original
-                preview_bytes = data
+            # Return original GIF to preserve animation
+            # (PIL's resize methods lose animation data)
+            preview_bytes = data
 
             # Cache the result with .gif extension
             try:
@@ -147,19 +137,9 @@ async def async_generate_preview(filename: str, is_vid: bool, storage: Any, size
 
             # Handle GIF serving for modal view (size >= 600)
             if serve_original_gif:
-                img = Image.open(BytesIO(data))
-                # Only resize if GIF is larger than requested size
-                if img.size[0] > size or img.size[1] > size:
-                    img.thumbnail((size, size), Image.Resampling.LANCZOS)
-
-                    # Save as GIF preserving animation
-                    with BytesIO() as bio:
-                        # save_all=True preserves all frames, optimize=True reduces size
-                        img.save(bio, format='GIF', save_all=True, optimize=True)
-                        preview_bytes = bio.getvalue()
-                else:
-                    # GIF is already small enough, return original
-                    preview_bytes = data
+                # Return original GIF to preserve animation
+                # (PIL's resize methods lose animation data)
+                preview_bytes = data
 
                 # Cache the result with .gif extension
                 try:

@@ -274,6 +274,23 @@ class App:
                 self._update_meme_attempt(name, error=f"Transcode failed: {str(exc)}")
                 return {'failed': True}
 
+        # Check if file is GIF and needs conversion to WebP
+        if name.lower().endswith('.gif'):
+            try:
+                convert_result = self._convert_and_replace_gif(name)
+                if not convert_result['success']:
+                    logger.error("Failed to convert %s: %s", name, convert_result.get('error'))
+                    return {'failed': True}
+
+                # Update name to new WebP filename for description generation
+                name = convert_result['new_filename']
+                logger.info("Converted to %s, proceeding with description generation", name)
+
+            except Exception as exc:
+                logger.exception("Exception during GIF conversion for %s: %s", name, exc)
+                self._update_meme_attempt(name, error=f"Convert failed: {str(exc)}")
+                return {'failed': True}
+
         try:
             desc = self.generate_description(name)
             
@@ -378,6 +395,69 @@ class App:
             self._update_meme_attempt(mkv_filename, error=f"Transcode failed: {str(exc)}")
             return {'success': False, 'error': str(exc)}
 
+    def _convert_and_replace_gif(self, gif_filename: str) -> Dict[str, Any]:
+        """Convert GIF to WebP, upload to WebDAV, delete GIF, update database.
+
+        Returns:
+            Dict with 'success' (bool), 'new_filename' (str), and 'error' (str) keys
+        """
+        try:
+            logger.info("Starting GIF conversion workflow for %s", gif_filename)
+
+            # Step 1: Convert GIF to WebP
+            webp_bytes, new_filename = self.storage.transcode_gif_to_webp(gif_filename)
+            logger.info("Converted %s to %s (%d bytes)", gif_filename, new_filename, len(webp_bytes))
+
+            # Step 2: Upload WebP to WebDAV
+            self.storage.upload_fileobj(new_filename, webp_bytes, overwrite=True)
+            logger.info("Uploaded WebP: %s", new_filename)
+
+            # Step 3: Update database filename (.gif → .webp)
+            def update_db_filename():
+                with session_scope(self.engine) as session:
+                    m = session.exec(select(Meme).where(Meme.filename == gif_filename)).first()
+                    if not m:
+                        raise Exception(f"Database record not found for {gif_filename}")
+
+                    # Check if WebP record already exists (due to duplicate processing or manual upload)
+                    existing_webp = session.exec(select(Meme).where(Meme.filename == new_filename)).first()
+
+                    if existing_webp:
+                        # WebP already in DB - delete the GIF record, keep WebP
+                        logger.info(f"WebP {new_filename} already exists in DB - deleting duplicate GIF record")
+                        session.delete(m)
+                    else:
+                        # Update GIF record with new WebP filename
+                        m.filename = new_filename
+                        if m.source_url:
+                            m.source_url = m.source_url.replace(gif_filename, new_filename)
+                        m.updated_at = datetime.datetime.now(datetime.timezone.utc)
+                        session.add(m)
+
+                    session.commit()
+                    return True  # Return success indicator
+
+            if not self._db_operation_with_retry(update_db_filename, max_retries=3):
+                logger.error("Failed to update database filename")
+                return {'success': False, 'error': "Database update failed"}
+
+            logger.info("Updated database: %s -> %s", gif_filename, new_filename)
+
+            # Step 4: Delete original GIF from WebDAV
+            try:
+                self.storage.delete_file(gif_filename)
+                logger.info("Deleted original GIF: %s", gif_filename)
+            except Exception as delete_exc:
+                logger.warning("Failed to delete GIF %s: %s", gif_filename, delete_exc)
+                # Non-critical - WebP is already uploaded and DB updated
+
+            return {'success': True, 'new_filename': new_filename}
+
+        except Exception as exc:
+            logger.exception("GIF conversion workflow failed for %s: %s", gif_filename, exc)
+            self._update_meme_attempt(gif_filename, error=f"Convert failed: {str(exc)}")
+            return {'success': False, 'error': str(exc)}
+
     def generate_description(self, filename: str) -> Dict[str, Any]:
         """Generate a description for `filename` using the instance LLM client and storage.
 
@@ -472,10 +552,15 @@ class App:
             logger.info("Main sync complete, now scanning for existing MKVs to transcode")
             transcode_result = self.transcode_existing_mkvs()
 
+            # Convert existing GIFs to WebP
+            self.set_operation_status('converting', {'phase': 'Scanning for GIFs'})
+            logger.info("MKV transcoding complete, now scanning for existing GIFs to convert")
+            conversion_result = self.convert_existing_gifs()
+
             # Combine results
-            combined_result = {**sync_result, 'mkv_transcoding': transcode_result}
+            combined_result = {**sync_result, 'mkv_transcoding': transcode_result, 'gif_conversion': conversion_result}
             self.set_operation_status('completed', {'result': combined_result})
-            logger.info("Sync and MKV transcoding workflow complete")
+            logger.info("Sync, MKV transcoding, and GIF conversion workflow complete")
             return combined_result
         finally:
             self._sync_lock.release()
@@ -566,6 +651,95 @@ class App:
             return {
                 'total_found': 0,
                 'transcoded': 0,
+                'failed': 0,
+                'skipped': 0,
+                'error': str(exc)
+            }
+
+    def convert_existing_gifs(self) -> Dict[str, Any]:
+        """Scan database for existing GIF files and convert them to WebP.
+
+        This handles already-processed GIF files that were added before conversion
+        was implemented. Runs as part of manual sync operation.
+
+        Returns:
+            Dict with 'total_found', 'converted', 'failed', 'skipped' counts
+        """
+        try:
+            logger.info("Scanning for existing GIF files to convert")
+
+            # Query database for all GIF files
+            def get_gif_files():
+                with session_scope(self.engine) as session:
+                    # Get all memes and filter for .gif extension in Python (case-insensitive)
+                    all_memes = session.exec(select(Meme)).all()
+                    return [m.filename for m in all_memes if m.filename.lower().endswith('.gif')]
+
+            gif_files = self._db_operation_with_retry(get_gif_files) or []
+
+            if not gif_files:
+                logger.info("No GIF files found to convert")
+                return {'total_found': 0, 'converted': 0, 'failed': 0, 'skipped': 0}
+
+            logger.info("Found %d GIF files to convert", len(gif_files))
+
+            # Set initial progress
+            self.set_operation_status('converting', {
+                'phase': 'Converting GIFs',
+                'converted': 0,
+                'total': len(gif_files)
+            })
+
+            # Convert each GIF in parallel using thread pool
+            results = []
+            completed = 0
+            with ThreadPoolExecutor(max_workers=BATCH_PROCESS_WORKERS) as executor:
+                futures = {executor.submit(self._convert_and_replace_gif, gif): gif
+                          for gif in gif_files}
+
+                for future in as_completed(futures):
+                    gif_name = futures[future]
+                    try:
+                        result = future.result(timeout=TRANSCODE_TIMEOUT + 30)  # Extra buffer
+                        results.append(result)
+                        completed += 1
+
+                        # Update progress
+                        self.set_operation_status('converting', {
+                            'phase': 'Converting GIFs',
+                            'converted': completed,
+                            'total': len(gif_files),
+                            'current_file': gif_name if completed < len(gif_files) else None
+                        })
+                    except Exception as exc:
+                        logger.exception("Exception converting %s: %s", gif_name, exc)
+                        results.append({'success': False, 'error': str(exc)})
+                        completed += 1
+                        self.set_operation_status('converting', {
+                            'phase': 'Converting GIFs',
+                            'converted': completed,
+                            'total': len(gif_files)
+                        })
+
+            # Calculate statistics
+            converted = sum(1 for r in results if r.get('success'))
+            failed = sum(1 for r in results if not r.get('success'))
+
+            logger.info("Conversion complete: %d succeeded, %d failed out of %d total",
+                       converted, failed, len(gif_files))
+
+            return {
+                'total_found': len(gif_files),
+                'converted': converted,
+                'failed': failed,
+                'skipped': 0
+            }
+
+        except Exception as exc:
+            logger.exception("Failed to convert existing GIFs: %s", exc)
+            return {
+                'total_found': 0,
+                'converted': 0,
                 'failed': 0,
                 'skipped': 0,
                 'error': str(exc)
