@@ -1205,7 +1205,7 @@ def list_memes(limit: int = DEFAULT_LIST_LIMIT, offset: int = DEFAULT_OFFSET, st
             
             result = []
             for r in rows:
-                meme_dict = r.model_dump()
+                meme_dict = r.model_dump(mode='json')
                 meme_dict['processed'] = r.status == 'filled'
                 if len(result) == 0:
                     logger.debug(f"First meme keys: {meme_dict.keys()}")
@@ -1905,7 +1905,7 @@ def get_meme_detail(filename: str, user_info: Dict = Depends(require_auth)):
         m = get_meme_by_filename(session, filename)
         if not m:
             raise HTTPException(status_code=404, detail="Meme not found")
-        meme_dict = m.model_dump()
+        meme_dict = m.model_dump(mode='json')
         meme_dict['processed'] = m.status == 'filled'
         
         # Return with no-cache headers to prevent Cloudflare caching
@@ -1994,7 +1994,7 @@ def force_description_generation(filename: str, request: Request, user_info: Dic
                         except Exception:
                             logger.exception("Failed to update search index for %s", filename)
                         
-                        meme_dict = m.model_dump()
+                        meme_dict = m.model_dump(mode='json')
                         meme_dict['processed'] = m.status == 'filled'
                         return meme_dict
             except Exception as e:
@@ -2004,7 +2004,7 @@ def force_description_generation(filename: str, request: Request, user_info: Dic
         with session_scope(app.state.engine) as session:
             m = get_meme_by_filename(session, filename)
             if m:
-                meme_dict = m.model_dump()
+                meme_dict = m.model_dump(mode='json')
                 meme_dict['processed'] = m.status == 'filled'
                 meme_dict['force_generation_attempted'] = True
                 return meme_dict
@@ -2102,7 +2102,7 @@ def reprocess_meme(filename: str, request: Request, user_info: Dict = Depends(re
                         except Exception:
                             logger.exception("Failed to update search index for %s", filename)
 
-                        meme_dict = m.model_dump()
+                        meme_dict = m.model_dump(mode='json')
                         meme_dict['processed'] = m.status == 'filled'
                         return meme_dict
             except Exception as e:
@@ -2112,7 +2112,7 @@ def reprocess_meme(filename: str, request: Request, user_info: Dict = Depends(re
         with session_scope(app.state.engine) as session:
             m = get_meme_by_filename(session, filename)
             if m:
-                meme_dict = m.model_dump()
+                meme_dict = m.model_dump(mode='json')
                 meme_dict['processed'] = m.status == 'filled'
                 meme_dict['reprocess_attempted'] = True
                 return meme_dict
@@ -2169,7 +2169,7 @@ def update_meme(filename: str, request_body: UpdateMemeRequest, http_request: Re
         except Exception:
             logger.exception("Failed to update search index for %s", filename)
         
-        meme_dict = m.model_dump()
+        meme_dict = m.model_dump(mode='json')
         meme_dict['processed'] = m.status == 'filled'
         return meme_dict
 
@@ -2352,7 +2352,7 @@ def get_pending_memes(user_info: Dict = Depends(require_auth)):
     try:
         with session_scope(app.state.engine) as session:
             memes = session.exec(select(Meme).where(Meme.status == 'pending')).all()
-            return [m.model_dump() for m in memes]
+            return [m.model_dump(mode='json') for m in memes]
     except Exception as e:
         logger.exception("Failed to get pending memes")
         raise HTTPException(status_code=500, detail=f"Failed to get pending memes: {str(e)}")
@@ -2506,7 +2506,7 @@ def mark_meme_not_duplicate(filename: str, user_info: Dict = Depends(require_aut
                 )
                 if meme:
                     session.refresh(meme)
-                    return {"status": "ok", "message": "Meme marked as not duplicate", "meme": meme.model_dump()}
+                    return {"status": "ok", "message": "Meme marked as not duplicate", "meme": meme.model_dump(mode='json')}
                 return {"status": "ok", "message": "Meme marked as not duplicate"}
 
             created = []
