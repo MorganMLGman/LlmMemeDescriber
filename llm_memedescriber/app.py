@@ -2266,9 +2266,12 @@ async def preview_meme(filename: str, size: int = PREVIEW_SIZE, user_info: Dict 
     preview_bytes = await _aget_or_generate_preview(filename, is_vid, storage, size)
 
     # Determine content type based on filename and size
-    is_gif = filename.lower().endswith('.gif')
-    if is_gif and size >= 600:
-        ctype = 'image/gif'
+    lower_filename = filename.lower()
+    if size >= 600 and (lower_filename.endswith('.gif') or lower_filename.endswith('.webp')):
+        if lower_filename.endswith('.webp'):
+            ctype = 'image/webp'
+        else:
+            ctype = 'image/gif'
     else:
         ctype = 'image/jpeg'
 

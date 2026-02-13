@@ -28,18 +28,31 @@ def _is_gif(filename: str) -> bool:
     return filename.lower().endswith('.gif')
 
 
+def _is_animated_format(filename: str) -> bool:
+    """Check if filename is an animated format (GIF or WebP)."""
+    lower_name = filename.lower()
+    return lower_name.endswith('.gif') or lower_name.endswith('.webp')
+
+
 def generate_preview(filename: str, is_vid: bool, storage: Any, size: int = 300) -> bytes:
     """Sync preview generation (uses sync storage methods)."""
     cache_path = _cache_path(filename, size)
 
-    # Check for GIF cache with .gif extension
-    is_gif = _is_gif(filename)
-    serve_original_gif = is_gif and size >= 600
-    if serve_original_gif:
-        cache_path_gif = cache_path.replace('.jpg', '.gif')
-        if os.path.isfile(cache_path_gif):
+    # Check for animated format (GIF or WebP)
+    is_animated = _is_animated_format(filename)
+    serve_original_animated = is_animated and size >= 600
+
+    # Determine cache file extension based on format
+    if serve_original_animated:
+        if filename.lower().endswith('.webp'):
+            cache_ext = '.webp'
+        else:
+            cache_ext = '.gif'
+        cache_path_animated = cache_path.replace('.jpg', cache_ext)
+
+        if os.path.isfile(cache_path_animated):
             try:
-                with open(cache_path_gif, 'rb') as f:
+                with open(cache_path_animated, 'rb') as f:
                     return f.read()
             except Exception:
                 pass
@@ -61,20 +74,23 @@ def generate_preview(filename: str, is_vid: bool, storage: Any, size: int = 300)
         if data is None:
             raise FileNotFoundError(filename)
 
-        # Handle GIF serving for modal view (size >= 600)
-        if serve_original_gif:
-            # Return original GIF to preserve animation
+        # Handle animated format serving for modal view (size >= 600)
+        if serve_original_animated:
+            # Return original animated file to preserve animation
             # (PIL's resize methods lose animation data)
             preview_bytes = data
 
-            # Cache the result with .gif extension
+            # Cache the result with correct extension
             try:
                 os.makedirs(CACHE_DIR, exist_ok=True)
-                cache_path_gif = cache_path.replace('.jpg', '.gif')
-                with open(cache_path_gif, 'wb') as f:
+                if filename.lower().endswith('.webp'):
+                    cache_path_animated = cache_path.replace('.jpg', '.webp')
+                else:
+                    cache_path_animated = cache_path.replace('.jpg', '.gif')
+                with open(cache_path_animated, 'wb') as f:
                     f.write(preview_bytes)
             except Exception as e:
-                logger.warning('Failed to write GIF preview cache for %s: %s', filename, e)
+                logger.warning('Failed to write animated preview cache for %s: %s', filename, e)
 
             return preview_bytes
 
@@ -105,14 +121,21 @@ async def async_generate_preview(filename: str, is_vid: bool, storage: Any, size
     """Async preview generation using `call_storage` to dispatch to async/sync storage methods."""
     cache_path = _cache_path(filename, size)
 
-    # Check for GIF cache with .gif extension
-    is_gif = _is_gif(filename)
-    serve_original_gif = is_gif and size >= 600
-    if serve_original_gif:
-        cache_path_gif = cache_path.replace('.jpg', '.gif')
-        if os.path.isfile(cache_path_gif):
+    # Check for animated format (GIF or WebP)
+    is_animated = _is_animated_format(filename)
+    serve_original_animated = is_animated and size >= 600
+
+    # Determine cache file extension based on format
+    if serve_original_animated:
+        if filename.lower().endswith('.webp'):
+            cache_ext = '.webp'
+        else:
+            cache_ext = '.gif'
+        cache_path_animated = cache_path.replace('.jpg', cache_ext)
+
+        if os.path.isfile(cache_path_animated):
             try:
-                with open(cache_path_gif, 'rb') as f:
+                with open(cache_path_animated, 'rb') as f:
                     return f.read()
             except Exception:
                 pass
@@ -135,25 +158,28 @@ async def async_generate_preview(filename: str, is_vid: bool, storage: Any, size
             if data is None:
                 raise FileNotFoundError(filename)
 
-            # Handle GIF serving for modal view (size >= 600)
-            if serve_original_gif:
-                # Return original GIF to preserve animation
+            # Handle animated format serving for modal view (size >= 600)
+            if serve_original_animated:
+                # Return original animated file to preserve animation
                 # (PIL's resize methods lose animation data)
                 preview_bytes = data
 
-                # Cache the result with .gif extension
+                # Cache the result with correct extension
                 try:
                     os.makedirs(CACHE_DIR, exist_ok=True)
                     loop = asyncio.get_running_loop()
-                    cache_path_gif = cache_path.replace('.jpg', '.gif')
+                    if filename.lower().endswith('.webp'):
+                        cache_path_animated = cache_path.replace('.jpg', '.webp')
+                    else:
+                        cache_path_animated = cache_path.replace('.jpg', '.gif')
 
                     def _write_cache():
-                        with open(cache_path_gif, 'wb') as f:
+                        with open(cache_path_animated, 'wb') as f:
                             f.write(preview_bytes)
 
                     await loop.run_in_executor(None, _write_cache)
                 except Exception as e:
-                    logger.warning('Failed to write GIF preview cache for %s: %s', filename, e)
+                    logger.warning('Failed to write animated preview cache for %s: %s', filename, e)
 
                 return preview_bytes
 
@@ -214,7 +240,7 @@ def save_preview_cache() -> int:
             all_files = os.listdir(CACHE_DIR)
             logger.debug(f"Files in {CACHE_DIR}: {all_files}")
             for filename in all_files:
-                if filename.endswith('.jpg') or filename.endswith('.gif'):
+                if filename.endswith('.jpg') or filename.endswith('.gif') or filename.endswith('.webp'):
                     file_path = os.path.join(CACHE_DIR, filename)
                     try:
                         # Only include files with actual content (> 0 bytes)
@@ -321,6 +347,16 @@ def remove_cache_entry(filename: str) -> bool:
                 except OSError:
                     pass
 
+            # Also remove WebP cache if exists
+            cache_path_webp = cache_path.replace('.jpg', '.webp')
+            if os.path.isfile(cache_path_webp):
+                try:
+                    os.remove(cache_path_webp)
+                    logger.debug(f"Removed WebP cache entry for: {filename} (size={test_size})")
+                    removed_count += 1
+                except OSError:
+                    pass
+
         return True
     except Exception as e:
         logger.warning(f"Failed to remove cache entries for {filename}: {e}")
@@ -350,7 +386,7 @@ def cleanup_orphaned_cache(valid_filenames: set) -> int:
             return 0
 
         for filename in all_files:
-            if not (filename.endswith('.jpg') or filename.endswith('.gif')):
+            if not (filename.endswith('.jpg') or filename.endswith('.gif') or filename.endswith('.webp')):
                 continue
 
             # Check if this cache file corresponds to any valid filename and size
@@ -360,9 +396,10 @@ def cleanup_orphaned_cache(valid_filenames: set) -> int:
                 for test_size in [100, 200, 300, 400, 500, 600, 800, 1000]:
                     cache_jpg = _cache_path(valid_filename, test_size)
                     cache_gif = cache_jpg.replace('.jpg', '.gif')
+                    cache_webp = cache_jpg.replace('.jpg', '.webp')
                     cache_file_path = os.path.join(CACHE_DIR, filename)
 
-                    if cache_file_path in (cache_jpg, cache_gif):
+                    if cache_file_path in (cache_jpg, cache_gif, cache_webp):
                         is_orphaned = False
                         break
                 if not is_orphaned:
