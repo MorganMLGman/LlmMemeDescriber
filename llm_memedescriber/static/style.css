@@ -713,3 +713,12 @@ p {
         font-size: 1.2rem;
     }
 }
+
+/* Modal Footer Dropdown Menu */
+.modal-footer .dropdown {
+    display: flex;
+}
+
+.modal-footer .dropdown-item[style*="display: none"] {
+    display: none !important;
+}

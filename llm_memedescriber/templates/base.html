@@ -117,14 +117,45 @@
                     </form>
                 </div>
                 <div class="modal-footer">
-                    <button type="button" class="btn btn-warning" id="recalcPhashBtn" onclick="recalculatePhash(currentMemeId)" style="display: none;" title="Recalculate perceptual hash">🔄 Recalc Phash</button>
-                    <button type="button" class="btn btn-info" id="dedupeBtn" onclick="showDeduplicationModal()" style="display: none;" title="Show duplicate memes">🔗 Show Duplicates</button>
-                    <button type="button" class="btn btn-secondary" id="retryDescriptionBtn" onclick="retryDescriptionGeneration()" style="display: none;" title="Force retry description generation">🔄 Retry Description</button>
-                    <button type="button" class="btn btn-warning" id="reprocessBtn" onclick="reprocessMeme()" title="Regenerate all metadata from scratch">🔄 Reprocess</button>
+                    <!-- Main Action Buttons -->
                     <button type="button" class="btn btn-info" onclick="copyMemeToClipboard()" title="Copy image/video to clipboard">📋 Copy</button>
                     <button type="button" class="btn btn-success" onclick="downloadMeme()" title="Download raw image/video">⬇️ Download</button>
                     <button type="button" class="btn btn-primary" onclick="saveMeme()">💾 Save Changes</button>
-                    <button type="button" class="btn btn-danger" onclick="markRemoved()">🗑️ Remove</button>
+
+                    <!-- More Menu Dropdown -->
+                    <div class="dropdown ms-auto">
+                        <button type="button" class="btn btn-secondary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" title="More options">
+                            ⋯ More
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-end">
+                            <li>
+                                <button type="button" class="dropdown-item" id="recalcPhashBtn" onclick="recalculatePhash(currentMemeId)" style="display: none;" title="Recalculate perceptual hash">
+                                    🔄 Recalc Phash
+                                </button>
+                            </li>
+                            <li>
+                                <button type="button" class="dropdown-item" id="dedupeBtn" onclick="showDeduplicationModal()" style="display: none;" title="Show duplicate memes">
+                                    🔗 Show Duplicates
+                                </button>
+                            </li>
+                            <li>
+                                <button type="button" class="dropdown-item" id="retryDescriptionBtn" onclick="retryDescriptionGeneration()" style="display: none;" title="Force retry description generation">
+                                    🔄 Retry Description
+                                </button>
+                            </li>
+                            <li>
+                                <button type="button" class="dropdown-item" id="reprocessBtn" onclick="reprocessMeme()" title="Regenerate all metadata from scratch">
+                                    🔄 Reprocess
+                                </button>
+                            </li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li>
+                                <button type="button" class="dropdown-item text-danger" onclick="markRemoved()" title="Remove this meme">
+                                    🗑️ Remove
+                                </button>
+                            </li>
+                        </ul>
+                    </div>
                 </div>
             </div>
         </div>
