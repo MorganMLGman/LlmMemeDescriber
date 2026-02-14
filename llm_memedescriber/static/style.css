@@ -718,3 +718,8 @@ p {
 .modal-footer .dropdown-item[style*="display: none"] {
     display: none !important;
 }
+
+/* Make buttons stretch full width in vertical layout */
+.modal-footer.flex-column > * {
+    width: 100% !important;
+}
