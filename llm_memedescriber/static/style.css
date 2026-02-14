@@ -714,11 +714,7 @@ p {
     }
 }
 
-/* Modal Footer Dropdown Menu */
-.modal-footer .dropdown {
-    display: flex;
-}
-
+/* Hide dropdown items that have display: none */
 .modal-footer .dropdown-item[style*="display: none"] {
     display: none !important;
 }
